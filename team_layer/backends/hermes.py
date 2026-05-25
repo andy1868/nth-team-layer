@@ -119,20 +119,21 @@ class HermesBackend(AgentBackend):
         start = self._track_turn_start()
         cmd = self._resolve_cmd()
 
-        # Hermes CLI: `hermes chat -q QUERY -Q --ignore-user-config -m MODEL`
+        # Hermes CLI: `hermes chat -q QUERY -Q -m MODEL`
         # - chat 子命令支持 single-query non-interactive 模式
         # - -q / --query     单次查询
         # - -Q / --quiet     编程友好（去 banner/spinner，只输出最终响应）
-        # - --ignore-user-config 不依赖用户 config.yaml（CI 友好）
         # - -m / --model     模型
-        # - --max-turns N    限制 tool-calling iterations
         # 注意：Hermes 没有独立的 --system 选项，system_prompt 拼到 query 前面
+        # 注意：默认 *不加* --ignore-user-config，让 hermes 读 ~/.hermes/config.yaml + .env
+        #       （这样用户在 .env 配的 API key 才能传进去）。若需 CI 严格隔离，
+        #       传入 hermes_args=["--ignore-user-config"]。
         full_prompt = self._compose_prompt(system_prompt, prompt)
 
-        full_args = list(cmd) + ["chat", "-q", full_prompt, "-Q", "--ignore-user-config"]
+        full_args = list(cmd) + ["chat", "-q", full_prompt, "-Q"]
         if self.model:
             full_args += ["-m", self.model]
-        # 用户传入的额外 args（例如 --provider / --skills / --max-turns）
+        # 用户传入的额外 args（例如 --provider / --skills / --max-turns / --ignore-user-config）
         full_args += self.hermes_args
 
         cwd = str(self._session_config.workdir) if self._session_config.workdir else None
