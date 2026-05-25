@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Nth Team Layer runtime artifacts (per-user, not part of package)
+# These are populated when agents attach() into a workspace.
+memory/user-model.json
+sidechain/ledger.jsonl
+sidechain/aggregated_ledger.jsonl
+sidechain/aggregate_report.md
+sidechain/evolution_audit.jsonl
+sidechain/sync_audit.jsonl
+sidechain/pending_patches/
+sidechain/.last_collected
+sidechain/reload.signal
+team_logs/*.jsonl
+blackboard/private_*.jsonl
+team_agents/*.json
+missions/*.json
+
+# Auto-generated EvoLoop skills (uncomment to commit them as team knowledge)
+# skills/registry/fix_*.md
+
+# Credentials (never commit!)
+.env
+.env.*
+*.key
+*.pem
+credentials.json

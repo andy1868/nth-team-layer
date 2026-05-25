@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# Note: This pyproject.toml ships inside nth_team_layer/ for future
+# extraction into a standalone PyPI package.
+#
+# Currently nth_team_layer lives alongside team_layer/ within the
+# Hermes fork. To extract:
+#   1. mkdir nth-team-layer-repo && cd nth-team-layer-repo
+#   2. cp -r ../hermes-team-agent/team_layer ../hermes-team-agent/nth_team_layer ./
+#   3. mv nth_team_layer/pyproject.toml ./pyproject.toml
+#   4. git init && git add . && git commit -m "extract nth-team-layer"
+#   5. pip install -e . (test)
+#   6. twine upload dist/* (PyPI release)
+
+[project]
+name = "nth-team-layer"
+version = "0.8.0"
+description = "Pluggable team-collaboration layer for any AI agent framework"
+readme = "../README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Nth Team Agent Project" }]
+license = { text = "MIT" }
+keywords = ["agent", "multi-agent", "team", "ai", "claude", "hermes", "blackboard", "mission"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+# Zero third-party deps for core functionality.
+# All Team Layer functionality uses only Python stdlib.
+dependencies = []
+
+[project.optional-dependencies]
+# Optional helpers when integrating with specific backends:
+dev = ["pytest>=7.0", "ruff>=0.1.0"]
+contracts = ["pydantic>=2.0"]  # stricter EvoLoop contract validation
+retries = ["tenacity>=8.0"]    # better retry primitives in generated skills
+
+[project.urls]
+Homepage = "https://github.com/AlexNthLab/hermes-team-agent"
+Source = "https://github.com/AlexNthLab/hermes-team-agent/tree/team-layer-v1"
+
+[project.scripts]
+nth-blackboard = "team_layer.blackboard.cli:main"
+
+[tool.setuptools]
+packages = ["nth_team_layer", "team_layer"]

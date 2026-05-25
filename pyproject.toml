@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nth-team-layer"
+version = "0.8.0"
+description = "Pluggable team-collaboration layer for any AI agent framework (Hermes, Claude Code, OpenClaw, Codex, OpenHands, custom)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "AlexNthLab" }]
+license = { text = "MIT" }
+keywords = [
+    "agent", "multi-agent", "team", "ai", "claude", "hermes",
+    "blackboard", "mission", "evolution", "self-improving", "anthropic",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Zero third-party deps for core functionality.
+# All Nth Team Layer functionality uses only Python stdlib.
+dependencies = []
+
+[project.optional-dependencies]
+# Optional extensions:
+dev = ["pytest>=7.0", "ruff>=0.1.0", "mypy>=1.0"]
+contracts = ["pydantic>=2.0"]    # stricter EvoLoop contract validation
+retries = ["tenacity>=8.0"]      # better retry primitives in generated skills
+
+# Backend-specific (only install what you use):
+anthropic = ["anthropic>=0.40.0"]
+openai = ["openai>=1.0.0"]
+google = ["google-generativeai>=0.3.0"]
+hermes = []  # via subprocess; install hermes-agent separately
+
+[project.urls]
+Homepage = "https://github.com/AlexNthLab/nth-team-layer"
+Documentation = "https://github.com/AlexNthLab/nth-team-layer#readme"
+Issues = "https://github.com/AlexNthLab/nth-team-layer/issues"
+Changelog = "https://github.com/AlexNthLab/nth-team-layer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+nth-blackboard = "team_layer.blackboard.cli:main"
+
+[tool.setuptools]
+packages = [
+    "nth_team_layer",
+    "nth_team_layer.discovery",
+    "nth_team_layer.orchestration",
+    "team_layer",
+    "team_layer.memory_providers",
+    "team_layer.compression",
+    "team_layer.evolution",
+    "team_layer.git_sync",
+    "team_layer.blackboard",
+    "team_layer.backends",
+]

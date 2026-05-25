@@ -1,0 +1,3 @@
+# 本地终端状态，不同步
+.last_collected
+reload.signal

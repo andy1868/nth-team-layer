@@ -1,0 +1,2 @@
+# 私有 scope 永不进 Git（每个 Agent 本地独占）
+private_*.jsonl
