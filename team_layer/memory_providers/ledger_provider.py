@@ -57,17 +57,37 @@ class LedgerProvider(MemoryProviderABC):
         result: Any,
         error_sig: Optional[str] = None,
         token_cost: int = 0,
+        immediate_flush: bool = True,
     ) -> None:
-        """记录一个操作到账本"""
+        """
+        记录一个操作到账本
+
+        Args:
+            immediate_flush: 默认 True — 立即 append 到磁盘
+                            （避免 SIGTERM/崩溃丢数据）
+                            False 时保持旧行为：缓冲到 on_session_end
+        """
         entry = {
             "timestamp": datetime.now().isoformat(),
             "agent_id": agent_id,
             "action_type": action_type,
-            "result": str(result)[:100],  # 截断长文本
+            "result": str(result)[:100],
             "error_sig": error_sig,
             "token_cost": token_cost,
         }
-        self.buffer.append(entry)
+        if immediate_flush:
+            # 立即写盘（append-only，防止信号丢失）
+            try:
+                self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.ledger_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                    f.flush()
+            except Exception as e:
+                # 写盘失败仍然加到 buffer 作为 fallback
+                self.buffer.append(entry)
+                print(f"[LEDGER] immediate flush failed, buffered: {e}")
+        else:
+            self.buffer.append(entry)
 
     def sync_turn(self, action: dict, result: Any) -> None:
         """每轮同步 — 可选的轻量记录"""
