@@ -81,16 +81,29 @@ class CodexBackend(AgentBackend):
         cwd = str(self._session_config.workdir) if self._session_config.workdir else None
 
         try:
-            proc = subprocess.run(
+            # 用 Popen + binary read（参见 hermes.py 注释：避免 Python 3.14 Windows
+            # 非 UTF-8 locale 下 subprocess.run reader thread 的 UnicodeDecodeError）
+            popen = subprocess.Popen(
                 args + ["--task", prompt],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._session_config.timeout,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 env=env,
                 cwd=cwd,
             )
+            try:
+                stdout_bytes = popen.stdout.read()
+                stderr_bytes = popen.stderr.read()
+                popen.wait(timeout=self._session_config.timeout)
+            finally:
+                try:
+                    popen.stdout.close()
+                    popen.stderr.close()
+                except Exception:
+                    pass
+            returncode = popen.returncode
+            stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
+            stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             latency = self._track_turn_end(start, TokenUsage())
             return TurnResponse(
@@ -110,10 +123,9 @@ class CodexBackend(AgentBackend):
 
         # 解析 JSON 输出
         try:
-            payload = json.loads(proc.stdout or "{}")
+            payload = json.loads(stdout or "{}")
         except json.JSONDecodeError:
-            # 降级：把 stdout 当作纯文本响应
-            payload = {"output": proc.stdout, "usage": {}}
+            payload = {"output": stdout, "usage": {}}
 
         usage = TokenUsage(
             input_tokens=payload.get("usage", {}).get("prompt_tokens", 0),
@@ -121,13 +133,13 @@ class CodexBackend(AgentBackend):
         )
         latency = self._track_turn_end(start, usage)
 
-        if proc.returncode != 0:
+        if returncode != 0:
             return TurnResponse(
                 content=payload.get("output", ""),
                 finish_reason="error",
                 usage=usage,
                 latency_seconds=latency,
-                error=f"codex exit {proc.returncode}: {(proc.stderr or '')[:300]}",
+                error=f"codex exit {returncode}: {stderr[:300]}",
             )
 
         return TurnResponse(

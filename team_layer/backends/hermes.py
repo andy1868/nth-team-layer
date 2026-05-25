@@ -119,31 +119,54 @@ class HermesBackend(AgentBackend):
         start = self._track_turn_start()
         cmd = self._resolve_cmd()
 
-        # 拼接 hermes 调用参数（batch / one-shot 模式）
-        full_args = list(cmd)
-        full_args += ["--non-interactive"]
-        if self.model:
-            full_args += ["--model", self.model]
-        if system_prompt:
-            full_args += ["--system", system_prompt]
-        if self._session_config.workdir:
-            full_args += ["--cwd", str(self._session_config.workdir)]
-        full_args += self.hermes_args
-        full_args += ["--prompt", prompt]
+        # Hermes CLI: `hermes chat -q QUERY -Q --ignore-user-config -m MODEL`
+        # - chat 子命令支持 single-query non-interactive 模式
+        # - -q / --query     单次查询
+        # - -Q / --quiet     编程友好（去 banner/spinner，只输出最终响应）
+        # - --ignore-user-config 不依赖用户 config.yaml（CI 友好）
+        # - -m / --model     模型
+        # - --max-turns N    限制 tool-calling iterations
+        # 注意：Hermes 没有独立的 --system 选项，system_prompt 拼到 query 前面
+        full_prompt = self._compose_prompt(system_prompt, prompt)
 
+        full_args = list(cmd) + ["chat", "-q", full_prompt, "-Q", "--ignore-user-config"]
+        if self.model:
+            full_args += ["-m", self.model]
+        # 用户传入的额外 args（例如 --provider / --skills / --max-turns）
+        full_args += self.hermes_args
+
+        cwd = str(self._session_config.workdir) if self._session_config.workdir else None
         env = {**os.environ, **self._session_config.env}
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
         try:
-            proc = subprocess.run(
+            # 用 Popen + 直接 read 而非 subprocess.run：
+            # Python 3.14 在 Windows 非 UTF-8 locale (如 CP936/GBK) 下，
+            # subprocess.run/communicate 内部启动的 _readerthread 即使我们传 binary
+            # 也会 unhandled UnicodeDecodeError 污染主进程 stderr。
+            # Popen + read() 是单线程的，完全规避此问题。
+            popen = subprocess.Popen(
                 full_args,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._session_config.timeout,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 env=env,
+                cwd=cwd,
             )
+            try:
+                stdout_bytes = popen.stdout.read()
+                stderr_bytes = popen.stderr.read()
+                popen.wait(timeout=self._session_config.timeout)
+            finally:
+                try:
+                    popen.stdout.close()
+                    popen.stderr.close()
+                except Exception:
+                    pass
+
+            returncode = popen.returncode
+            proc_stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
+            proc_stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             latency = self._track_turn_end(start, TokenUsage())
             return TurnResponse(
@@ -161,19 +184,37 @@ class HermesBackend(AgentBackend):
                 error=f"subprocess failed: {type(e).__name__}: {e}",
             )
 
-        # 解析输出
-        content = (proc.stdout or "").strip()
-        usage = self._extract_usage(proc.stdout, proc.stderr)
+        stdout = proc_stdout
+        stderr = proc_stderr
+
+        # 显式检测 Hermes 未配置（exit 0 但提示要 setup）
+        if self._looks_unconfigured(stdout, stderr):
+            latency = self._track_turn_end(start, TokenUsage())
+            return TurnResponse(
+                content=stdout.strip(),
+                finish_reason="error",
+                latency_seconds=latency,
+                error=(
+                    "Hermes is not configured. Run: hermes setup "
+                    "(or `hermes login` for OAuth providers, "
+                    "or set provider API keys via `hermes secrets`)"
+                ),
+            )
+
+        usage = self._extract_usage(stdout, stderr)
         latency = self._track_turn_end(start, usage)
 
-        if proc.returncode != 0:
+        if returncode != 0:
             return TurnResponse(
-                content=content,
+                content=stdout.strip(),
                 finish_reason="error",
                 usage=usage,
                 latency_seconds=latency,
-                error=f"hermes exit {proc.returncode}: {(proc.stderr or '')[:300]}",
+                error=f"hermes exit {returncode}: {stderr[:300] or stdout[:300]}",
             )
+
+        # Quiet 模式下 stdout 是最终响应（可能末尾有 session info 行）
+        content = self._extract_final_response(stdout)
 
         return TurnResponse(
             content=content,
@@ -182,6 +223,51 @@ class HermesBackend(AgentBackend):
             latency_seconds=latency,
             metadata={"backend": self.backend_id, "cmd": cmd},
         )
+
+    # ─── prompt 组装 ───
+
+    @staticmethod
+    def _compose_prompt(system_prompt: str, user_prompt: str) -> str:
+        """Hermes 没有独立 --system，所以把 system 拼在 user 前"""
+        if not system_prompt:
+            return user_prompt
+        return (
+            "<system-context>\n"
+            f"{system_prompt}\n"
+            "</system-context>\n\n"
+            f"{user_prompt}"
+        )
+
+    # ─── 输出解析 ───
+
+    @staticmethod
+    def _looks_unconfigured(stdout: str, stderr: str) -> bool:
+        """检测 Hermes 未配置的友好提示"""
+        markers = [
+            "isn't configured yet",
+            "no API keys or providers found",
+            "Run:  hermes setup",
+            "Run: hermes setup",
+        ]
+        combined = (stdout or "") + "\n" + (stderr or "")
+        return any(m in combined for m in markers)
+
+    @staticmethod
+    def _extract_final_response(stdout: str) -> str:
+        """
+        Quiet 模式下 stdout 包含 final response，可能末尾有 session info。
+        策略：去掉末尾以 'Session ID:' / 'Session:' 开头的行，其余原样返回。
+        """
+        if not stdout:
+            return ""
+        lines = stdout.rstrip().split("\n")
+        # 从后往前删 session 行
+        while lines and (
+            lines[-1].strip().startswith(("Session ID:", "Session:", "Tokens used:", "Cost:"))
+            or not lines[-1].strip()
+        ):
+            lines.pop()
+        return "\n".join(lines).strip()
 
     def end_session(self) -> SessionSummary:
         return self._build_summary()

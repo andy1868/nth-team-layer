@@ -119,18 +119,27 @@ class ClaudeCodeBackend(AgentBackend):
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
         try:
-            # prompt 通过 stdin 传入（避免命令行长度限制）
-            proc = subprocess.run(
+            # 用 Popen + binary read（参见 hermes.py 注释：避免 Python 3.14 Windows
+            # 非 UTF-8 locale 下 subprocess.run reader thread 的 UnicodeDecodeError）
+            popen = subprocess.Popen(
                 args,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=self._session_config.timeout,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=cwd,
                 env=env,
             )
+            try:
+                stdout_bytes, stderr_bytes = popen.communicate(
+                    input=prompt.encode("utf-8"),
+                    timeout=self._session_config.timeout,
+                )
+            finally:
+                # communicate 已经关闭了 PIPE，这里只是 defensive
+                pass
+            returncode = popen.returncode
+            stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
+            stderr = (stderr_bytes or b"").decode("utf-8", errors="replace")
         except subprocess.TimeoutExpired:
             latency = self._track_turn_end(start, TokenUsage())
             return TurnResponse(
@@ -150,7 +159,7 @@ class ClaudeCodeBackend(AgentBackend):
 
         # 解析 stream-json (NDJSON)
         content, usage, finish_reason, error = self._parse_stream_json(
-            proc.stdout, proc.stderr, proc.returncode
+            stdout, stderr, returncode
         )
         latency = self._track_turn_end(start, usage)
 
