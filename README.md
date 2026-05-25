@@ -257,6 +257,33 @@ session's skill; each agent's experience becomes the team's collective wisdom.
 
 ---
 
+## 📦 Releasing to PyPI
+
+Automated via GitHub Action `.github/workflows/publish.yml`. **One-time setup**:
+
+1. Register on https://pypi.org (and https://test.pypi.org for staging)
+2. In your PyPI account, go to **Publishing** → **Add a new pending publisher**:
+   - PyPI Project Name: `nth-team-layer`
+   - Owner: `AlexNthLab`
+   - Repository name: `nth-team-layer`
+   - Workflow name: `publish.yml`
+   - Environment name: `pypi` (for prod) / `testpypi` (for staging)
+3. In GitHub repo Settings → **Environments**, create two environments named `pypi` and `testpypi`. No secrets needed — OIDC handles auth.
+
+**Release a new version**:
+
+```bash
+# 1. Bump version in pyproject.toml
+# 2. Update CHANGELOG.md
+# 3. Tag and push:
+git tag v0.8.0
+git push origin v0.8.0
+```
+
+GitHub Action picks up the tag, builds wheel + sdist, verifies version matches tag, and publishes to PyPI via trusted publishing. Done.
+
+For staging (TestPyPI) try: **Actions → 📦 Publish to PyPI → Run workflow** → choose `testpypi`.
+
 ## 📜 License
 
 MIT — see [LICENSE](LICENSE).

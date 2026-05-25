@@ -1,0 +1,48 @@
+# MANIFEST.in — controls what goes into sdist (source distribution)
+#
+# wheel distribution is controlled by [tool.setuptools.packages] +
+# [tool.setuptools.package-data] in pyproject.toml.
+
+include LICENSE
+include README.md
+include CHANGELOG.md
+include pyproject.toml
+
+# Docs
+include IMPLEMENTATION_GUIDE.md
+recursive-include nth_team_layer *.md
+
+# Examples — keep, they're how users learn the API
+recursive-include examples *.py
+
+# Default skills/soul (so users have something to start with)
+include skills/TEAM-SOUL.md
+include skills/registry/example_skill.md
+
+# Tests (if any)
+recursive-include tests *.py
+
+# Exclude runtime artifacts
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store
+recursive-exclude memory *.json
+recursive-exclude sidechain *.jsonl
+recursive-exclude sidechain *.md
+recursive-exclude sidechain/pending_patches *
+recursive-exclude team_logs *.jsonl
+recursive-exclude team_agents *.json
+recursive-exclude missions *.json
+recursive-exclude blackboard *.jsonl
+
+# Exclude editor/build dirs
+global-exclude .vscode
+global-exclude .idea
+global-exclude *.egg-info
+prune build
+prune dist
+prune .git
+prune .pytest_cache
+prune .mypy_cache
+prune .ruff_cache

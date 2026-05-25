@@ -9,7 +9,8 @@ description = "Pluggable team-collaboration layer for any AI agent framework (He
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "AlexNthLab" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = [
     "agent", "multi-agent", "team", "ai", "claude", "hermes",
     "blackboard", "mission", "evolution", "self-improving", "anthropic",
@@ -17,7 +18,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    # License classifier removed — modern SPDX `license` field replaces it (PEP 639)
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -65,3 +66,10 @@ packages = [
     "team_layer.blackboard",
     "team_layer.backends",
 ]
+
+# Optional package data: include INTEGRATION_GUIDE inside nth_team_layer/
+[tool.setuptools.package-data]
+"nth_team_layer" = ["INTEGRATION_GUIDE.md", "*.toml"]
+
+[tool.setuptools.exclude-package-data]
+"*" = [".gitignore", ".gitkeep", "__pycache__/*", "*.pyc"]
