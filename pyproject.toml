@@ -43,6 +43,7 @@ anthropic = ["anthropic>=0.40.0"]
 openai = ["openai>=1.0.0"]
 google = ["google-generativeai>=0.3.0"]
 hermes = []  # via subprocess; install hermes-agent separately
+web = ["fastapi>=0.100", "uvicorn>=0.20"]  # web_dashboard.py
 
 [project.urls]
 Homepage = "https://github.com/AlexNthLab/nth-team-layer"
