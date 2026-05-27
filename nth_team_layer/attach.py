@@ -47,7 +47,7 @@ from team_layer.memory_providers import (
 
 from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
-from .membership import MembershipManager, JoinPolicy
+from .membership import MembershipManager
 
 
 @dataclass
@@ -199,6 +199,7 @@ def attach(
     missions_dir: str = "missions",
     compression_threshold: float = 0.75,
     start_heartbeat: bool = True,
+    join_token: str = "",
 ) -> TeamSession:
     """
     把当前进程加入 Nth Team Layer。
@@ -220,6 +221,7 @@ def attach(
 
     capabilities = capabilities or []
     groups = groups or []
+    membership = MembershipManager(workspace)
 
     # 1. backend 实例化
     backend_instance: Optional[AgentBackend] = None
@@ -230,6 +232,13 @@ def attach(
     elif isinstance(backend, str):
         backend_instance = default_registry.create(backend, **(backend_kwargs or {}))
         backend_id_str = backend
+
+    allowed, reason = membership.ensure_member(agent_id, token=join_token)
+    if not allowed:
+        raise PermissionError(
+            f"Agent '{agent_id}' cannot attach to this team: {reason}. "
+            "Submit a join request or ask a team admin for approval/invite."
+        )
 
     # 2. 4+1 个 Provider
     providers = [
@@ -277,9 +286,6 @@ def attach(
         agent_id=agent_id,
         capabilities=capabilities,
     )
-
-    # 8. Membership Manager
-    membership = MembershipManager(workspace)
 
     return TeamSession(
         agent_id=agent_id,

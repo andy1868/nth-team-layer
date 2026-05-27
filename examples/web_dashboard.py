@@ -52,7 +52,7 @@ from nth_team_layer.orchestration import MissionStore
 app = FastAPI(
     title="Nth Team Layer Dashboard",
     description="只读视图：查看团队状态、Mission 进度、Blackboard kanban",
-    version="0.8.0",
+    version="0.8.1",
 )
 
 # 全局 readers（不写）

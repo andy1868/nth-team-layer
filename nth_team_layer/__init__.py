@@ -27,7 +27,7 @@ Nth Team Layer — 可插拔的 Agent 团队协作层
 导入名: nth_team_layer
 """
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 __author__ = "Nth Team Agent Project"
 
 # ───────────────────────────────────────────────────────────────

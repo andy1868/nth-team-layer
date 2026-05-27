@@ -5,6 +5,19 @@ All notable changes to **nth-team-layer** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-05-27
+
+### Fixed
+- Made membership approval an actual `attach()` gate before heartbeat/discovery registration.
+- Added admin checks for approval, rejection, invites, member removal, admin changes, and policy changes.
+- Accepted string join policies such as `"approval"` in addition to `JoinPolicy` enum values.
+- Ensured open/token joins persist approved agents into `team.json` member state.
+- Cleaned the membership module encoding/comments and removed trailing whitespace issues.
+
+### Added
+- Added focused membership tests for approval blocking, admin approval, open joins, token joins, and string policy compatibility.
+- Added test path setup for `examples/` bot imports and cleanup for generated test `team.json`.
+
 ## [0.8.0] — 2026-05-25 (Initial extraction)
 
 First standalone release, extracted from `AlexNthLab/hermes-team-agent`
@@ -83,4 +96,5 @@ where it was developed in-tree as `team_layer/` + `nth_team_layer/`.
 - Backward compatibility: all original imports (`from team_layer import …`)
   still work; recommend new code use `import nth_team_layer as nth`.
 
+[0.8.1]: https://github.com/AlexNthLab/nth-team-layer/releases/tag/v0.8.1
 [0.8.0]: https://github.com/AlexNthLab/nth-team-layer/releases/tag/v0.8.0
