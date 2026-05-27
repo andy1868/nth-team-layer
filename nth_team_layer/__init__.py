@@ -97,6 +97,7 @@ from .attach import attach, TeamSession
 from .identity import AgentIdentity, AgentID, load_or_generate
 from .channel import TeamChannel, ChannelMessage, _dm_channel
 from .reputation import ReputationManager, ReputationEntry, ReputationScore
+from .gossip import GossipNode, PeerInfo
 
 __all__ = [
     # Facade（PR 1-7）
@@ -154,4 +155,7 @@ __all__ = [
     "ReputationManager",
     "ReputationEntry",
     "ReputationScore",
+    # Gossip (PR 12: P2P WebSocket 传输)
+    "GossipNode",
+    "PeerInfo",
 ]
