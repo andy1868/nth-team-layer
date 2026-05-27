@@ -94,6 +94,7 @@ from team_layer.backends import (
 from .discovery import AgentRegistry, AgentRecord, PeerFinder
 from .orchestration import Mission, MissionStep, MissionStore, MissionRunner, MissionStatus
 from .attach import attach, TeamSession
+from .identity import AgentIdentity, AgentID, load_or_generate
 
 __all__ = [
     # Facade（PR 1-7）
@@ -140,4 +141,8 @@ __all__ = [
     "MissionRunner",
     "attach",
     "TeamSession",
+    # Identity (PR 10: 密码学身份)
+    "AgentIdentity",
+    "AgentID",
+    "load_or_generate",
 ]
