@@ -5,8 +5,8 @@ attach() — 一键集成 API
 
     import nth_team_layer as nth
     team = nth.attach(
-        agent_id="my-agent",
-        backend="mock",                # 或传入已有 AgentBackend 实例
+        agent_id="my-agent",            # 或省略 → 自动生成 Ed25519 身份
+        backend="mock",                 # 或传入已有 AgentBackend 实例
         capabilities=["python", "web"],
         groups=["frontend"],
         workspace="./my-team-workspace",
@@ -17,12 +17,15 @@ attach() — 一键集成 API
     team.blackboard            # Blackboard
     team.runner                # MissionRunner
     team.finder                # PeerFinder
+    team.channel               # TeamChannel — Agent 间群聊/私聊
+    team.reputation            # ReputationManager — 声誉评分
+    team.marketplace           # TaskMarketplace — 任务交易
     team.discover()            # list_alive agents
     team.start_mission(...)
     team.detach()              # 注销心跳，结束会话
 
 设计：
-- attach() 完成所有子系统初始化（4 Provider + Blackboard + Discovery + Mission）
+- attach() 完成所有子系统初始化（13 个子系统）
 - TeamSession 是一个简洁的 facade，把各子系统组合成统一访问点
 - detach() 干净清理（心跳停止、ledger 刷盘等）
 """
@@ -47,6 +50,10 @@ from team_layer.memory_providers import (
 
 from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
+from .identity import AgentIdentity, AgentID, load_or_generate
+from .channel import TeamChannel
+from .reputation import ReputationManager
+from .marketplace import TaskMarketplace
 
 
 @dataclass
@@ -63,6 +70,10 @@ class TeamSession:
     finder: PeerFinder
     mission_store: MissionStore
     runner: MissionRunner
+    identity: Optional[AgentIdentity] = None
+    channel: Optional[TeamChannel] = None
+    reputation: Optional[ReputationManager] = None
+    marketplace: Optional[TaskMarketplace] = None
     backend: Optional[AgentBackend] = None
     capabilities: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
@@ -181,7 +192,8 @@ class TeamSession:
 # ───────────────────────────────────────────────────────────────
 
 def attach(
-    agent_id: str,
+    agent_id: Optional[str] = None,
+    identity: Optional[AgentIdentity] = None,
     backend: Union[str, AgentBackend, None] = None,
     backend_kwargs: Optional[Dict[str, Any]] = None,
     capabilities: Optional[List[str]] = None,
@@ -199,11 +211,13 @@ def attach(
     start_heartbeat: bool = True,
 ) -> TeamSession:
     """
-    把当前进程加入 Nth Team Layer。
+    把当前进程加入 Nth Team Layer，自动获得密码学身份、
+    消息通道、声誉系统、交易市场等全部去中心化 Agent 能力。
 
     Args:
-        agent_id: 唯一标识本 Agent（重启同 id 会覆盖心跳记录）
-        backend: 字符串（从 registry 创建）或 AgentBackend 实例，或 None（不绑定 backend）
+        agent_id: 唯一标识本 Agent。不传则自动生成 Ed25519 密钥对
+        identity: 显式传入的 AgentIdentity（优先级高于 agent_id）
+        backend: 字符串（从 registry 创建）或 AgentBackend 实例，或 None
         backend_kwargs: 当 backend 是字符串时传给 ctor 的参数
         capabilities: 能力标签（如 ["python", "web", "codegen"]）
         groups: 子团队（如 ["frontend", "ops"]）
@@ -211,13 +225,24 @@ def attach(
         其余路径参数：覆盖默认 Team Layer 子系统目录
 
     Returns:
-        TeamSession — 一个 facade 对象，可用 with 语法自动 detach
+        TeamSession — 统一 facade，可用 with 语法自动 detach
     """
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
 
     capabilities = capabilities or []
     groups = groups or []
+
+    # 0. 身份解析（优先级：显式 identity > agent_id 字符串 > 自动生成 Ed25519）
+    if identity is not None:
+        agent_identity = identity
+        resolved_agent_id = str(agent_identity.agent_id)
+    elif agent_id is not None:
+        agent_identity = AgentIdentity.from_string(agent_id)
+        resolved_agent_id = agent_id
+    else:
+        agent_identity = load_or_generate(workspace)
+        resolved_agent_id = str(agent_identity.agent_id)
 
     # 1. backend 实例化
     backend_instance: Optional[AgentBackend] = None
@@ -236,17 +261,17 @@ def attach(
         VectorProvider(str(workspace / vector_dir)),
         LedgerProvider(str(workspace / ledger_path)),
         BlackboardProvider(
-            agent_id=agent_id,
+            agent_id=resolved_agent_id,
             blackboard_root=str(workspace / blackboard_root),
             groups=groups,
         ),
     ]
 
     # 3. TeamMemoryManager + TeamAgent
-    mem = TeamMemoryManager(providers, session_id=f"{agent_id}_session")
-    mem.initialize({"agent_id": agent_id, "capabilities": capabilities})
+    mem = TeamMemoryManager(providers, session_id=f"{resolved_agent_id}_session")
+    mem.initialize({"agent_id": resolved_agent_id, "capabilities": capabilities})
     team_agent = TeamAgent(
-        agent_id=agent_id,
+        agent_id=resolved_agent_id,
         team_memory_manager=mem,
         compression_threshold=compression_threshold,
     )
@@ -257,7 +282,7 @@ def attach(
     # 5. Discovery — 注册自己 + 启动心跳
     registry = AgentRegistry(agents_dir=str(workspace / agents_dir))
     registry.register(
-        agent_id=agent_id,
+        agent_id=resolved_agent_id,
         backend_id=backend_id_str,
         capabilities=capabilities,
         groups=groups,
@@ -272,12 +297,35 @@ def attach(
     mission_store = MissionStore(str(workspace / missions_dir))
     runner = MissionRunner(
         store=mission_store,
-        agent_id=agent_id,
+        agent_id=resolved_agent_id,
         capabilities=capabilities,
     )
 
+    # 8. Channel — Agent 间消息通道（群聊/私聊/DM）
+    channel = TeamChannel(
+        workspace=workspace,
+        agent_id=resolved_agent_id,
+        identity=agent_identity if agent_identity.can_sign else None,
+    )
+
+    # 9. Reputation — 声誉系统（评分/信任网络）
+    reputation = ReputationManager(
+        workspace=workspace,
+        agent_id=resolved_agent_id,
+        identity=agent_identity if agent_identity.can_sign else None,
+    )
+
+    # 10. Marketplace — Agent 交易市场（任务发布/认领/结算）
+    marketplace = TaskMarketplace(
+        workspace=workspace,
+        agent_id=resolved_agent_id,
+        identity=agent_identity if agent_identity.can_sign else None,
+        channel=channel,
+        reputation=reputation,
+    )
+
     return TeamSession(
-        agent_id=agent_id,
+        agent_id=resolved_agent_id,
         backend_id=backend_id_str,
         workspace=workspace,
         agent=team_agent,
@@ -287,6 +335,10 @@ def attach(
         finder=finder,
         mission_store=mission_store,
         runner=runner,
+        identity=agent_identity,
+        channel=channel,
+        reputation=reputation,
+        marketplace=marketplace,
         backend=backend_instance,
         capabilities=capabilities,
         groups=groups,

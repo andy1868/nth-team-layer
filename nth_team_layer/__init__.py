@@ -98,6 +98,7 @@ from .identity import AgentIdentity, AgentID, load_or_generate
 from .channel import TeamChannel, ChannelMessage, _dm_channel
 from .reputation import ReputationManager, ReputationEntry, ReputationScore
 from .gossip import GossipNode, PeerInfo
+from .marketplace import TaskMarketplace, TaskOrder, OrderStatus
 
 __all__ = [
     # Facade（PR 1-7）
@@ -158,4 +159,8 @@ __all__ = [
     # Gossip (PR 12: P2P WebSocket 传输)
     "GossipNode",
     "PeerInfo",
+    # Marketplace (PR 14: Agent 交易市场)
+    "TaskMarketplace",
+    "TaskOrder",
+    "OrderStatus",
 ]
