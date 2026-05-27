@@ -47,6 +47,7 @@ from team_layer.memory_providers import (
 
 from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
+from .membership import MembershipManager, JoinPolicy
 
 
 @dataclass
@@ -63,6 +64,7 @@ class TeamSession:
     finder: PeerFinder
     mission_store: MissionStore
     runner: MissionRunner
+    membership: MembershipManager
     backend: Optional[AgentBackend] = None
     capabilities: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
@@ -276,6 +278,9 @@ def attach(
         capabilities=capabilities,
     )
 
+    # 8. Membership Manager
+    membership = MembershipManager(workspace)
+
     return TeamSession(
         agent_id=agent_id,
         backend_id=backend_id_str,
@@ -287,6 +292,7 @@ def attach(
         finder=finder,
         mission_store=mission_store,
         runner=runner,
+        membership=membership,
         backend=backend_instance,
         capabilities=capabilities,
         groups=groups,

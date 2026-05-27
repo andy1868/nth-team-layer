@@ -93,6 +93,13 @@ from team_layer.backends import (
 
 from .discovery import AgentRegistry, AgentRecord, PeerFinder
 from .orchestration import Mission, MissionStep, MissionStore, MissionRunner, MissionStatus
+from .membership import (
+    JoinPolicy,
+    RequestStatus,
+    JoinRequest,
+    TeamConfig,
+    MembershipManager,
+)
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -140,4 +147,10 @@ __all__ = [
     "MissionRunner",
     "attach",
     "TeamSession",
+    # Membership（PR 9: 申请/审批加入）
+    "JoinPolicy",
+    "RequestStatus",
+    "JoinRequest",
+    "TeamConfig",
+    "MembershipManager",
 ]
