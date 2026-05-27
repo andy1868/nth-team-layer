@@ -95,6 +95,7 @@ from .discovery import AgentRegistry, AgentRecord, PeerFinder
 from .orchestration import Mission, MissionStep, MissionStore, MissionRunner, MissionStatus
 from .attach import attach, TeamSession
 from .identity import AgentIdentity, AgentID, load_or_generate
+from .channel import TeamChannel, ChannelMessage, _dm_channel
 
 __all__ = [
     # Facade（PR 1-7）
@@ -145,4 +146,7 @@ __all__ = [
     "AgentIdentity",
     "AgentID",
     "load_or_generate",
+    # Channel (PR 11: Agent 消息通道)
+    "TeamChannel",
+    "ChannelMessage",
 ]
