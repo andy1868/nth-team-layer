@@ -96,6 +96,7 @@ from .orchestration import Mission, MissionStep, MissionStore, MissionRunner, Mi
 from .attach import attach, TeamSession
 from .identity import AgentIdentity, AgentID, load_or_generate
 from .channel import TeamChannel, ChannelMessage, _dm_channel
+from .reputation import ReputationManager, ReputationEntry, ReputationScore
 
 __all__ = [
     # Facade（PR 1-7）
@@ -149,4 +150,8 @@ __all__ = [
     # Channel (PR 11: Agent 消息通道)
     "TeamChannel",
     "ChannelMessage",
+    # Reputation (PR 13: 声誉系统)
+    "ReputationManager",
+    "ReputationEntry",
+    "ReputationScore",
 ]
