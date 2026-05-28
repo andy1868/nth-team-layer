@@ -44,6 +44,14 @@ team_logs/*.jsonl
 blackboard/private_*.jsonl
 team_agents/*.json
 missions/*.json
+team.json
+team_audit/
+team_channels/
+team_tasks/
+team_announcements/
+team_trust/
+team_messages/
+group_chat_server*.log
 
 # Auto-generated EvoLoop skills (uncomment to commit them as team knowledge)
 # skills/registry/fix_*.md
