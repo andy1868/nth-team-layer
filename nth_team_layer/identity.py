@@ -1,5 +1,5 @@
 """
-Agent identity primitives for Nth Team Layer.
+Agent identity primitives for NTH DAO.
 
 The identity layer gives an agent a stable local profile and, when PyNaCl is
 installed, an Ed25519 keypair for signing future agent-to-agent messages. The
@@ -45,7 +45,7 @@ def _require_crypto(feature: str) -> None:
     if not _NACL_AVAILABLE:
         raise ImportError(
             f"{feature} requires PyNaCl. Install with "
-            "'pip install nth-team-layer[crypto]' or 'pip install pynacl>=1.5'."
+            "'pip install nth-dao[crypto]' or 'pip install pynacl>=1.5'."
         )
 
 

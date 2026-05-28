@@ -13,6 +13,7 @@ include pyproject.toml
 # Docs
 include IMPLEMENTATION_GUIDE.md
 recursive-include nth_team_layer *.md
+recursive-include nth_dao *.py
 
 # Examples — keep, they're how users learn the API
 recursive-include examples *.py

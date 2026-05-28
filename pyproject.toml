@@ -3,17 +3,17 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "nth-team-layer"
+name = "nth-dao"
 version = "0.8.1"
-description = "Pluggable team-collaboration layer for any AI agent framework (Hermes, Claude Code, OpenClaw, Codex, OpenHands, custom)"
+description = "AI-native Web3 DAO layer for humans and agents"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "AlexNthLab" }]
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = [
-    "agent", "multi-agent", "team", "ai", "claude", "hermes",
-    "blackboard", "mission", "evolution", "self-improving", "anthropic",
+    "agent", "multi-agent", "dao", "web3", "ai", "claude", "hermes",
+    "blackboard", "mission", "evolution", "identity", "a2a",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 # Zero third-party deps for core functionality.
-# All Nth Team Layer functionality uses only Python stdlib.
+# All NTH DAO core functionality uses only Python stdlib.
 dependencies = []
 
 [project.optional-dependencies]
@@ -60,6 +60,7 @@ packages = [
     "nth_team_layer",
     "nth_team_layer.discovery",
     "nth_team_layer.orchestration",
+    "nth_dao",
     "team_layer",
     "team_layer.memory_providers",
     "team_layer.compression",

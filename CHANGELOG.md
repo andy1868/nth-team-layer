@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to **nth-team-layer** will be documented in this file.
+All notable changes to **NTH DAO** will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Renamed the project direction to **NTH DAO** and added the forward `nth_dao` import path while keeping `nth_team_layer` compatible.
 - Added `AgentIdentity` / `AgentID` identity primitives with optional Ed25519 signing via the `crypto` extra.
 - Added `attach(..., identity=...)` support and discovery metadata export without bypassing membership approval.
 - Added identity tests for persistence, attach metadata, and membership-gated identity use.

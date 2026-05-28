@@ -2,27 +2,27 @@
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
-# Note: This pyproject.toml ships inside nth_team_layer/ for future
-# extraction into a standalone PyPI package.
+# Note: This pyproject.toml ships inside nth_team_layer/ for historical
+# extraction notes. The forward package name is now nth-dao.
 #
 # Currently nth_team_layer lives alongside team_layer/ within the
 # Hermes fork. To extract:
-#   1. mkdir nth-team-layer-repo && cd nth-team-layer-repo
+#   1. mkdir nth-dao-repo && cd nth-dao-repo
 #   2. cp -r ../hermes-team-agent/team_layer ../hermes-team-agent/nth_team_layer ./
 #   3. mv nth_team_layer/pyproject.toml ./pyproject.toml
-#   4. git init && git add . && git commit -m "extract nth-team-layer"
+#   4. git init && git add . && git commit -m "extract nth-dao"
 #   5. pip install -e . (test)
 #   6. twine upload dist/* (PyPI release)
 
 [project]
-name = "nth-team-layer"
+name = "nth-dao"
 version = "0.8.1"
-description = "Pluggable team-collaboration layer for any AI agent framework"
+description = "AI-native Web3 DAO layer for humans and agents"
 readme = "../README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Nth Team Agent Project" }]
+authors = [{ name = "NTH DAO Project" }]
 license = { text = "MIT" }
-keywords = ["agent", "multi-agent", "team", "ai", "claude", "hermes", "blackboard", "mission"]
+keywords = ["agent", "multi-agent", "dao", "web3", "ai", "blackboard", "mission"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -35,7 +35,7 @@ classifiers = [
 ]
 
 # Zero third-party deps for core functionality.
-# All Team Layer functionality uses only Python stdlib.
+# All NTH DAO core functionality uses only Python stdlib.
 dependencies = []
 
 [project.optional-dependencies]
@@ -46,11 +46,11 @@ retries = ["tenacity>=8.0"]    # better retry primitives in generated skills
 crypto = ["pynacl>=1.5"]       # optional Ed25519 agent identity/signing
 
 [project.urls]
-Homepage = "https://github.com/AlexNthLab/hermes-team-agent"
-Source = "https://github.com/AlexNthLab/hermes-team-agent/tree/team-layer-v1"
+Homepage = "https://github.com/AlexNthLab/nth-team-layer"
+Source = "https://github.com/AlexNthLab/nth-team-layer"
 
 [project.scripts]
 nth-blackboard = "team_layer.blackboard.cli:main"
 
 [tool.setuptools]
-packages = ["nth_team_layer", "team_layer"]
+packages = ["nth_dao", "nth_team_layer", "team_layer"]

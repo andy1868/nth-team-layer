@@ -1,4 +1,4 @@
-"""Local group chat server for Nth Team Layer.
+"""Local group chat server for NTH DAO.
 
 Run:
     python examples/group_chat_server.py
@@ -56,7 +56,7 @@ class TaskIn(BaseModel):
 def bootstrap() -> None:
     config = MEMBERSHIP.load_config()
     if not config.admin_ids and not config.member_ids:
-        MEMBERSHIP.init_team(team_name="Nth Team", policy="open", admin_ids=["admin"])
+        MEMBERSHIP.init_team(team_name="NTH DAO", policy="open", admin_ids=["admin"])
     elif not config.admin_ids:
         if "admin" not in config.member_ids:
             config.member_ids.append("admin")
@@ -92,7 +92,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Nth Team Group Chat", version=nth.__version__, lifespan=lifespan)
+app = FastAPI(title="NTH DAO Group Chat", version=nth.__version__, lifespan=lifespan)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -171,7 +171,7 @@ INDEX_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Nth Team Chat</title>
+<title>NTH DAO Chat</title>
 <style>
 :root{--bg:#f7f8fb;--line:#d9dee7;--ink:#20242c;--muted:#667085;--panel:#fff;--accent:#2563eb;--soft:#e8f0ff;--good:#0f766e;--warn:#b45309}
 *{box-sizing:border-box} body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);background:var(--bg)}
@@ -191,7 +191,7 @@ button{padding:8px 12px;background:var(--accent);border-color:var(--accent);colo
 </head>
 <body>
 <header>
-  <h1>Nth Team Chat</h1>
+  <h1>NTH DAO Chat</h1>
   <input id="agent" value="admin" style="max-width:220px" />
   <span id="role" class="role"></span>
   <button class="secondary" onclick="refresh()">Refresh</button>
@@ -255,7 +255,7 @@ refresh(); setInterval(refresh,3000);
 def main() -> None:
     host = os.environ.get("NTH_CHAT_HOST", "127.0.0.1")
     port = int(os.environ.get("NTH_CHAT_PORT", "8765"))
-    print(f"Nth Team group chat: http://{host}:{port}")
+    print(f"NTH DAO group chat: http://{host}:{port}")
     print(f"workspace: {WORKSPACE}")
     uvicorn.run(app, host=host, port=port, log_level="info")
 

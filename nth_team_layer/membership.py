@@ -1,5 +1,5 @@
 """
-Membership management for Nth Team Layer.
+Membership management for NTH DAO.
 
 This module owns join policy, team membership, join requests, and admin-gated
 approval actions. It is intentionally filesystem-backed to match the rest of

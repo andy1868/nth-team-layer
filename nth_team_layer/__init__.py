@@ -28,7 +28,7 @@ Nth Team Layer — 可插拔的 Agent 团队协作层
 """
 
 __version__ = "0.8.1"
-__author__ = "Nth Team Agent Project"
+__author__ = "NTH DAO Project"
 
 # ───────────────────────────────────────────────────────────────
 # Facade：重新导出 team_layer 的全部公共 API
