@@ -5,7 +5,7 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.9.0] - 2026-05-28
 
 ### Added
 - Completed the hard rename to **NTH DAO** / `nth_dao` and removed the old public package name.
@@ -108,5 +108,6 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 
+[0.9.0]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.0
 [0.8.1]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.8.1
 [0.8.0]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.8.0
