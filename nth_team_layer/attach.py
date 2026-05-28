@@ -48,6 +48,7 @@ from team_layer.memory_providers import (
 from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
 from .membership import MembershipManager
+from .identity import AgentIdentity
 
 
 @dataclass
@@ -65,6 +66,7 @@ class TeamSession:
     mission_store: MissionStore
     runner: MissionRunner
     membership: MembershipManager
+    identity: Optional[AgentIdentity] = None
     backend: Optional[AgentBackend] = None
     capabilities: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
@@ -200,6 +202,7 @@ def attach(
     compression_threshold: float = 0.75,
     start_heartbeat: bool = True,
     join_token: str = "",
+    identity: Optional[AgentIdentity] = None,
 ) -> TeamSession:
     """
     把当前进程加入 Nth Team Layer。
@@ -222,6 +225,7 @@ def attach(
     capabilities = capabilities or []
     groups = groups or []
     membership = MembershipManager(workspace)
+    agent_identity = identity or AgentIdentity.from_string(agent_id, label=agent_id)
 
     # 1. backend 实例化
     backend_instance: Optional[AgentBackend] = None
@@ -267,12 +271,15 @@ def attach(
 
     # 5. Discovery — 注册自己 + 启动心跳
     registry = AgentRegistry(agents_dir=str(workspace / agents_dir))
+    registry_metadata = dict(metadata or {})
+    registry_metadata.setdefault("identity", agent_identity.public_dict())
+
     registry.register(
         agent_id=agent_id,
         backend_id=backend_id_str,
         capabilities=capabilities,
         groups=groups,
-        metadata=metadata or {},
+        metadata=registry_metadata,
         start_heartbeat=start_heartbeat,
     )
 
@@ -299,6 +306,7 @@ def attach(
         mission_store=mission_store,
         runner=runner,
         membership=membership,
+        identity=agent_identity,
         backend=backend_instance,
         capabilities=capabilities,
         groups=groups,

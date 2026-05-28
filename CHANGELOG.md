@@ -5,6 +5,13 @@ All notable changes to **nth-team-layer** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Added `AgentIdentity` / `AgentID` identity primitives with optional Ed25519 signing via the `crypto` extra.
+- Added `attach(..., identity=...)` support and discovery metadata export without bypassing membership approval.
+- Added identity tests for persistence, attach metadata, and membership-gated identity use.
+
 ## [0.8.1] - 2026-05-27
 
 ### Fixed

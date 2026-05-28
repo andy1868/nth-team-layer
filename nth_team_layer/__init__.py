@@ -100,6 +100,13 @@ from .membership import (
     TeamConfig,
     MembershipManager,
 )
+from .identity import (
+    AgentID,
+    AgentIdentity,
+    crypto_available,
+    default_identity_path,
+    load_or_generate,
+)
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -153,4 +160,10 @@ __all__ = [
     "JoinRequest",
     "TeamConfig",
     "MembershipManager",
+    # Identity: stable agent profile + optional Ed25519 signing
+    "AgentID",
+    "AgentIdentity",
+    "crypto_available",
+    "default_identity_path",
+    "load_or_generate",
 ]
