@@ -120,6 +120,14 @@ from .identity import (
     default_identity_path,
     load_or_generate,
 )
+# A2A modules (originally proposed by @andy1868 in PR #3–#6, cherry-picked
+# against current main; identity.py kept as the existing membership-gated
+# version, these 4 new modules use the same AgentIdentity API and add zero
+# third-party deps — all stdlib).
+from .channel import ChannelMessage, TeamChannel
+from .reputation import ReputationEntry, ReputationScore, ReputationManager
+from .gossip import PeerInfo, GossipNode
+from .marketplace import OrderStatus, TaskOrder, TaskMarketplace
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -191,4 +199,15 @@ __all__ = [
     "crypto_available",
     "default_identity_path",
     "load_or_generate",
+    # A2A modules cherry-picked from @andy1868 PR #3–#6 (stdlib only)
+    "ChannelMessage",   # PR #3 signed A2A messaging
+    "TeamChannel",
+    "ReputationEntry",  # PR #4 subjective reputation
+    "ReputationScore",
+    "ReputationManager",
+    "PeerInfo",         # PR #5 P2P gossip
+    "GossipNode",
+    "OrderStatus",      # PR #6 task marketplace
+    "TaskOrder",
+    "TaskMarketplace",
 ]
