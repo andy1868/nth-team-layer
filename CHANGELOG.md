@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added `AgentIdentity` / `AgentID` identity primitives with optional Ed25519 signing via the `crypto` extra.
 - Added `attach(..., identity=...)` support and discovery metadata export without bypassing membership approval.
 - Added identity tests for persistence, attach metadata, and membership-gated identity use.
+- Added `VISION.md` and `CONTRIBUTING.md` to document the decentralized Agent-to-Agent identity/group direction and review bar.
+- Added basic `TeamRole` role/permission hints for owner, admin, and member flows.
 
 ## [0.8.1] - 2026-05-27
 

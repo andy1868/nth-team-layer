@@ -1,7 +1,7 @@
 import pytest
 
 import nth_team_layer as nth
-from nth_team_layer.membership import JoinPolicy, RequestStatus
+from nth_team_layer.membership import JoinPolicy, RequestStatus, TeamRole
 
 
 def test_init_team_accepts_string_policy_and_admins_are_members(tmp_path):
@@ -12,6 +12,33 @@ def test_init_team_accepts_string_policy_and_admins_are_members(tmp_path):
     assert config.join_policy == JoinPolicy.APPROVAL
     assert config.admin_ids == ["admin"]
     assert config.member_ids == ["admin"]
+    assert config.role_for("admin") == TeamRole.OWNER
+
+
+def test_roles_and_permissions_are_admin_gated(tmp_path):
+    team = nth.MembershipManager(tmp_path)
+    team.init_team(policy="open", admin_ids=["admin"])
+    team.ensure_member("member")
+
+    assert team.role_for("stranger") == TeamRole.GUEST
+    assert team.has_permission("stranger", "send_messages") is False
+    assert team.role_for("member") == TeamRole.MEMBER
+    assert team.has_permission("member", "send_messages") is True
+    assert team.has_permission("member", "approve_members") is False
+
+    with pytest.raises(PermissionError):
+        team.set_role("member", "admin", actor_id="member")
+
+    config = team.set_role("member", "admin", actor_id="admin")
+    assert config.role_for("member") == TeamRole.ADMIN
+    assert config.has_permission("member", "approve_members") is True
+
+    team.ensure_member("second")
+    with pytest.raises(PermissionError, match="owner role required"):
+        team.set_role("second", "owner", actor_id="member")
+
+    config = team.set_role("second", TeamRole.OWNER, actor_id="admin")
+    assert config.role_for("second") == TeamRole.OWNER
 
 
 def test_approval_policy_blocks_unapproved_attach(tmp_path):

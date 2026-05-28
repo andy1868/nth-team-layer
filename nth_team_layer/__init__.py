@@ -98,6 +98,7 @@ from .membership import (
     RequestStatus,
     JoinRequest,
     TeamConfig,
+    TeamRole,
     MembershipManager,
 )
 from .identity import (
@@ -159,6 +160,7 @@ __all__ = [
     "RequestStatus",
     "JoinRequest",
     "TeamConfig",
+    "TeamRole",
     "MembershipManager",
     # Identity: stable agent profile + optional Ed25519 signing
     "AgentID",

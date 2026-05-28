@@ -3,6 +3,10 @@
 > **Pluggable team-collaboration layer for any AI agent framework**
 > Hermes • Claude Code • OpenClaw • Codex • OpenHands • your custom agent
 
+`nth_team_layer` is evolving into the identity and group layer for a
+decentralized Agent-to-Agent collaboration network. See [VISION.md](VISION.md)
+and [CONTRIBUTING.md](CONTRIBUTING.md) for the roadmap and merge criteria.
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)

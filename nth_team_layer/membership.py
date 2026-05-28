@@ -36,6 +36,34 @@ class RequestStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class TeamRole(str, Enum):
+    OWNER = "owner"
+    ADMIN = "admin"
+    MEMBER = "member"
+    GUEST = "guest"
+
+
+ROLE_PERMISSIONS: Dict[TeamRole, set[str]] = {
+    TeamRole.OWNER: {
+        "manage_team",
+        "manage_admins",
+        "manage_members",
+        "approve_members",
+        "post_announcements",
+    },
+    TeamRole.ADMIN: {
+        "manage_members",
+        "approve_members",
+        "post_announcements",
+    },
+    TeamRole.MEMBER: {
+        "read_messages",
+        "send_messages",
+    },
+    TeamRole.GUEST: set(),
+}
+
+
 @dataclass
 class TeamConfig:
     """Global team membership configuration."""
@@ -46,6 +74,7 @@ class TeamConfig:
     join_token: str = ""
     admin_ids: List[str] = field(default_factory=list)
     member_ids: List[str] = field(default_factory=list)
+    roles: Dict[str, str] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -63,6 +92,7 @@ class TeamConfig:
             join_token=data.get("join_token", ""),
             admin_ids=list(data.get("admin_ids", [])),
             member_ids=list(data.get("member_ids", [])),
+            roles=dict(data.get("roles", {})),
             created_at=data.get("created_at", datetime.now().isoformat()),
             metadata=data.get("metadata", {}),
         )
@@ -72,6 +102,23 @@ class TeamConfig:
 
     def is_member(self, agent_id: str) -> bool:
         return agent_id in self.member_ids
+
+    def role_for(self, agent_id: str) -> TeamRole:
+        raw = self.roles.get(agent_id)
+        if raw:
+            try:
+                return TeamRole(raw)
+            except ValueError:
+                pass
+        if agent_id in self.admin_ids:
+            return TeamRole.ADMIN
+        if agent_id in self.member_ids:
+            return TeamRole.MEMBER
+        return TeamRole.GUEST
+
+    def has_permission(self, agent_id: str, permission: str) -> bool:
+        role = self.role_for(agent_id)
+        return permission in ROLE_PERMISSIONS.get(role, set())
 
 
 @dataclass
@@ -181,11 +228,15 @@ class MembershipManager:
         config.join_policy = self.normalize_policy(policy)
         config.join_token = join_token
 
+        had_admin = bool(config.admin_ids)
         for admin_id in admin_ids or []:
             if admin_id not in config.admin_ids:
                 config.admin_ids.append(admin_id)
             if admin_id not in config.member_ids:
                 config.member_ids.append(admin_id)
+            default_role = TeamRole.ADMIN.value if had_admin else TeamRole.OWNER.value
+            config.roles.setdefault(admin_id, default_role)
+            had_admin = True
 
         if metadata:
             config.metadata.update(metadata)
@@ -214,6 +265,7 @@ class MembershipManager:
             config.admin_ids.append(agent_id)
         if agent_id not in config.member_ids:
             config.member_ids.append(agent_id)
+        config.roles[agent_id] = TeamRole.ADMIN.value
         self.save_config(config)
         return config
 
@@ -222,8 +274,41 @@ class MembershipManager:
         self._require_admin(config, actor_id)
         if agent_id in config.admin_ids:
             config.admin_ids.remove(agent_id)
+        if config.roles.get(agent_id) == TeamRole.ADMIN.value:
+            config.roles[agent_id] = TeamRole.MEMBER.value
         self.save_config(config)
         return config
+
+    def set_role(
+        self,
+        agent_id: str,
+        role: Union[TeamRole, str],
+        actor_id: str = "",
+    ) -> TeamConfig:
+        config = self.load_config()
+        self._require_admin(config, actor_id)
+        normalized_role = self._normalize_role(role)
+        role_value = normalized_role.value
+
+        if agent_id not in config.member_ids:
+            raise ValueError(f"Agent '{agent_id}' is not a team member")
+        if normalized_role == TeamRole.OWNER and config.role_for(actor_id) != TeamRole.OWNER:
+            raise PermissionError("owner role required")
+        if role_value in {TeamRole.OWNER.value, TeamRole.ADMIN.value}:
+            if agent_id not in config.admin_ids:
+                config.admin_ids.append(agent_id)
+        elif agent_id in config.admin_ids:
+            config.admin_ids.remove(agent_id)
+
+        config.roles[agent_id] = role_value
+        self.save_config(config)
+        return config
+
+    def role_for(self, agent_id: str) -> TeamRole:
+        return self.load_config().role_for(agent_id)
+
+    def has_permission(self, agent_id: str, permission: str) -> bool:
+        return self.load_config().has_permission(agent_id, permission)
 
     def can_join(self, agent_id: str, token: str = "") -> tuple[bool, str]:
         config = self.load_config()
@@ -260,7 +345,8 @@ class MembershipManager:
         config = self.load_config()
         if agent_id not in config.member_ids:
             config.member_ids.append(agent_id)
-            self.save_config(config)
+        config.roles.setdefault(agent_id, TeamRole.MEMBER.value)
+        self.save_config(config)
         return True, reason
 
     def request_join(
@@ -377,6 +463,7 @@ class MembershipManager:
 
         if agent_id not in config.member_ids:
             config.member_ids.append(agent_id)
+        config.roles.setdefault(agent_id, TeamRole.MEMBER.value)
         self.save_config(config)
 
         return req
@@ -437,6 +524,7 @@ class MembershipManager:
 
         if agent_id not in config.member_ids:
             config.member_ids.append(agent_id)
+        config.roles.setdefault(agent_id, TeamRole.MEMBER.value)
         self.save_config(config)
 
         return req
@@ -448,6 +536,7 @@ class MembershipManager:
             config.member_ids.remove(agent_id)
         if agent_id in config.admin_ids:
             config.admin_ids.remove(agent_id)
+        config.roles.pop(agent_id, None)
         self.save_config(config)
 
     def _request_path_for(self, agent_id: str) -> Path:
@@ -479,6 +568,16 @@ class MembershipManager:
         if actor_id not in config.admin_ids:
             raise PermissionError(f"Agent '{actor_id}' is not a team admin")
 
+    @staticmethod
+    def _normalize_role(role: Union[TeamRole, str]) -> TeamRole:
+        if isinstance(role, TeamRole):
+            return role
+        try:
+            return TeamRole(str(role))
+        except ValueError as exc:
+            valid = ", ".join(r.value for r in TeamRole)
+            raise ValueError(f"Unknown team role '{role}'. Expected one of: {valid}") from exc
+
     def dashboard(self) -> str:
         config = self.load_config()
         pending = self.list_pending()
@@ -488,6 +587,7 @@ class MembershipManager:
             f"  Team: {config.team_name} ({config.team_id})",
             f"  Policy: {config.join_policy.value}",
             f"  Admins: {', '.join(config.admin_ids) or '(none)'}",
+            f"  Roles: {len(config.roles)} assigned",
             f"  Members ({len(config.member_ids)}): {', '.join(config.member_ids[:10])}"
             + ("..." if len(config.member_ids) > 10 else ""),
             "=" * 50,
