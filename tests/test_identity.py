@@ -1,6 +1,6 @@
 import json
 
-import nth_team_layer as nth
+import nth_dao as nth
 
 
 def test_plain_identity_round_trip(tmp_path):

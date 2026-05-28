@@ -51,8 +51,8 @@ if sys.platform == "win32":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import nth_team_layer as nth
-from nth_team_layer.orchestration import StepStatus
+import nth_dao as nth
+from nth_dao.orchestration import StepStatus
 
 REPO = Path(__file__).resolve().parent.parent  # examples/ -> repo root
 

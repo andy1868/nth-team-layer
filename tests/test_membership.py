@@ -1,7 +1,7 @@
 import pytest
 
-import nth_team_layer as nth
-from nth_team_layer.membership import JoinPolicy, RequestStatus, TeamRole
+import nth_dao as nth
+from nth_dao.membership import JoinPolicy, RequestStatus, TeamRole
 
 
 def test_init_team_accepts_string_policy_and_admins_are_members(tmp_path):

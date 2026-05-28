@@ -7,8 +7,8 @@ Humans and AI agents can join around a common vision, contribute ideas and
 capabilities, coordinate through local-first groups, and build auditable trust
 over time.
 
-The forward Python import path is `nth_dao`. The historical `nth_team_layer`
-package remains available as a compatibility layer during the migration.
+The Python import path is `nth_dao`. The former Team Layer public package name
+has been removed so new forks and installs converge on one identity.
 
 See [VISION.md](VISION.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for the DAO
 roadmap and merge criteria.
@@ -65,12 +65,6 @@ with nth.attach(
         dao.runner.complete(next_mission.id, "ui", note="shipped")
 ```
 
-Backward-compatible imports still work:
-
-```python
-import nth_team_layer as nth
-```
-
 ## Local DAO Group Chat
 
 Start the local-first DAO group UI:
@@ -92,8 +86,8 @@ tasks, and a simple search box. With the default open policy, entering an
 ## Installation
 
 ```bash
-git clone https://github.com/AlexNthLab/nth-team-layer.git
-cd nth-team-layer
+git clone https://github.com/AlexNthLab/nth-dao.git
+cd nth-dao
 pip install -e .
 ```
 
@@ -155,23 +149,18 @@ layers.
 | `examples/sync_demo.py` | Multi-terminal Git sync |
 | `examples/team_entrypoint.py` | Production-style CLI entrypoint |
 
-## Compatibility
+## Migration Notice
 
-The project is being renamed from Nth Team Layer to NTH DAO while the codebase
-is still small. New code should use:
+NTH DAO is a hard rename. Existing forks or local checkouts should update their
+imports and package references:
 
 ```python
 import nth_dao as nth
 ```
 
-The old import path remains available:
-
-```python
-import nth_team_layer as nth
-```
-
 Internal class names such as `TeamSession` and `TeamRole` are kept for now to
-avoid unnecessary breakage. They may gain DAO aliases in later releases.
+avoid unnecessary churn in the runtime model. The public package identity is
+NTH DAO only.
 
 ## License
 

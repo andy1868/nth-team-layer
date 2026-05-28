@@ -1,9 +1,9 @@
-# Nth Team Layer — 集成指南
+# NTH DAO — 集成指南
 
-任何 Agent 框架都可以通过 **3 行代码** 加入 Nth Team Layer。
+任何 Agent 框架都可以通过 **3 行代码** 加入 NTH DAO。
 
 ```python
-import nth_team_layer as nth
+import nth_dao as nth
 
 team = nth.attach(agent_id="my-agent", backend="mock", capabilities=["python"])
 # ... 你的 Agent 主循环 ...
@@ -35,7 +35,7 @@ git checkout team-layer-v1
 
 ```python
 # my_hermes_agent.py
-import nth_team_layer as nth
+import nth_dao as nth
 from hermes.agent import Agent  # 你的 Hermes Agent
 
 # Step 1: attach
@@ -60,7 +60,7 @@ team.detach()
 ### 3. 集成示例 — Claude Code
 
 ```python
-import nth_team_layer as nth
+import nth_dao as nth
 import subprocess
 
 with nth.attach(
@@ -81,7 +81,7 @@ with nth.attach(
 ### 4. 集成示例 — 任何自定义 LLM
 
 ```python
-import nth_team_layer as nth
+import nth_dao as nth
 from openai import OpenAI
 
 with nth.attach(agent_id="carol-openai", backend=None, capabilities=["chat"]) as team:

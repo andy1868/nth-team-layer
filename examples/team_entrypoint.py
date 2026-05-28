@@ -1,5 +1,5 @@
 """
-team_entrypoint.py — Nth Team Agent 统一启动入口（PR 1-5 集成）
+team_entrypoint.py — NTH DAO Agent 统一启动入口（PR 1-5 集成）
 
 集成链路：
     [启动钩子]
@@ -285,7 +285,7 @@ def run_agent_loop(agent: TeamAgent, goal: str, max_iterations: int, cfg: SyncCo
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Nth Team Agent — Hermes Team Layer 统一入口",
+        description="NTH DAO Agent — Hermes Team Layer 统一入口",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 集成 PR 1-5 完整链路：

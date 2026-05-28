@@ -9,7 +9,7 @@ Gossip — 轻量级 P2P 传输层（WebSocket gossip 协议）
 
 设计：
 - 传输层：WebSocket (RFC 6455)，纯 Python asyncio
-- 依赖：websockets（可选 extra: pip install nth-team-layer[p2p]）
+- 依赖：websockets（可选 extra: pip install nth-dao[p2p]）
 - 与 channel.py 的关系：gossip 收到消息 → 写入 channel → 触发回调
 - NAT 友好：默认 localhost，可通过 relay/tunnel 扩展
 
@@ -71,7 +71,7 @@ def _ws_required(feature: str) -> None:
     if not _WEBSOCKETS_AVAILABLE:
         raise ImportError(
             f"{feature} requires websockets. Install with:\n"
-            f"  pip install nth-team-layer[p2p]\n"
+            f"  pip install nth-dao[p2p]\n"
             f"  (or: pip install websockets>=12.0)"
         )
 

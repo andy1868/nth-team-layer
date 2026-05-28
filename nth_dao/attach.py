@@ -1,9 +1,9 @@
 """
 attach() — 一键集成 API
 
-任何 Agent 框架的入口都可以通过一行代码加入 Nth Team Layer：
+任何 Agent 框架的入口都可以通过一行代码加入 NTH DAO：
 
-    import nth_team_layer as nth
+    import nth_dao as nth
     team = nth.attach(
         agent_id="my-agent",
         backend="mock",                # 或传入已有 AgentBackend 实例
@@ -205,7 +205,7 @@ def attach(
     identity: Optional[AgentIdentity] = None,
 ) -> TeamSession:
     """
-    把当前进程加入 Nth Team Layer。
+    把当前进程加入 NTH DAO。
 
     Args:
         agent_id: 唯一标识本 Agent（重启同 id 会覆盖心跳记录）

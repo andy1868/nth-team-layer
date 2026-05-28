@@ -1,6 +1,6 @@
 import pytest
 
-import nth_team_layer as nth
+import nth_dao as nth
 
 
 def test_channel_messages_and_audit_are_local_first(tmp_path):

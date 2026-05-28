@@ -19,7 +19,7 @@ import uvicorn
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-import nth_team_layer as nth
+import nth_dao as nth
 
 
 WORKSPACE = Path(os.environ.get("NTH_WORKSPACE", REPO)).resolve()
@@ -63,7 +63,7 @@ def bootstrap() -> None:
         config.admin_ids.append("admin")
         config.roles["admin"] = nth.TeamRole.OWNER.value
         MEMBERSHIP.save_config(config)
-    elif config.team_name in {"Unnamed Team", "Nth Team"}:
+    elif config.team_name in {"Unnamed Team", "NTH DAO"}:
         config.team_name = "NTH DAO"
         MEMBERSHIP.save_config(config)
     if GROUPS.get_channel("general") is None:

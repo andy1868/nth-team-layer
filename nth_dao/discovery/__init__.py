@@ -1,7 +1,7 @@
 """
 Agent 发现子系统
 
-让每个加载 nth_team_layer 的 Agent 互相发现，无需中心服务器。
+让每个加载 nth_dao 的 Agent 互相发现，无需中心服务器。
 
 机制：
 1. AgentRegistry — 每个 Agent 启动时在共享目录写心跳文件

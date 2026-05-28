@@ -1,5 +1,5 @@
 """
-Nth Team Layer Telegram Bot — 把 Nth Team Layer 暴露到 Telegram
+NTH DAO Telegram Bot — 把 NTH DAO 暴露到 Telegram
 
 启动：
     python nth_telegram_bot.py
@@ -64,11 +64,11 @@ if not TOKEN:
 if not DEEPSEEK_KEY:
     print("ERROR: DEEPSEEK_API_KEY missing in ~/.hermes/.env"); sys.exit(1)
 
-# 3. 加载 nth_team_layer
+# 3. 加载 nth_dao
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-import nth_team_layer as nth
-from nth_team_layer import render_kanban           # facade re-export
-from nth_team_layer.orchestration import StepStatus
+import nth_dao as nth
+from nth_dao import render_kanban           # facade re-export
+from nth_dao.orchestration import StepStatus
 
 # 4. openai SDK for DeepSeek
 from openai import OpenAI
@@ -93,7 +93,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
 
 # ─────────────────────────────────────────────────────────────────
-# Nth Team Layer 启动
+# NTH DAO 启动
 # ─────────────────────────────────────────────────────────────────
 
 REPO = Path(__file__).resolve().parent.parent
@@ -105,7 +105,7 @@ TEAM = nth.attach(
     workspace=REPO,
     start_heartbeat=True,                          # 持续心跳让其他 agent 知道我们在线
 )
-logger.info(f"Nth Team Layer attached: {TEAM.agent_id} on {TEAM.workspace}")
+logger.info(f"NTH DAO attached: {TEAM.agent_id} on {TEAM.workspace}")
 
 # DeepSeek client
 LLM = OpenAI(
@@ -154,7 +154,7 @@ def authorized_only(handler):
 @authorized_only
 async def cmd_start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 Nth Team Layer Bot — 已就绪\n\n"
+        "🤖 NTH DAO Bot — 已就绪\n\n"
         "命令：\n"
         "/team — 在线 agent 列表\n"
         "/kanban — Blackboard 看板\n"
@@ -552,7 +552,7 @@ async def cmd_pending(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     """完整命令清单（按子系统分组，HTML mode 避免 < > 等字符崩 parser）"""
     await update.message.reply_text(
-        "🤖 <b>Nth Team Layer Bot — 全部命令</b>\n\n"
+        "🤖 <b>NTH DAO Bot — 全部命令</b>\n\n"
         "👥 <b>Discovery</b>\n"
         "/team — 在线 agent 列表\n"
         "/find &lt;cap&gt; — 按能力找队友\n\n"
@@ -587,8 +587,8 @@ async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT_BASE = (
-    "You are Nth Team Bot, a Telegram assistant powered by DeepSeek. "
-    "You are part of a multi-agent team using Nth Team Layer. "
+    "You are NTH DAO Bot, a Telegram assistant powered by DeepSeek. "
+    "You are part of a multi-agent team using NTH DAO. "
     "Reply concisely (max 200 words unless asked for more)."
 )
 
@@ -704,7 +704,7 @@ def main():
     try:
         app.run_polling(drop_pending_updates=True)
     finally:
-        logger.info("Detaching Nth Team Layer...")
+        logger.info("Detaching NTH DAO...")
         TEAM.detach()
 
 

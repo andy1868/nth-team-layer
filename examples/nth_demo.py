@@ -1,5 +1,5 @@
 """
-PR 8 Nth Team Layer — 端到端演示
+PR 8 NTH DAO — 端到端演示
 
 场景：3 个 Agent 通过 nth.attach() 加入团队，互相发现，接力完成一个 Mission
 
@@ -35,8 +35,8 @@ if sys.platform == "win32":
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # examples/ -> repo root
 
-import nth_team_layer as nth
-from nth_team_layer.orchestration import StepStatus
+import nth_dao as nth
+from nth_dao.orchestration import StepStatus
 
 REPO = Path(__file__).resolve().parent.parent  # examples/ -> repo root
 
@@ -65,7 +65,7 @@ def cleanup():
 
 
 def main():
-    section("PR 8 Nth Team Layer — Discovery + Mission Orchestration")
+    section("PR 8 NTH DAO — Discovery + Mission Orchestration")
     print("场景：3 个 Agent 通过 attach() 加入团队 → 互相发现 → 接力完成 Mission")
 
     section("[Setup] 清理上一次产物")
@@ -255,10 +255,10 @@ def main():
         s.detach()
         print(f"  ✓ {s.agent_id} detached")
 
-    section("✅ PR 8 nth-team-layer demo 完成")
+    section("✅ PR 8 nth-dao demo 完成")
     print()
     print("生产用法：")
-    print("  import nth_team_layer as nth")
+    print("  import nth_dao as nth")
     print("  team = nth.attach(agent_id='...', backend='hermes', capabilities=[...])")
     print("  # 你的 Agent 主循环")
     print("  team.detach()")

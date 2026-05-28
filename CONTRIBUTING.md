@@ -38,10 +38,9 @@ or future transport-specific extras.
 
 ## Naming Direction
 
-The project name and forward import path are NTH DAO and `nth_dao`.
+The project name and import path are NTH DAO and `nth_dao`.
 
-The historical `nth_team_layer` import path remains as a compatibility layer
-while the codebase migrates. New examples, docs, and integrations should prefer:
+New examples, docs, and integrations must use:
 
 ```python
 import nth_dao as nth

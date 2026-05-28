@@ -1,5 +1,5 @@
 """
-Nth Team Layer — Web Dashboard
+NTH DAO — Web Dashboard
 
 单文件 FastAPI 服务，浏览器看 Kanban + Mission + Team Discovery。
 
@@ -44,13 +44,13 @@ if sys.platform == "win32":
 REPO = Path(__file__).resolve().parent.parent  # examples/ -> repo root
 sys.path.insert(0, str(REPO))  # examples/ -> repo root accessible
 
-# 复用 Nth Team Layer 子系统读数据
+# 复用 NTH DAO 子系统读数据
 from team_layer.blackboard import Blackboard
-from nth_team_layer.discovery import AgentRegistry
-from nth_team_layer.orchestration import MissionStore
+from nth_dao.discovery import AgentRegistry
+from nth_dao.orchestration import MissionStore
 
 app = FastAPI(
-    title="Nth Team Layer Dashboard",
+    title="NTH DAO Dashboard",
     description="只读视图：查看团队状态、Mission 进度、Blackboard kanban",
     version="0.8.1",
 )
@@ -252,7 +252,7 @@ INDEX_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Nth Team Layer Dashboard</title>
+<title>NTH DAO Dashboard</title>
 <style>
 :root {
   --bg: #0f172a;
@@ -346,7 +346,7 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 <body>
 
 <div class="header">
-  <h1>🤖 Nth Team Layer Dashboard</h1>
+  <h1>🤖 NTH DAO Dashboard</h1>
   <div class="metric"><div class="n" id="m-agents">—</div><div class="lbl">agents online</div></div>
   <div class="metric"><div class="n" id="m-missions">—</div><div class="lbl">active missions</div></div>
   <div class="metric"><div class="n" id="m-board">—</div><div class="lbl">blackboard entries</div></div>
@@ -510,7 +510,7 @@ async def index():
 def main():
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.environ.get("DASHBOARD_PORT", "8000"))
-    print(f"📡 Nth Team Layer Dashboard")
+    print(f"📡 NTH DAO Dashboard")
     print(f"   workspace: {REPO}")
     print(f"   URL:       http://{host}:{port}")
     print(f"   按 Ctrl+C 停止")

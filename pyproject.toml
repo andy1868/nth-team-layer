@@ -18,7 +18,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    # License classifier removed — modern SPDX `license` field replaces it (PEP 639)
+    # License classifier removed 鈥?modern SPDX `license` field replaces it (PEP 639)
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -47,20 +47,19 @@ hermes = []  # via subprocess; install hermes-agent separately
 web = ["fastapi>=0.100", "uvicorn>=0.20"]  # web_dashboard.py
 
 [project.urls]
-Homepage = "https://github.com/AlexNthLab/nth-team-layer"
-Documentation = "https://github.com/AlexNthLab/nth-team-layer#readme"
-Issues = "https://github.com/AlexNthLab/nth-team-layer/issues"
-Changelog = "https://github.com/AlexNthLab/nth-team-layer/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/AlexNthLab/nth-dao"
+Documentation = "https://github.com/AlexNthLab/nth-dao#readme"
+Issues = "https://github.com/AlexNthLab/nth-dao/issues"
+Changelog = "https://github.com/AlexNthLab/nth-dao/blob/main/CHANGELOG.md"
 
 [project.scripts]
 nth-blackboard = "team_layer.blackboard.cli:main"
 
 [tool.setuptools]
 packages = [
-    "nth_team_layer",
-    "nth_team_layer.discovery",
-    "nth_team_layer.orchestration",
     "nth_dao",
+    "nth_dao.discovery",
+    "nth_dao.orchestration",
     "team_layer",
     "team_layer.memory_providers",
     "team_layer.compression",
@@ -70,9 +69,9 @@ packages = [
     "team_layer.backends",
 ]
 
-# Optional package data: include INTEGRATION_GUIDE inside nth_team_layer/
+# Optional package data: include INTEGRATION_GUIDE inside nth_dao/
 [tool.setuptools.package-data]
-"nth_team_layer" = ["INTEGRATION_GUIDE.md", "*.toml"]
+"nth_dao" = ["INTEGRATION_GUIDE.md", "*.toml"]
 
 [tool.setuptools.exclude-package-data]
 "*" = [".gitignore", ".gitkeep", "__pycache__/*", "*.pyc"]
