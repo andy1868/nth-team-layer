@@ -18,7 +18,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    # License classifier removed 鈥?modern SPDX `license` field replaces it (PEP 639)
+    # License classifier removed; modern SPDX `license` field replaces it (PEP 639)
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

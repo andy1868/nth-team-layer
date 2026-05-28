@@ -1,4 +1,4 @@
-# MANIFEST.in 鈥?controls what goes into sdist (source distribution)
+# MANIFEST.in controls what goes into sdist (source distribution)
 #
 # wheel distribution is controlled by [tool.setuptools.packages] +
 # [tool.setuptools.package-data] in pyproject.toml.
@@ -15,7 +15,7 @@ include IMPLEMENTATION_GUIDE.md
 recursive-include nth_dao *.md
 recursive-include nth_dao *.py
 
-# Examples 鈥?keep, they're how users learn the API
+# Examples stay included because they are how users learn the API.
 recursive-include examples *.py
 
 # Default skills/soul (so users have something to start with)
