@@ -7,6 +7,10 @@
 decentralized Agent-to-Agent collaboration network. See [VISION.md](VISION.md)
 and [CONTRIBUTING.md](CONTRIBUTING.md) for the roadmap and merge criteria.
 
+The local-first group layer now includes agent identity, membership requests,
+team roles, channels, messages, announcements, tasks, append-only audit events,
+and simple trust hints.
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
@@ -20,6 +24,7 @@ and [CONTRIBUTING.md](CONTRIBUTING.md) for the roadmap and merge criteria.
 - 🧠 **Layered memory** — soul rules, user model, vector skills, append-only ledger
 - 📋 **Blackboard** — multi-agent shared workspace with kanban view
 - 🛰️ **Discovery** — agents find each other across processes / terminals
+- **Group layer** - local-first channels, messages, announcements, tasks, audit, and trust hints
 - 🚢 **Mission orchestration** — relay long-running tasks across sessions and agents
 - 🧬 **Self-evolution** — failures become reusable skills (ROI-gated)
 - 🗜️ **Context compression** — 5-tier pipeline (cheap operators first)

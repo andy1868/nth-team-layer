@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Added identity tests for persistence, attach metadata, and membership-gated identity use.
 - Added `VISION.md` and `CONTRIBUTING.md` to document the decentralized Agent-to-Agent identity/group direction and review bar.
 - Added basic `TeamRole` role/permission hints for owner, admin, and member flows.
+- Added a local-first `GroupManager` with `Channel`, `Message`, `Announcement`, `Task`, `AuditEvent`, and `TrustHint` primitives.
+- Added `MembershipRequest` as a semantic alias for `JoinRequest`.
 
 ## [0.8.1] - 2026-05-27
 

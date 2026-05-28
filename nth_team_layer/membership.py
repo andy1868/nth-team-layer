@@ -50,11 +50,15 @@ ROLE_PERMISSIONS: Dict[TeamRole, set[str]] = {
         "manage_members",
         "approve_members",
         "post_announcements",
+        "read_messages",
+        "send_messages",
     },
     TeamRole.ADMIN: {
         "manage_members",
         "approve_members",
         "post_announcements",
+        "read_messages",
+        "send_messages",
     },
     TeamRole.MEMBER: {
         "read_messages",
@@ -169,6 +173,9 @@ class JoinRequest:
             reviewed_at=data.get("reviewed_at", ""),
             metadata=data.get("metadata", {}),
         )
+
+
+MembershipRequest = JoinRequest
 
 
 class MembershipManager:

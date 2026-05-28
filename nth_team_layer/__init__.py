@@ -97,9 +97,21 @@ from .membership import (
     JoinPolicy,
     RequestStatus,
     JoinRequest,
+    MembershipRequest,
     TeamConfig,
     TeamRole,
     MembershipManager,
+)
+from .groups import (
+    Announcement,
+    AuditEvent,
+    Channel,
+    GroupManager,
+    Message,
+    MessageKind,
+    Task,
+    TaskStatus,
+    TrustHint,
 )
 from .identity import (
     AgentID,
@@ -159,9 +171,20 @@ __all__ = [
     "JoinPolicy",
     "RequestStatus",
     "JoinRequest",
+    "MembershipRequest",
     "TeamConfig",
     "TeamRole",
     "MembershipManager",
+    # Local-first group layer: channels, messages, tasks, audit, trust
+    "Announcement",
+    "AuditEvent",
+    "Channel",
+    "GroupManager",
+    "Message",
+    "MessageKind",
+    "Task",
+    "TaskStatus",
+    "TrustHint",
     # Identity: stable agent profile + optional Ed25519 signing
     "AgentID",
     "AgentIdentity",
