@@ -63,6 +63,9 @@ def bootstrap() -> None:
         config.admin_ids.append("admin")
         config.roles["admin"] = nth.TeamRole.OWNER.value
         MEMBERSHIP.save_config(config)
+    elif config.team_name in {"Unnamed Team", "Nth Team"}:
+        config.team_name = "NTH DAO"
+        MEMBERSHIP.save_config(config)
     if GROUPS.get_channel("general") is None:
         GROUPS.create_channel("general", created_by="admin", topic="Team chat")
 
