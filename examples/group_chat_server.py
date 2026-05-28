@@ -54,6 +54,12 @@ def bootstrap() -> None:
     config = MEMBERSHIP.load_config()
     if not config.admin_ids and not config.member_ids:
         MEMBERSHIP.init_team(team_name="Nth Team", policy="open", admin_ids=["admin"])
+    elif not config.admin_ids:
+        if "admin" not in config.member_ids:
+            config.member_ids.append("admin")
+        config.admin_ids.append("admin")
+        config.roles["admin"] = nth.TeamRole.OWNER.value
+        MEMBERSHIP.save_config(config)
     if GROUPS.get_channel("general") is None:
         GROUPS.create_channel("general", created_by="admin", topic="Team chat")
 
