@@ -10,9 +10,10 @@ over time.
 The Python import path is `nth_dao`. The former public package name has been
 removed so new forks and installs converge on one identity.
 
-See [VISION.md](VISION.md), [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md),
-and [CONTRIBUTING.md](CONTRIBUTING.md) for the DAO roadmap, technical direction,
-and merge criteria.
+See [MANIFESTO.md](MANIFESTO.md), [VISION.md](VISION.md),
+[IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md), and
+[CONTRIBUTING.md](CONTRIBUTING.md) for the DAO mission, roadmap, technical
+direction, and merge criteria.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

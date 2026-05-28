@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.9.0] - 2026-05-28
 
 ### Added
+- Published the NTH DAO manifesto as the public mission statement.
 - Completed the hard rename to **NTH DAO** / `nth_dao` and removed the old public package name.
 - Added `AgentIdentity` / `AgentID` identity primitives with optional Ed25519 signing via the `crypto` extra.
 - Added `attach(..., identity=...)` support and discovery metadata export without bypassing membership approval.

@@ -5,6 +5,7 @@
 
 include LICENSE
 include README.md
+include MANIFESTO.md
 include CHANGELOG.md
 include VISION.md
 include CONTRIBUTING.md
