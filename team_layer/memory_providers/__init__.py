@@ -1,4 +1,4 @@
-"""Team Layer 记忆 Provider — 对接 Hermes Memory ABC"""
+"""NTH DAO runtime  Provider   Hermes Memory ABC"""
 
 from .soul_provider import SoulProvider
 from .user_model_provider import UserModelProvider

@@ -1,29 +1,29 @@
 """
-Marketplace — Agent 服务交易市场（任务发布 / 认领 / 结算）
+Marketplace  Agent  /  /
 
-一个去中心化的 Agent 任务市场，允许 Agent 发布任务、竞争性认领、完成后获得
-声誉积分（credits）。适合 Agent-to-Agent 协作和自动化工作流。
+ Agent  Agent
+credits Agent-to-Agent
 
-设计：
-- 任务状态机：open → claimed → in_progress → completed/failed/cancelled
-- 声誉门槛：认领者必须满足最低声誉分数
-- 积分系统（credits）：内部信用，未来可对接链上结算
-- 托管机制：认领时锁定奖励，完成时释放
-- 争议处理：逾期自动释放，争议进入 review
-- 持久化：team_marketplace/orders/{order_id}.json
-- 审计：所有状态变更记录在 order timeline，带签名
 
-生命周期：
-    发布者 → create_order("review PR #42", reward=10)
-    认领者 → claim(order_id)          # 检查声誉门槛
-    认领者 → submit(order_id, proof)  # 提交成果
-    发布者 → accept(order_id)          # 验收通过，释放积分
-    发布者 → reject(order_id, reason)  # 拒绝，退还任务
+- open  claimed  in_progress  completed/failed/cancelled
+-
+- credits
+-
+-  review
+- team_marketplace/orders/{order_id}.json
+-  order timeline
 
-用法：
+
+      create_order("review PR #42", reward=10)
+      claim(order_id)          #
+      submit(order_id, proof)  #
+      accept(order_id)          #
+      reject(order_id, reason)  #
+
+
     mkt = team.marketplace
 
-    # 发布任务
+    #
     order = mkt.create_order(
         title="review PR #42",
         description="need thorough code review of the auth module",
@@ -32,16 +32,16 @@ Marketplace — Agent 服务交易市场（任务发布 / 认领 / 结算）
         min_reputation=3.0,
     )
 
-    # 浏览任务
+    #
     available = mkt.list_open()
 
-    # 认领
+    #
     mkt.claim(available[0].order_id)
 
-    # 提交
+    #
     mkt.submit(order_id, proof="review completed, 3 issues found")
 
-    # 验收
+    #
     mkt.accept(order_id, rating=4.5, note="great work!")
 """
 
@@ -60,14 +60,14 @@ from .channel import TeamChannel
 from .reputation import ReputationManager
 
 
-# ─────────────────── 常量 ───────────────────
+#
 
 DEFAULT_MARKETPLACE_DIR = "team_marketplace"
-DEFAULT_CLAIM_TIMEOUT_HOURS = 48  # 认领后必须在此时间内提交
-DEFAULT_ORDER_EXPIRY_DAYS = 7     # 公开任务过期天数
+DEFAULT_CLAIM_TIMEOUT_HOURS = 48  #
+DEFAULT_ORDER_EXPIRY_DAYS = 7     #
 
 
-# ─────────────────── 枚举 ───────────────────
+#
 
 
 class OrderStatus(str, Enum):
@@ -82,39 +82,39 @@ class OrderStatus(str, Enum):
     EXPIRED = "expired"
 
 
-# ─────────────────── 数据模型 ───────────────────
+#
 
 
 @dataclass
 class TaskOrder:
-    """一个任务订单"""
+    """"""
 
     order_id: str
-    creator: str          # 发布者 agent_id
+    creator: str          #  agent_id
     title: str
     description: str = ""
     context: str = "general"  # code_review / bug_fix / research / write_docs / deploy / custom
-    reward: float = 0.0   # 信用积分
-    deadline: str = ""    # ISO timestamp，空 = 无期限
+    reward: float = 0.0   #
+    deadline: str = ""    # ISO timestamp =
     tags: List[str] = field(default_factory=list)
-    requirements: Dict[str, Any] = field(default_factory=dict)  # min_reputation, capabilities等
+    requirements: Dict[str, Any] = field(default_factory=dict)  # min_reputation, capabilities
 
-    # 状态追踪
+    #
     status: OrderStatus = OrderStatus.OPEN
-    claimant: str = ""    # 认领者 agent_id
-    submission_proof: str = ""  # 提交的成果说明
+    claimant: str = ""    #  agent_id
+    submission_proof: str = ""  #
     submission_at: str = ""
-    rating: float = 0.0   # 完成后发布者对认领者的评分
-    feedback: str = ""     # 发布者反馈
+    rating: float = 0.0   #
+    feedback: str = ""     #
 
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     claimed_at: str = ""
     completed_at: str = ""
 
-    # 审计追踪（timeline）
+    # timeline
     timeline: List[Dict[str, Any]] = field(default_factory=list)
 
-    # 签名
+    #
     creator_sig: str = ""
     claimant_sig: str = ""
 
@@ -193,11 +193,11 @@ class TaskOrder:
         )
 
 
-# ─────────────────── TaskMarketplace ───────────────────
+#  TaskMarketplace
 
 
 class TaskMarketplace:
-    """Agent 服务交易市场"""
+    """Agent """
 
     def __init__(
         self,
@@ -210,12 +210,12 @@ class TaskMarketplace:
     ):
         """
         Args:
-            workspace: 团队工作目录
-            agent_id: 本 Agent ID
-            identity: 密码学身份
-            channel: 消息通道（用于通知）
-            reputation: 声誉管理器（用于准入门槛）
-            marketplace_dir: 订单存储子目录
+            workspace:
+            agent_id:  Agent ID
+            identity:
+            channel:
+            reputation:
+            marketplace_dir:
         """
         self.workspace = workspace
         self.agent_id = agent_id
@@ -225,15 +225,15 @@ class TaskMarketplace:
         self.orders_dir = workspace / marketplace_dir
         self.orders_dir.mkdir(parents=True, exist_ok=True)
 
-        # 本地积分余额
+        #
         self._credit_file = workspace / marketplace_dir / f"{self._safe_id(agent_id)}_credits.json"
         self._init_credits()
 
-    # ─────────── 积分 ───────────
+    #
 
     def _init_credits(self) -> None:
         if not self._credit_file.exists():
-            self._write_credits(100)  # 新 agent 初始积分
+            self._write_credits(100)  #  agent
 
     def _read_credits(self) -> float:
         try:
@@ -253,7 +253,7 @@ class TaskMarketplace:
     def balance(self) -> float:
         return self._read_credits()
 
-    # ─────────── 创建订单 ───────────
+    #
 
     def create_order(
         self,
@@ -266,25 +266,25 @@ class TaskMarketplace:
         min_reputation: float = 0.0,
         required_capabilities: Optional[List[str]] = None,
     ) -> TaskOrder:
-        """发布一个新任务
+        """
 
         Args:
-            title: 任务标题
-            description: 详细描述
-            context: 任务类型
-            reward: 积分奖励
-            deadline: ISO 截止日期
-            tags: 标签
-            min_reputation: 认领者的最低声誉分数
-            required_capabilities: 认领者需具备的能力
+            title:
+            description:
+            context:
+            reward:
+            deadline: ISO
+            tags:
+            min_reputation:
+            required_capabilities:
 
         Returns:
-            创建的订单
+
 
         Raises:
-            ValueError: 积分不足
+            ValueError:
         """
-        # 检查余额
+        #
         if reward > 0 and self._read_credits() < reward:
             raise ValueError(
                 f"Insufficient credits: balance={self._read_credits()}, "
@@ -307,7 +307,7 @@ class TaskMarketplace:
             },
         )
 
-        # 签名
+        #
         if self.identity and self.identity.can_sign:
             payload = {
                 "order_id": order.order_id,
@@ -318,33 +318,33 @@ class TaskMarketplace:
             }
             order.creator_sig = self.identity.sign_json(payload)
 
-        # 锁定积分（托管）
+        #
         if reward > 0:
             self._write_credits(self._read_credits() - reward)
 
         self._save(order)
 
-        # 通知团队
+        #
         if self.channel:
             self.channel.send(
-                f"📋 New task: {title} (reward={reward} credits, context={context})",
+                f" New task: {title} (reward={reward} credits, context={context})",
                 scope="team",
                 metadata={"type": "marketplace", "order_id": order.order_id},
             )
 
         return order
 
-    # ─────────── 认领 ───────────
+    #
 
     def claim(self, order_id: str) -> TaskOrder:
-        """认领一个公开任务
+        """
 
         Args:
-            order_id: 订单 ID
+            order_id:  ID
 
         Raises:
-            ValueError: 订单不可认领
-            PermissionError: 不满足声誉门槛
+            ValueError:
+            PermissionError:
         """
         order = self._load(order_id)
         if order is None:
@@ -356,7 +356,7 @@ class TaskMarketplace:
         if order.creator == self.agent_id:
             raise ValueError("Cannot claim your own order")
 
-        # 检查声誉门槛
+        #
         min_rep = order.requirements.get("min_reputation", 0)
         if min_rep > 0 and self.reputation:
             score = self.reputation.get_score(self.agent_id, context=order.context)
@@ -376,7 +376,7 @@ class TaskMarketplace:
             "timestamp": now,
         })
 
-        # 签名
+        #
         if self.identity and self.identity.can_sign:
             payload = {
                 "order_id": order.order_id,
@@ -387,20 +387,20 @@ class TaskMarketplace:
 
         self._save(order)
 
-        # 通知创建者
+        #
         if self.channel:
             self.channel.dm(
                 order.creator,
-                f"🤝 Your task '{order.title}' was claimed by "
+                f" Your task '{order.title}' was claimed by "
                 f"{self.agent_id[:8]}",
             )
 
         return order
 
-    # ─────────── 执行 ───────────
+    #
 
     def start_work(self, order_id: str) -> TaskOrder:
-        """确认开始执行"""
+        """"""
         order = self._require_my_claim(order_id)
         order.status = OrderStatus.IN_PROGRESS
         order.timeline.append({
@@ -412,14 +412,14 @@ class TaskMarketplace:
         return order
 
     def submit(self, order_id: str, proof: str) -> TaskOrder:
-        """提交完成成果
+        """
 
         Args:
-            order_id: 订单 ID
-            proof: 成果描述 / 证明
+            order_id:  ID
+            proof:  /
 
         Raises:
-            ValueError: 订单状态不对
+            ValueError:
         """
         order = self._require_my_claim(order_id)
         if order.status not in (OrderStatus.CLAIMED, OrderStatus.IN_PROGRESS):
@@ -441,17 +441,17 @@ class TaskMarketplace:
 
         self._save(order)
 
-        # 通知创建者
+        #
         if self.channel:
             self.channel.dm(
                 order.creator,
-                f"✅ Task '{order.title}' submitted by {self.agent_id[:8]}: "
+                f" Task '{order.title}' submitted by {self.agent_id[:8]}: "
                 f"{proof[:100]}",
             )
 
         return order
 
-    # ─────────── 验收 ───────────
+    #
 
     def accept(
         self,
@@ -459,12 +459,12 @@ class TaskMarketplace:
         rating: float = 5.0,
         feedback: str = "",
     ) -> TaskOrder:
-        """验收任务，释放积分给认领者
+        """
 
         Args:
-            order_id: 订单 ID
-            rating: 对认领者的评分 (0.0-5.0)
-            feedback: 反馈
+            order_id:  ID
+            rating:  (0.0-5.0)
+            feedback:
         """
         order = self._require_my_order(order_id)
         if order.status != OrderStatus.SUBMITTED:
@@ -486,7 +486,7 @@ class TaskMarketplace:
 
         self._save(order)
 
-        # 声誉评分（给认领者）
+        #
         if self.reputation:
             self.reputation.rate(
                 subject=order.claimant,
@@ -495,11 +495,11 @@ class TaskMarketplace:
                 reason=feedback or f"Completed: {order.title}",
             )
 
-        # 通知认领者
+        #
         if self.channel:
             self.channel.dm(
                 order.claimant,
-                f"🎉 Your task '{order.title}' was accepted! "
+                f" Your task '{order.title}' was accepted! "
                 f"Rating: {order.rating}/5.0. You earned {order.reward} credits.",
             )
 
@@ -510,11 +510,11 @@ class TaskMarketplace:
         order_id: str,
         reason: str = "",
     ) -> TaskOrder:
-        """拒绝提交，任务重新变为 open
+        """ open
 
         Args:
-            order_id: 订单 ID
-            reason: 拒绝理由
+            order_id:  ID
+            reason:
         """
         order = self._require_my_order(order_id)
         if order.status != OrderStatus.SUBMITTED:
@@ -540,13 +540,13 @@ class TaskMarketplace:
         if self.channel:
             self.channel.dm(
                 order.claimant if hasattr(order, 'claimant_history') else "unknown",
-                f"❌ Your submission for '{order.title}' was rejected: {reason}",
+                f" Your submission for '{order.title}' was rejected: {reason}",
             )
 
         return order
 
     def cancel(self, order_id: str) -> TaskOrder:
-        """发布者取消任务（仅限未被认领的）"""
+        """"""
         order = self._require_my_order(order_id)
         if order.status not in (OrderStatus.OPEN, OrderStatus.EXPIRED):
             raise ValueError(
@@ -560,7 +560,7 @@ class TaskMarketplace:
             "timestamp": datetime.now().isoformat(),
         })
 
-        # 退还积分
+        #
         if order.reward > 0:
             self._write_credits(self._read_credits() + order.reward)
 
@@ -568,7 +568,7 @@ class TaskMarketplace:
         return order
 
     def fail(self, order_id: str, reason: str = "") -> TaskOrder:
-        """认领者放弃任务"""
+        """"""
         order = self._require_my_claim(order_id)
         if order.status not in (OrderStatus.CLAIMED, OrderStatus.IN_PROGRESS):
             raise ValueError(
@@ -586,10 +586,10 @@ class TaskMarketplace:
         self._save(order)
         return order
 
-    # ─────────── 查询 ───────────
+    #
 
     def list_open(self, context: Optional[str] = None) -> List[TaskOrder]:
-        """列出所有公开任务"""
+        """"""
         orders = []
         for f in self.orders_dir.glob("*.json"):
             try:
@@ -600,7 +600,7 @@ class TaskMarketplace:
             except Exception:
                 continue
 
-        # 按创建时间排序（最新优先）
+        #
         orders.sort(key=lambda o: o.created_at, reverse=True)
         return orders
 
@@ -608,7 +608,7 @@ class TaskMarketplace:
         self,
         status: Optional[OrderStatus] = None,
     ) -> List[TaskOrder]:
-        """列出我的订单（我创建或认领的）"""
+        """"""
         orders = []
         for f in self.orders_dir.glob("*.json"):
             try:
@@ -623,13 +623,13 @@ class TaskMarketplace:
         return orders
 
     def list_by_context(self, context: str) -> List[TaskOrder]:
-        """按任务类型列出"""
+        """"""
         return self.list_open(context=context)
 
     def get_order(self, order_id: str) -> Optional[TaskOrder]:
         return self._load(order_id)
 
-    # ─────────── 统计 ───────────
+    #
 
     def stats(self) -> Dict[str, Any]:
         stats = {
@@ -657,10 +657,10 @@ class TaskMarketplace:
         stats["balance"] = self.balance
         return stats
 
-    # ─────────── 过期检查 ───────────
+    #
 
     def check_expired(self) -> int:
-        """检查并标记过期任务"""
+        """"""
         now = datetime.now()
         expired_count = 0
 
@@ -672,7 +672,7 @@ class TaskMarketplace:
 
                 created = datetime.fromisoformat(o.created_at)
 
-                # 公开任务过期
+                #
                 if o.status == OrderStatus.OPEN:
                     if (now - created).days >= DEFAULT_ORDER_EXPIRY_DAYS:
                         o.status = OrderStatus.EXPIRED
@@ -682,12 +682,12 @@ class TaskMarketplace:
                             "timestamp": now.isoformat(),
                         })
                         self._save(o)
-                        # 退还积分
+                        #
                         if o.reward > 0:
                             self._write_credits(self._read_credits() + o.reward)
                         expired_count += 1
 
-                # 认领后超时
+                #
                 if o.status in (OrderStatus.CLAIMED, OrderStatus.IN_PROGRESS) and o.claimed_at:
                     claimed = datetime.fromisoformat(o.claimed_at)
                     if (now - claimed).total_seconds() > DEFAULT_CLAIM_TIMEOUT_HOURS * 3600:
@@ -707,7 +707,7 @@ class TaskMarketplace:
 
         return expired_count
 
-    # ─────────── 内部 ───────────
+    #
 
     def _require_my_order(self, order_id: str) -> TaskOrder:
         order = self._load(order_id)

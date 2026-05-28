@@ -1,11 +1,11 @@
 """
-LedgerProvider — 经验账本（Append-only，供 EvoLoop 溯源）
+LedgerProvider  Append-only EvoLoop
 
-设计：
-- 每个操作自动记录到 sidechain/ledger.jsonl（append-only）
-- 记录：timestamp, agent_id, action_type, result, error_sig, token_cost
-- 用于 EvoLoop 的 ROI 计算：count(error) >= 3 && sum(token) > budget * 1.5
-- 不做删除，只做追加（audit trail）
+
+-  sidechain/ledger.jsonlappend-only
+- timestamp, agent_id, action_type, result, error_sig, token_cost
+-  EvoLoop  ROI count(error) >= 3 && sum(token) > budget * 1.5
+- audit trail
 """
 
 import json
@@ -16,26 +16,26 @@ from ..runtime import MemoryProviderABC
 
 
 class LedgerProvider(MemoryProviderABC):
-    """经验账本提供者"""
+    """"""
 
     def __init__(self, ledger_path: str = "sidechain/ledger.jsonl"):
         self.ledger_path = Path(ledger_path)
-        self.buffer = []  # 缓冲（会话期间）
+        self.buffer = []  #
 
     def initialize(self, context: dict) -> None:
-        """启动时确保 ledger 目录存在"""
+        """ ledger """
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
 
     def prefetch(self, session_id: str) -> str:
-        """返回近期错误统计"""
+        """"""
         if not self.ledger_path.exists():
             return "## Experience Ledger\n[No experience recorded yet]"
 
         try:
-            lines = self.ledger_path.read_text().split("\n")[-20:]  # 最近 20 条
+            lines = self.ledger_path.read_text().split("\n")[-20:]  #  20
             entries = [json.loads(line) for line in lines if line.strip()]
 
-            # 统计错误类型
+            #
             error_counts = {}
             for entry in entries:
                 if "error_sig" in entry and entry["error_sig"]:
@@ -60,12 +60,12 @@ class LedgerProvider(MemoryProviderABC):
         immediate_flush: bool = True,
     ) -> None:
         """
-        记录一个操作到账本
+
 
         Args:
-            immediate_flush: 默认 True — 立即 append 到磁盘
-                            （避免 SIGTERM/崩溃丢数据）
-                            False 时保持旧行为：缓冲到 on_session_end
+            immediate_flush:  True   append
+                             SIGTERM/
+                            False  on_session_end
         """
         entry = {
             "timestamp": datetime.now().isoformat(),
@@ -76,35 +76,35 @@ class LedgerProvider(MemoryProviderABC):
             "token_cost": token_cost,
         }
         if immediate_flush:
-            # 立即写盘（append-only，防止信号丢失）
+            # append-only
             try:
                 self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(self.ledger_path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(entry, ensure_ascii=False) + "\n")
                     f.flush()
             except Exception as e:
-                # 写盘失败仍然加到 buffer 作为 fallback
+                #  buffer  fallback
                 self.buffer.append(entry)
                 print(f"[LEDGER] immediate flush failed, buffered: {e}")
         else:
             self.buffer.append(entry)
 
     def sync_turn(self, action: dict, result: Any) -> None:
-        """每轮同步 — 可选的轻量记录"""
-        # 完整的记录应该通过 record() 显式调用
+        """  """
+        #  record()
         pass
 
     def on_pre_compress(self, compaction_hint: str) -> None:
-        """压缩前 — 账本不需要特殊保护"""
+        """  """
         pass
 
     def on_session_end(self) -> None:
-        """会话结束 — 持久化所有缓冲的账本条目"""
+        """  """
         if not self.buffer:
             return
 
         try:
-            # Append-only 写入
+            # Append-only
             with open(self.ledger_path, "a", encoding="utf-8") as f:
                 for entry in self.buffer:
                     f.write(json.dumps(entry) + "\n")
@@ -112,9 +112,9 @@ class LedgerProvider(MemoryProviderABC):
         except Exception as e:
             print(f"[WARN] Failed to write ledger: {e}")
 
-    # 便利方法：EvoLoop 查询
+    # EvoLoop
     def count_error_occurrences(self, error_sig: str) -> int:
-        """查询指定错误的发生次数"""
+        """"""
         if not self.ledger_path.exists():
             return 0
 
@@ -132,7 +132,7 @@ class LedgerProvider(MemoryProviderABC):
         return count
 
     def sum_token_cost_by_sig(self, error_sig: str) -> int:
-        """统计某错误类型的总 token 消耗"""
+        """ token """
         if not self.ledger_path.exists():
             return 0
 

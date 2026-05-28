@@ -102,9 +102,8 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - Self-improving loop verified: failure -> ledger -> EvoLoop -> skill -> next session prefetch
 
 ### Notes
-- Originally developed in `AlexNthLab/hermes-team-agent` `team-layer-v1` branch.
 - Extracted to this standalone repo to enable `pip install nth-dao`
-  for use across any agent framework (not just Hermes).
+  for use across agent frameworks and local-first DAO nodes.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 

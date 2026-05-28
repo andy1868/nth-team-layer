@@ -1,14 +1,14 @@
 """
-Blackboard — 核心实现
+Blackboard
 
-Append-only JSON Lines 存储：
-- 每个 scope 一个文件（shared.jsonl / group_*.jsonl / private_*.jsonl）
-- 同一 entry_id 的多次 update 都追加（保留完整历史）
-- get(entry_id) / list() 自动返回最新版本
+Append-only JSON Lines
+-  scope shared.jsonl / group_*.jsonl / private_*.jsonl
+-  entry_id  update
+- get(entry_id) / list()
 
-状态字段（status）：
+status
     todo / doing / done / blocked
-    其他自定义状态也允许，但 Kanban 视图只展示前三类
+     Kanban
 """
 
 import json
@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Union
 from .scope import Scope, ScopeKind
 
 
-# 文件锁（同进程内并发保护；跨进程靠 append-only 模式 + OS 原子追加）
+#  append-only  + OS
 _FILE_LOCKS: Dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -37,17 +37,17 @@ def _get_lock(path: str) -> threading.Lock:
 
 @dataclass
 class BlackboardEntry:
-    """黑板条目（不可变快照）"""
+    """"""
     id: str
-    scope: str          # str 形式：'shared' / 'group:frontend' / 'private:alice'
-    author: str         # agent_id 或 username
-    topic: str          # 简短标题
-    status: str         # todo / doing / done / blocked / 自定义
+    scope: str          # str 'shared' / 'group:frontend' / 'private:alice'
+    author: str         # agent_id  username
+    topic: str          #
+    status: str         # todo / doing / done / blocked /
     content: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    version: int = 1    # 同 id 的第几个版本
+    version: int = 1    #  id
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -61,17 +61,17 @@ class BlackboardEntry:
 
 
 class Blackboard:
-    """多 Agent 共享数据空间"""
+    """ Agent """
 
     def __init__(self, root: Optional[Union[str, Path]] = None):
         """
         Args:
-            root: 黑板根目录（默认 ./blackboard/）
+            root:  ./blackboard/
         """
         self.root = Path(root) if root else Path("blackboard")
         self.root.mkdir(parents=True, exist_ok=True)
 
-    # ─────────────────────────── 写入 ───────────────────────────
+    #
 
     def post(
         self,
@@ -84,19 +84,19 @@ class Blackboard:
         entry_id: Optional[str] = None,
     ) -> BlackboardEntry:
         """
-        发布一条新条目。
+
 
         Args:
-            topic: 简短标题（必填）
-            author: 作者标识（agent_id 或 username）
-            scope: 作用域（Scope 实例或字符串）
-            status: 初始状态（默认 todo）
-            content: 详细内容
-            metadata: 附加字段
-            entry_id: 可选指定 id（不指定则自动生成 uuid4）
+            topic:
+            author: agent_id  username
+            scope: Scope
+            status:  todo
+            content:
+            metadata:
+            entry_id:  id uuid4
 
         Returns:
-            发布的 BlackboardEntry
+             BlackboardEntry
         """
         scope = self._coerce_scope(scope)
         self._check_writable(scope, author)
@@ -125,10 +125,10 @@ class Blackboard:
         scope: Optional[Union[Scope, str]] = None,
     ) -> BlackboardEntry:
         """
-        更新条目（append 新版本，旧版本保留）。
+        append
 
-        scope 可选：如果原 entry 在 group:frontend，update 时也写到 group:frontend。
-                  如未指定，自动通过 entry_id 反查。
+        scope  entry  group:frontendupdate  group:frontend
+                   entry_id
         """
         if scope is not None:
             scope = self._coerce_scope(scope)
@@ -159,21 +159,21 @@ class Blackboard:
         self._append(scope, new_entry)
         return new_entry
 
-    # ─────────────────────────── 读取 ───────────────────────────
+    #
 
     def get(
         self,
         entry_id: str,
         scope: Optional[Union[Scope, str]] = None,
     ) -> Optional[BlackboardEntry]:
-        """获取条目的最新版本"""
+        """"""
         if scope is None:
             entry, _ = self._find_entry_by_id(entry_id)
             return entry
 
         scope = self._coerce_scope(scope)
         entries = self._read_scope(scope)
-        # 找最新版本
+        #
         latest = None
         for e in entries:
             if e.id == entry_id:
@@ -189,13 +189,13 @@ class Blackboard:
         topic_contains: Optional[str] = None,
     ) -> List[BlackboardEntry]:
         """
-        列出符合条件的条目（已去重为最新版本）。
+
 
         Args:
-            scope: 限定作用域（None = 扫描所有 .jsonl）
-            status: 过滤状态
-            author: 过滤作者
-            topic_contains: topic 子串匹配
+            scope: None =  .jsonl
+            status:
+            author:
+            topic_contains: topic
         """
         if scope is not None:
             scope = self._coerce_scope(scope)
@@ -203,17 +203,17 @@ class Blackboard:
         else:
             scopes = self._discover_scopes()
 
-        # 收集所有条目
+        #
         all_entries: Dict[str, BlackboardEntry] = {}
         for sc in scopes:
             for e in self._read_scope(sc):
-                # 同 id 保留最新版本
+                #  id
                 if e.id not in all_entries or e.version > all_entries[e.id].version:
                     all_entries[e.id] = e
 
         results = list(all_entries.values())
 
-        # 过滤
+        #
         if status is not None:
             results = [e for e in results if e.status == status]
         if author is not None:
@@ -221,12 +221,12 @@ class Blackboard:
         if topic_contains is not None:
             results = [e for e in results if topic_contains.lower() in e.topic.lower()]
 
-        # 按 updated_at 倒序
+        #  updated_at
         results.sort(key=lambda e: e.updated_at, reverse=True)
         return results
 
     def history(self, entry_id: str) -> List[BlackboardEntry]:
-        """返回某条目的完整版本历史（按 version 升序）"""
+        """ version """
         for sc in self._discover_scopes():
             versions = [e for e in self._read_scope(sc) if e.id == entry_id]
             if versions:
@@ -234,7 +234,7 @@ class Blackboard:
                 return versions
         return []
 
-    # ─────────────────────────── 内部 ───────────────────────────
+    #
 
     @staticmethod
     def _coerce_scope(scope: Union[Scope, str]) -> Scope:
@@ -264,7 +264,7 @@ class Blackboard:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
                 f.flush()
-                os.fsync(f.fileno())  # 确保多进程可见
+                os.fsync(f.fileno())  #
 
     def _read_scope(self, scope: Scope) -> List[BlackboardEntry]:
         path = self._scope_path(scope)
@@ -284,7 +284,7 @@ class Blackboard:
         return results
 
     def _discover_scopes(self) -> List[Scope]:
-        """扫描 root 下所有 .jsonl 文件还原为 Scope"""
+        """ root  .jsonl  Scope"""
         scopes: List[Scope] = []
         if not self.root.exists():
             return scopes
@@ -302,7 +302,7 @@ class Blackboard:
         return scopes
 
     def _find_entry_by_id(self, entry_id: str) -> tuple:
-        """全 scope 查找 entry，返回 (entry, scope) 或 (None, None)"""
+        """ scope  entry (entry, scope)  (None, None)"""
         for sc in self._discover_scopes():
             for e in self._read_scope(sc):
                 if e.id == entry_id:

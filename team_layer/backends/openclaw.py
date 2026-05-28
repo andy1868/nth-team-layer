@@ -1,19 +1,19 @@
 """
-OpenClawBackend — OpenClaw 适配器（stub）
+OpenClawBackend  OpenClaw stub
 
-OpenClaw 是 Claude Code 的开源对标（持久化 Runtime + 自治 24/7）。
-通信协议：ACP (Agent Conversation Protocol) — HTTP/JSON.
+OpenClaw  Claude Code  Runtime +  24/7
+ACP (Agent Conversation Protocol)  HTTP/JSON.
 
-当前为 stub 实现：
-- is_available() 默认返回 False（除非 OPENCLAW_API_URL 已设置）
-- send_turn() 通过 HTTP POST 到 ACP endpoint
-- 用户提供 OPENCLAW_API_URL + OPENCLAW_TOKEN 后即可使用
+ stub
+- is_available()  False OPENCLAW_API_URL
+- send_turn()  HTTP POST  ACP endpoint
+-  OPENCLAW_API_URL + OPENCLAW_TOKEN
 
-实装指南：
-1. 用户在 OpenClaw 服务端启动 ACP listener
-2. 设置 env：OPENCLAW_API_URL=http://localhost:8080
-3. 实例化时传入 token 或 env：OPENCLAW_TOKEN=xxx
-4. 后续可以扩展为长连接（webhook / SSE）
+
+1.  OpenClaw  ACP listener
+2.  envOPENCLAW_API_URL=http://localhost:8080
+3.  token  envOPENCLAW_TOKEN=xxx
+4. webhook / SSE
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from .base import (
 
 
 class OpenClawBackend(AgentBackend):
-    """OpenClaw ACP HTTP 适配器"""
+    """OpenClaw ACP HTTP """
 
     backend_id = "openclaw"
 
@@ -57,7 +57,7 @@ class OpenClawBackend(AgentBackend):
 
     @classmethod
     def is_available(cls, api_url: Optional[str] = None, **kwargs) -> bool:
-        """检测：env 或参数中是否提供了 API URL"""
+        """env  API URL"""
         url = api_url or os.environ.get("OPENCLAW_API_URL")
         return bool(url)
 
@@ -96,7 +96,7 @@ class OpenClawBackend(AgentBackend):
                 headers={
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.token}" if self.token else "",
-                    "User-Agent": "team-layer-agent/1.0",
+                    "User-Agent": "nth-dao-agent/1.0",
                 },
             )
             with urllib.request.urlopen(req, timeout=self._session_config.timeout) as resp:
@@ -148,7 +148,7 @@ class OpenClawBackend(AgentBackend):
             supports_streaming=False,
             supports_tools=True,
             supports_system_prompt=True,
-            supports_multi_turn=True,  # ACP 原生支持
+            supports_multi_turn=True,  # ACP
             max_context_tokens=200_000,
             notes=(
                 "OpenClaw via ACP HTTP. "

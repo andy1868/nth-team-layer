@@ -1,27 +1,27 @@
 """
-NTH DAO — Web Dashboard
+NTH DAO  Web Dashboard
 
-单文件 FastAPI 服务，浏览器看 Kanban + Mission + Team Discovery。
+ FastAPI  Kanban + Mission + Team Discovery
 
-启动：
+
     python web_dashboard.py
-    # 默认 http://localhost:8000
+    #  http://localhost:8000
 
-设计：
-- 只读视图（不改 state）—— 修改通过 Telegram bot 或 CLI
-- 5 秒客户端 polling 刷新（不用 WebSocket，保持简单）
-- 数据源：直接读 blackboard/*.jsonl + missions/*.json + team_agents/*.json
-- 不绑定特定 agent_id —— 任何用户能看到全部状态
-- 零额外依赖（除 fastapi + uvicorn）
+
+-  state  Telegram bot  CLI
+- 5  polling  WebSocket
+-  blackboard/*.jsonl + missions/*.json + team_agents/*.json
+-  agent_id
+-  fastapi + uvicorn
 
 API:
-    GET  /                  HTML 主页
-    GET  /api/team          在线 agent 列表
-    GET  /api/blackboard    Blackboard entries (合并所有 scope)
-    GET  /api/missions      Active mission 列表
-    GET  /api/missions/{id} Mission 详情
-    GET  /api/ledger        最近 ledger 条目
-    GET  /api/evolution     evolution_audit 条目
+    GET  /                  HTML
+    GET  /api/team           agent
+    GET  /api/blackboard    Blackboard entries ( scope)
+    GET  /api/missions      Active mission
+    GET  /api/missions/{id} Mission
+    GET  /api/ledger         ledger
+    GET  /api/evolution     evolution_audit
 """
 
 import json
@@ -44,26 +44,26 @@ if sys.platform == "win32":
 REPO = Path(__file__).resolve().parent.parent  # examples/ -> repo root
 sys.path.insert(0, str(REPO))  # examples/ -> repo root accessible
 
-# 复用 NTH DAO 子系统读数据
+#  NTH DAO
 from team_layer.blackboard import Blackboard
 from nth_dao.discovery import AgentRegistry
 from nth_dao.orchestration import MissionStore
 
 app = FastAPI(
     title="NTH DAO Dashboard",
-    description="只读视图：查看团队状态、Mission 进度、Blackboard kanban",
+    description="Mission Blackboard kanban",
     version="0.8.1",
 )
 
-# 全局 readers（不写）
+#  readers
 BB = Blackboard(REPO / "blackboard")
 REGISTRY = AgentRegistry(agents_dir=str(REPO / "team_agents"))
 MISSIONS = MissionStore(str(REPO / "missions"))
 
 
-# ─────────────────────────────────────────────────────────────────
+#
 # JSON APIs
-# ─────────────────────────────────────────────────────────────────
+#
 
 @app.get("/api/team")
 async def api_team():
@@ -90,7 +90,7 @@ async def api_team():
 @app.get("/api/blackboard")
 async def api_blackboard():
     entries = BB.list()
-    # 按 status 分桶（Kanban）
+    #  status Kanban
     buckets = {"todo": [], "doing": [], "done": [], "blocked": [], "other": []}
     for e in entries:
         bucket = e.status if e.status in buckets else "other"
@@ -131,7 +131,7 @@ async def api_missions():
 
 @app.get("/api/missions/{mission_id}")
 async def api_mission_detail(mission_id: str):
-    # 支持前缀匹配
+    #
     for m in MISSIONS.list_all():
         if m.id.startswith(mission_id):
             return {
@@ -153,7 +153,7 @@ async def api_mission_detail(mission_id: str):
                         "assignee": s.assignee,
                         "previous_assignees": s.previous_assignees,
                         "depends_on": s.depends_on,
-                        "notes": s.notes[-5:],  # 最近 5 条
+                        "notes": s.notes[-5:],  #  5
                         "completed_at": s.completed_at,
                     }
                     for s in m.steps
@@ -218,7 +218,7 @@ async def api_skills():
     skills = []
     for f in sorted(skills_dir.glob("*.md")):
         content = f.read_text(encoding="utf-8")
-        # 简单解析 YAML 头
+        #  YAML
         info = {"name": f.stem, "raw_preview": content[:200]}
         for line in content.split("\n")[:10]:
             line = line.strip()
@@ -234,7 +234,7 @@ async def api_skills():
 
 @app.get("/api/summary")
 async def api_summary():
-    """主页顶部的总览数字"""
+    """"""
     return {
         "agents_online": len(REGISTRY.list_alive()),
         "missions_active": len(MISSIONS.list_active()),
@@ -243,9 +243,9 @@ async def api_summary():
     }
 
 
-# ─────────────────────────────────────────────────────────────────
-# HTML 主页（单文件，内嵌 vanilla JS + CSS）
-# ─────────────────────────────────────────────────────────────────
+#
+# HTML  vanilla JS + CSS
+#
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -346,43 +346,43 @@ code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 1
 <body>
 
 <div class="header">
-  <h1>🤖 NTH DAO Dashboard</h1>
-  <div class="metric"><div class="n" id="m-agents">—</div><div class="lbl">agents online</div></div>
-  <div class="metric"><div class="n" id="m-missions">—</div><div class="lbl">active missions</div></div>
-  <div class="metric"><div class="n" id="m-board">—</div><div class="lbl">blackboard entries</div></div>
-  <div class="last-update">⏱ <span id="last-update">connecting…</span></div>
+  <h1> NTH DAO Dashboard</h1>
+  <div class="metric"><div class="n" id="m-agents"></div><div class="lbl">agents online</div></div>
+  <div class="metric"><div class="n" id="m-missions"></div><div class="lbl">active missions</div></div>
+  <div class="metric"><div class="n" id="m-board"></div><div class="lbl">blackboard entries</div></div>
+  <div class="last-update"> <span id="last-update">connecting</span></div>
 </div>
 
 <div class="grid">
   <div class="panel">
-    <h2>👥 Online Agents</h2>
-    <div id="agents-list" class="empty">loading…</div>
+    <h2> Online Agents</h2>
+    <div id="agents-list" class="empty">loading</div>
   </div>
 
   <div class="panel">
-    <h2>📋 Blackboard Kanban</h2>
+    <h2> Blackboard Kanban</h2>
     <div class="kanban">
-      <div class="kanban-col todo">    <h3>📋 TODO</h3>    <div id="bb-todo"></div></div>
-      <div class="kanban-col doing">   <h3>🔨 DOING</h3>   <div id="bb-doing"></div></div>
-      <div class="kanban-col done">    <h3>✅ DONE</h3>    <div id="bb-done"></div></div>
-      <div class="kanban-col blocked"> <h3>🚧 BLOCKED</h3> <div id="bb-blocked"></div></div>
+      <div class="kanban-col todo">    <h3> TODO</h3>    <div id="bb-todo"></div></div>
+      <div class="kanban-col doing">   <h3> DOING</h3>   <div id="bb-doing"></div></div>
+      <div class="kanban-col done">    <h3> DONE</h3>    <div id="bb-done"></div></div>
+      <div class="kanban-col blocked"> <h3> BLOCKED</h3> <div id="bb-blocked"></div></div>
     </div>
   </div>
 
   <div class="panel">
-    <h2>📦 Active Missions</h2>
-    <div id="missions-list" class="empty">loading…</div>
+    <h2> Active Missions</h2>
+    <div id="missions-list" class="empty">loading</div>
   </div>
 
   <div class="panel">
-    <h2>📚 Skills Registry</h2>
-    <div id="skills-list" class="empty">loading…</div>
+    <h2> Skills Registry</h2>
+    <div id="skills-list" class="empty">loading</div>
   </div>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', {hour12: false}) : '—';
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString('zh-CN', {hour12: false}) : '';
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 async function fetchJSON(url) {
@@ -420,12 +420,12 @@ function renderBlackboard(data) {
     const items = (data.buckets && data.buckets[b]) || [];
     const target = $('bb-' + b);
     if (items.length === 0) {
-      target.innerHTML = '<div class="empty" style="padding:8px;">空</div>';
+      target.innerHTML = '<div class="empty" style="padding:8px;"></div>';
     } else {
       target.innerHTML = items.slice(0, 10).map(e => `
         <div class="card">
           <div class="topic">${esc(e.topic)}</div>
-          <div class="meta">by ${esc(e.author)} · ${esc(e.scope)} · ${fmtTime(e.updated_at)}</div>
+          <div class="meta">by ${esc(e.author)}  ${esc(e.scope)}  ${fmtTime(e.updated_at)}</div>
         </div>
       `).join('');
     }
@@ -443,7 +443,7 @@ function renderMissions(data) {
       <div style="flex:1;">
         <code>${esc(m.id.substring(0,8))}</code> ${esc(m.title)}
         <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">
-          ${esc(m.status)} · owned by <code>${esc(m.owner)}</code> · ${esc(m.priority)}
+          ${esc(m.status)}  owned by <code>${esc(m.owner)}</code>  ${esc(m.priority)}
         </div>
       </div>
       <div style="display:flex; align-items:center; min-width:100px;">
@@ -491,7 +491,7 @@ async function refresh() {
 }
 
 refresh();
-setInterval(refresh, 5000);  // 每 5 秒
+setInterval(refresh, 5000);  //  5
 </script>
 </body>
 </html>
@@ -503,17 +503,17 @@ async def index():
     return INDEX_HTML
 
 
-# ─────────────────────────────────────────────────────────────────
-# 启动
-# ─────────────────────────────────────────────────────────────────
+#
+#
+#
 
 def main():
     host = os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     port = int(os.environ.get("DASHBOARD_PORT", "8000"))
-    print(f"📡 NTH DAO Dashboard")
+    print(f" NTH DAO Dashboard")
     print(f"   workspace: {REPO}")
     print(f"   URL:       http://{host}:{port}")
-    print(f"   按 Ctrl+C 停止")
+    print(f"    Ctrl+C ")
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

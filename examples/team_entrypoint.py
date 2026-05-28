@@ -1,33 +1,33 @@
 """
-team_entrypoint.py — NTH DAO Agent 统一启动入口（PR 1-5 集成）
+team_entrypoint.py  NTH DAO Agent PR 1-5
 
-集成链路：
-    [启动钩子]
-        ↓ 可选 --reload-skills → SkillLoader.reload() 拉最新技能
-        ↓ 检查 sidechain/reload.signal（被动模式）
-    [创建 TeamAgent]
-        ↓ TeamMemoryManager(SoulProvider, UserModelProvider, VectorProvider, LedgerProvider)
-        ↓ 拼接 system prompt with memory fence
-    [主循环]
-        ↓ 每轮：context usage 检查 → CompressionPipeline.auto_compress (5 层)
-        ↓ 每轮：扫描 reload.signal（运行时热加载）
-        ↓ 每轮：append_history + LedgerProvider.record
-    [收尾钩子]
-        ↓ agent.finalize() — 持久化 user model
-        ↓ 可选 --auto-collect → LogCollector.collect → 推送到 team_logs/
-        ↓ 可选 --auto-evolve → EvoLoop.run_once → AUTO_MERGE/PENDING_REVIEW
 
-使用方式：
-    # 基础（仅 PR 1-3）
-    python team_entrypoint.py --goal "重构认证模块" --agent nlp-1
+    []
+          --reload-skills  SkillLoader.reload()
+          sidechain/reload.signal
+    [ TeamAgent]
+         TeamMemoryManager(SoulProvider, UserModelProvider, VectorProvider, LedgerProvider)
+          system prompt with memory fence
+    []
+         context usage   CompressionPipeline.auto_compress (5 )
+          reload.signal
+         append_history + LedgerProvider.record
+    []
+         agent.finalize()   user model
+          --auto-collect  LogCollector.collect   team_logs/
+          --auto-evolve  EvoLoop.run_once  AUTO_MERGE/PENDING_REVIEW
 
-    # 启动前拉最新技能
+
+    #  PR 1-3
+    python team_entrypoint.py --goal "" --agent nlp-1
+
+    #
     python team_entrypoint.py --goal "..." --reload-skills
 
-    # 会话结束自动 collect + evolve（本地，不推送）
+    #  collect + evolve
     python team_entrypoint.py --goal "..." --auto-collect --auto-evolve --no-push
 
-    # 完整生产模式：自动收集 + 推送到 team_logs/
+    #  +  team_logs/
     python team_entrypoint.py --goal "..." --auto-collect --auto-evolve
 """
 
@@ -38,7 +38,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
-# Windows 兼容：强制 stdout/stderr UTF-8（避免 GBK 编码错误）
+# Windows  stdout/stderr UTF-8 GBK
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -61,40 +61,40 @@ from team_layer.memory_providers import (
 )
 
 
-# ══════════════════════════════════════════════════════════════
-# 钩子 1: 启动前
-# ══════════════════════════════════════════════════════════════
+#
+#  1:
+#
 
 def startup_hook(args, cfg: SyncConfig) -> None:
     """
-    启动钩子：处理 reload 信号 + 可选主动拉取最新技能
+     reload  +
 
-    集成 PR 5 (SkillLoader) — 让 Agent 启动时使用最新团队技能
+     PR 5 (SkillLoader)   Agent
     """
-    # 1. 被动模式：检查是否有待处理的 reload.signal
+    # 1.  reload.signal
     pending = SkillLoader.check_reload_pending(cfg)
     if pending:
         print(f"[STARTUP] Pending reload signal detected from {pending.get('hostname')}")
         print(f"[STARTUP]   Paths to reload: {pending.get('reload_paths')}")
-        # 信号已被消费（check 内部 unlink），下次循环用最新技能
+        # check  unlink
 
-    # 2. 主动模式：用户显式要求拉最新
+    # 2.
     if args.reload_skills:
         print("[STARTUP] --reload-skills enabled, fetching latest skills...")
         try:
             loader = SkillLoader(cfg)
-            result = loader.reload(send_signal=False)  # 自己就是 Agent，不用发信号
+            result = loader.reload(send_signal=False)  #  Agent
             print(f"[STARTUP]   {result}")
         except Exception as e:
             print(f"[STARTUP] reload failed (non-fatal): {e}")
 
 
-# ══════════════════════════════════════════════════════════════
-# 钩子 2: 创建 Agent
-# ══════════════════════════════════════════════════════════════
+#
+#  2:  Agent
+#
 
 def create_team_context(goal: str, agent_id: str, compression_threshold: float = 0.75) -> TeamAgent:
-    """创建带完整记忆栈的 TeamAgent（集成 PR 1+2）"""
+    """ TeamAgent PR 1+2"""
     providers = [
         SoulProvider("skills/TEAM-SOUL.md"),
         UserModelProvider("memory/user-model.json"),
@@ -113,17 +113,17 @@ def create_team_context(goal: str, agent_id: str, compression_threshold: float =
     )
 
 
-# ══════════════════════════════════════════════════════════════
-# 钩子 3: 每轮迭代
-# ══════════════════════════════════════════════════════════════
+#
+#  3:
+#
 
 def per_iteration_hook(agent: TeamAgent, iteration: int, cfg: SyncConfig) -> None:
     """
-    每轮钩子：压缩检查 + 运行时热加载
+     +
 
-    集成 PR 3 (CompressionPipeline) + PR 5 (SkillLoader runtime reload)
+     PR 3 (CompressionPipeline) + PR 5 (SkillLoader runtime reload)
     """
-    # 1. 压缩检查（PR 3）
+    # 1. PR 3
     if agent.should_compact():
         agent.trigger_compression()
         pipeline = CompressionPipeline(
@@ -133,12 +133,12 @@ def per_iteration_hook(agent: TeamAgent, iteration: int, cfg: SyncConfig) -> Non
         msg = pipeline.auto_compress(threshold=agent.compression_threshold)
         print(f"[ITER {iteration}] {msg}")
 
-    # 2. 运行时热加载（PR 5）— 每 5 轮检查一次（避免太频繁）
+    # 2. PR 5  5
     if iteration > 0 and iteration % 5 == 0:
         pending = SkillLoader.check_reload_pending(cfg)
         if pending:
             print(f"[ITER {iteration}] Runtime reload signal from {pending.get('hostname')}")
-            # 让 SoulProvider/VectorProvider 重新初始化（拿到最新技能）
+            #  SoulProvider/VectorProvider
             for name in ("SoulProvider", "VectorProvider"):
                 provider = agent.team_mem.providers.get(name)
                 if provider:
@@ -149,20 +149,20 @@ def per_iteration_hook(agent: TeamAgent, iteration: int, cfg: SyncConfig) -> Non
                         print(f"[ITER {iteration}]   {name} reload failed: {e}")
 
 
-# ══════════════════════════════════════════════════════════════
-# 钩子 4: 收尾
-# ══════════════════════════════════════════════════════════════
+#
+#  4:
+#
 
 def shutdown_hook(agent: TeamAgent, args, cfg: SyncConfig) -> None:
     """
-    收尾钩子：持久化 + 可选 collect + 可选 evolve
+     +  collect +  evolve
 
-    集成 PR 5 (LogCollector) + PR 4 (EvoLoop)
+     PR 5 (LogCollector) + PR 4 (EvoLoop)
     """
-    # 1. 持久化（PR 2）— 写 user model、刷 ledger
+    # 1. PR 2  user model ledger
     agent.finalize()
 
-    # 2. 自动 collect（PR 5）
+    # 2.  collectPR 5
     if args.auto_collect:
         print("\n[SHUTDOWN] --auto-collect: exporting session logs...")
         try:
@@ -172,7 +172,7 @@ def shutdown_hook(agent: TeamAgent, args, cfg: SyncConfig) -> None:
         except Exception as e:
             print(f"[SHUTDOWN] collect failed (non-fatal): {e}")
 
-    # 3. 自动 evolve（PR 4）
+    # 3.  evolvePR 4
     if args.auto_evolve:
         print("\n[SHUTDOWN] --auto-evolve: running EvoLoop on local ledger...")
         try:
@@ -191,9 +191,9 @@ def shutdown_hook(agent: TeamAgent, args, cfg: SyncConfig) -> None:
             print(f"[SHUTDOWN] evolve failed (non-fatal): {e}")
 
 
-# ══════════════════════════════════════════════════════════════
-# 主循环
-# ══════════════════════════════════════════════════════════════
+#
+#
+#
 
 def run_agent_loop_with_backend(
     agent: TeamAgent,
@@ -204,9 +204,9 @@ def run_agent_loop_with_backend(
     backend_kwargs: Optional[dict] = None,
 ) -> None:
     """
-    PR 7: backend-driven 主循环
+    PR 7: backend-driven
 
-    使用任意 AgentBackend（mock / hermes / claude_code / openclaw / codex / openhands）
+     AgentBackendmock / hermes / claude_code / openclaw / codex / openhands
     """
     print(f"\n{'='*60}")
     print(f"Team Agent: {agent.agent_id}")
@@ -228,18 +228,18 @@ def run_agent_loop_with_backend(
         max_turns=max_iterations,
     )
 
-    print(f"\n✅ Backend session done — {result['session_summary'].total_turns} turns, "
+    print(f"\n Backend session done  {result['session_summary'].total_turns} turns, "
           f"{result['session_summary'].total_usage.total} tokens")
 
 
 def run_agent_loop(agent: TeamAgent, goal: str, max_iterations: int, cfg: SyncConfig) -> None:
     """
-    主循环（mock 版本 — 实际应与 Hermes Agent.run() 集成）
+    mock    Hermes Agent.run()
 
-    每轮：
-        1. 触发 per_iteration_hook（压缩 + 运行时 reload）
-        2. mock 一个动作（实际为 LLM 决策 + 工具执行）
-        3. append_history + 记账
+
+        1.  per_iteration_hook +  reload
+        2. mock  LLM  +
+        3. append_history +
     """
     print(f"\n{'='*60}")
     print(f"Team Agent: {agent.agent_id}")
@@ -258,16 +258,16 @@ def run_agent_loop(agent: TeamAgent, goal: str, max_iterations: int, cfg: SyncCo
         print(f"\n--- Iteration {iteration + 1} ---")
         print(f"Context usage: {agent.context_usage:.1%}")
 
-        # 每轮钩子（PR 3 + PR 5 运行时）
+        # PR 3 + PR 5
         per_iteration_hook(agent, iteration + 1, cfg)
 
-        # mock 一个动作（真实场景：LLM 调用 + 工具执行）
+        # mock LLM  +
         action = {"type": "think", "content": f"Working on: {goal}"}
         result = f"Progress: iteration {iteration + 1}"
 
         agent.append_history(action, result)
 
-        # 记账（供 EvoLoop 后期溯源）
+        #  EvoLoop
         agent.team_mem.providers["LedgerProvider"].record(
             agent_id=agent.agent_id,
             action_type="think",
@@ -276,83 +276,83 @@ def run_agent_loop(agent: TeamAgent, goal: str, max_iterations: int, cfg: SyncCo
             token_cost=100,
         )
 
-    print(f"\n✅ Completed {max_iterations} iterations")
+    print(f"\n Completed {max_iterations} iterations")
 
 
-# ══════════════════════════════════════════════════════════════
+#
 # CLI
-# ══════════════════════════════════════════════════════════════
+#
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NTH DAO Agent — Hermes Team Layer 统一入口",
+        description="NTH DAO Agent  NTH DAO ",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-集成 PR 1-5 完整链路：
-  PR 1: TeamAgent 适配器
-  PR 2: 4 记忆 Provider (Soul/User/Vector/Ledger)
-  PR 3: 5 层压缩管线（每轮触发）
-  PR 4: EvoLoop 自进化（--auto-evolve 启用）
-  PR 5: 多终端协同（--auto-collect / --reload-skills 启用）
+ PR 1-5
+  PR 1: TeamAgent
+  PR 2: 4  Provider (Soul/User/Vector/Ledger)
+  PR 3: 5
+  PR 4: EvoLoop --auto-evolve
+  PR 5: --auto-collect / --reload-skills
 
 Examples:
-  # 基础运行（仅本地）
-  python team_entrypoint.py --goal "重构认证模块"
+  #
+  python team_entrypoint.py --goal ""
 
-  # 启动前拉最新技能
+  #
   python team_entrypoint.py --goal "..." --reload-skills
 
-  # 完整生产模式
+  #
   python team_entrypoint.py --goal "..." --auto-collect --auto-evolve --reload-skills
         """,
     )
 
-    # 核心参数
-    parser.add_argument("--goal", type=str, help="Agent 的目标任务 (使用 --list-backends 时可省略)")
+    #
+    parser.add_argument("--goal", type=str, help="Agent  ( --list-backends )")
     parser.add_argument("--agent", type=str, default="team-agent-1", help="Agent ID")
-    parser.add_argument("--iterations", type=int, default=5, help="最大迭代次数")
+    parser.add_argument("--iterations", type=int, default=5, help="")
     parser.add_argument("--compression-threshold", type=float, default=0.75,
-                        help="压缩触发阈值 (0.0-1.0, 默认 0.75)")
+                        help=" (0.0-1.0,  0.75)")
 
-    # PR 7: Backend 选择
+    # PR 7: Backend
     parser.add_argument("--backend", type=str, default=None,
                         choices=["mock", "hermes", "claude_code", "openclaw", "codex", "openhands"],
-                        help="Agent backend (默认: 内置 mock 主循环)")
+                        help="Agent backend (:  mock )")
     parser.add_argument("--backend-config", type=str, default=None,
-                        help="JSON 字符串，传递给 backend 构造器")
+                        help="JSON  backend ")
     parser.add_argument("--list-backends", action="store_true",
-                        help="列出所有 backend 与可用性")
+                        help=" backend ")
 
-    # PR 5 集成 flag
+    # PR 5  flag
     parser.add_argument("--reload-skills", action="store_true",
-                        help="启动前主动拉最新技能 (调用 SkillLoader.reload)")
+                        help=" ( SkillLoader.reload)")
     parser.add_argument("--auto-collect", action="store_true",
-                        help="会话结束自动 collect 日志到 team_logs/")
+                        help=" collect  team_logs/")
     parser.add_argument("--no-push", action="store_true",
-                        help="禁用 git push（auto-collect 时只 commit 不 push）")
+                        help=" git pushauto-collect  commit  push")
 
-    # PR 4 集成 flag
+    # PR 4  flag
     parser.add_argument("--auto-evolve", action="store_true",
-                        help="会话结束自动跑 EvoLoop（本地进化）")
+                        help=" EvoLoop")
 
     args = parser.parse_args()
 
-    # ─── PR 7: --list-backends 短路退出 ───
+    #  PR 7: --list-backends
     if args.list_backends:
         desc = default_registry.describe(refresh=True)
         print("Registered backends:")
         for bid, info in desc.items():
-            status = "✅ AVAILABLE  " if info["available"] else "⛔ unavailable"
+            status = " AVAILABLE  " if info["available"] else " unavailable"
             note = info["capabilities"].get("notes", "")
             print(f"  {bid:15s} {status}  {note}")
             if info.get("error"):
-                print(f"    └─ error: {info['error']}")
+                print(f"     error: {info['error']}")
         sys.exit(0)
 
     if not args.goal:
         parser.error("--goal is required (unless --list-backends)")
 
-    # 同步配置（auto_push 与 --no-push 联动）
+    # auto_push  --no-push
     cfg = SyncConfig(auto_push=not args.no_push)
     print(f"[CONFIG] {cfg.describe()}")
     print(f"[CONFIG] backend={args.backend or 'built-in mock loop'}, "
@@ -361,34 +361,34 @@ Examples:
 
     agent = None
     try:
-        # 1. 启动钩子（PR 5: reload）
+        # 1. PR 5: reload
         startup_hook(args, cfg)
 
-        # 2. 创建 Agent（PR 1+2）
+        # 2.  AgentPR 1+2
         agent = create_team_context(
             goal=args.goal,
             agent_id=args.agent,
             compression_threshold=args.compression_threshold,
         )
 
-        # 3. 主循环（含 PR 3 压缩 + 运行时 reload）
+        # 3.  PR 3  +  reload
         if args.backend:
-            # PR 7: backend-driven 主循环
+            # PR 7: backend-driven
             backend_kwargs = json.loads(args.backend_config) if args.backend_config else {}
             run_agent_loop_with_backend(
                 agent, args.backend, args.goal, args.iterations, cfg, backend_kwargs,
             )
         else:
-            # 经典 mock 循环
+            #  mock
             run_agent_loop(agent, args.goal, args.iterations, cfg)
 
-        # 4. 收尾钩子（PR 4 evolve + PR 5 collect）
+        # 4. PR 4 evolve + PR 5 collect
         shutdown_hook(agent, args, cfg)
 
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted by user")
         if agent:
-            agent.finalize()  # 紧急持久化
+            agent.finalize()  #
         sys.exit(0)
     except Exception as e:
         print(f"\n[ERROR] {type(e).__name__}: {e}")

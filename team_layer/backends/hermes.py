@@ -1,16 +1,16 @@
 """
-HermesBackend — 调用 hermes-agent CLI
+HermesBackend   hermes-agent CLI
 
-策略：
-1. 探测 hermes 包是否安装（python -c "import hermes")
-2. 通过 subprocess 调用 `python -m hermes.cli`（或 `hermes` 可执行入口）
-3. 用 batch_runner 风格的一次性 prompt → response 模式
 
-适用场景：
-- 用户已 `pip install -e .` 当前 Hermes 仓库
-- 想用 Hermes 的强大 tool/skill 体系，同时享受 Team Layer 的协作能力
+1.  hermes python -c "import hermes")
+2.  subprocess  `python -m hermes.cli` `hermes`
+3.  batch_runner  prompt  response
 
-如果 Hermes 未安装，is_available() 返回 False，整个 backend 优雅降级。
+
+-  `pip install -e .`  Hermes
+-  Hermes  tool/skill  NTH DAO runtime
+
+ Hermes is_available()  False backend
 """
 
 from __future__ import annotations
@@ -35,13 +35,13 @@ from .base import (
 
 
 class HermesBackend(AgentBackend):
-    """Hermes Agent 适配器（subprocess 模式）"""
+    """Hermes Agent subprocess """
 
     backend_id = "hermes"
 
-    # 探测 Hermes 安装位置（按顺序尝试）
+    #  Hermes
     HERMES_ENTRYPOINTS = [
-        ["hermes"],                       # 安装到 PATH 的可执行
+        ["hermes"],                       #  PATH
         [sys.executable, "-m", "hermes"], # python -m hermes
     ]
 
@@ -53,21 +53,21 @@ class HermesBackend(AgentBackend):
     ):
         """
         Args:
-            model: 模型名（如 "anthropic/claude-sonnet-4-6"）
-            hermes_args: 额外传给 hermes CLI 的参数
+            model:  "anthropic/claude-sonnet-4-6"
+            hermes_args:  hermes CLI
         """
         super().__init__(model=model, **kwargs)
         self.model = model
         self.hermes_args = hermes_args or []
-        self._cmd: Optional[list] = None  # 缓存可用入口
+        self._cmd: Optional[list] = None  #
 
     @classmethod
     def is_available(cls, **kwargs) -> bool:
-        """探测 hermes CLI 是否可用"""
-        # 1. 试 PATH 中的 hermes 可执行
+        """ hermes CLI """
+        # 1.  PATH  hermes
         if shutil.which("hermes"):
             return True
-        # 2. 试 python -m hermes
+        # 2.  python -m hermes
         try:
             result = subprocess.run(
                 [sys.executable, "-c", "import hermes; print('ok')"],
@@ -80,7 +80,7 @@ class HermesBackend(AgentBackend):
             return False
 
     def _resolve_cmd(self) -> list:
-        """选择可用的 hermes 入口"""
+        """ hermes """
         if self._cmd is not None:
             return self._cmd
         for cmd in self.HERMES_ENTRYPOINTS:
@@ -120,20 +120,20 @@ class HermesBackend(AgentBackend):
         cmd = self._resolve_cmd()
 
         # Hermes CLI: `hermes chat -q QUERY -Q -m MODEL`
-        # - chat 子命令支持 single-query non-interactive 模式
-        # - -q / --query     单次查询
-        # - -Q / --quiet     编程友好（去 banner/spinner，只输出最终响应）
-        # - -m / --model     模型
-        # 注意：Hermes 没有独立的 --system 选项，system_prompt 拼到 query 前面
-        # 注意：默认 *不加* --ignore-user-config，让 hermes 读 ~/.hermes/config.yaml + .env
-        #       （这样用户在 .env 配的 API key 才能传进去）。若需 CI 严格隔离，
-        #       传入 hermes_args=["--ignore-user-config"]。
+        # - chat  single-query non-interactive
+        # - -q / --query
+        # - -Q / --quiet      banner/spinner
+        # - -m / --model
+        # Hermes  --system system_prompt  query
+        #  ** --ignore-user-config hermes  ~/.hermes/config.yaml + .env
+        #        .env  API key  CI
+        #        hermes_args=["--ignore-user-config"]
         full_prompt = self._compose_prompt(system_prompt, prompt)
 
         full_args = list(cmd) + ["chat", "-q", full_prompt, "-Q"]
         if self.model:
             full_args += ["-m", self.model]
-        # 用户传入的额外 args（例如 --provider / --skills / --max-turns / --ignore-user-config）
+        #  args --provider / --skills / --max-turns / --ignore-user-config
         full_args += self.hermes_args
 
         cwd = str(self._session_config.workdir) if self._session_config.workdir else None
@@ -141,11 +141,11 @@ class HermesBackend(AgentBackend):
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
         try:
-            # 用 Popen + 直接 read 而非 subprocess.run：
-            # Python 3.14 在 Windows 非 UTF-8 locale (如 CP936/GBK) 下，
-            # subprocess.run/communicate 内部启动的 _readerthread 即使我们传 binary
-            # 也会 unhandled UnicodeDecodeError 污染主进程 stderr。
-            # Popen + read() 是单线程的，完全规避此问题。
+            #  Popen +  read  subprocess.run
+            # Python 3.14  Windows  UTF-8 locale ( CP936/GBK)
+            # subprocess.run/communicate  _readerthread  binary
+            #  unhandled UnicodeDecodeError  stderr
+            # Popen + read()
             popen = subprocess.Popen(
                 full_args,
                 stdin=subprocess.DEVNULL,
@@ -188,7 +188,7 @@ class HermesBackend(AgentBackend):
         stdout = proc_stdout
         stderr = proc_stderr
 
-        # 显式检测 Hermes 未配置（exit 0 但提示要 setup）
+        #  Hermes exit 0  setup
         if self._looks_unconfigured(stdout, stderr):
             latency = self._track_turn_end(start, TokenUsage())
             return TurnResponse(
@@ -214,7 +214,7 @@ class HermesBackend(AgentBackend):
                 error=f"hermes exit {returncode}: {stderr[:300] or stdout[:300]}",
             )
 
-        # Quiet 模式下 stdout 是最终响应（可能末尾有 session info 行）
+        # Quiet  stdout  session info
         content = self._extract_final_response(stdout)
 
         return TurnResponse(
@@ -225,11 +225,11 @@ class HermesBackend(AgentBackend):
             metadata={"backend": self.backend_id, "cmd": cmd},
         )
 
-    # ─── prompt 组装 ───
+    #  prompt
 
     @staticmethod
     def _compose_prompt(system_prompt: str, user_prompt: str) -> str:
-        """Hermes 没有独立 --system，所以把 system 拼在 user 前"""
+        """Hermes  --system system  user """
         if not system_prompt:
             return user_prompt
         return (
@@ -239,11 +239,11 @@ class HermesBackend(AgentBackend):
             f"{user_prompt}"
         )
 
-    # ─── 输出解析 ───
+    #
 
     @staticmethod
     def _looks_unconfigured(stdout: str, stderr: str) -> bool:
-        """检测 Hermes 未配置的友好提示"""
+        """ Hermes """
         markers = [
             "isn't configured yet",
             "no API keys or providers found",
@@ -256,13 +256,13 @@ class HermesBackend(AgentBackend):
     @staticmethod
     def _extract_final_response(stdout: str) -> str:
         """
-        Quiet 模式下 stdout 包含 final response，可能末尾有 session info。
-        策略：去掉末尾以 'Session ID:' / 'Session:' 开头的行，其余原样返回。
+        Quiet  stdout  final response session info
+         'Session ID:' / 'Session:'
         """
         if not stdout:
             return ""
         lines = stdout.rstrip().split("\n")
-        # 从后往前删 session 行
+        #  session
         while lines and (
             lines[-1].strip().startswith(("Session ID:", "Session:", "Tokens used:", "Cost:"))
             or not lines[-1].strip()
@@ -275,21 +275,21 @@ class HermesBackend(AgentBackend):
 
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities(
-            supports_streaming=False,  # subprocess 模式默认不流式
-            supports_tools=True,        # Hermes 有强大的 tool/skill 体系
+            supports_streaming=False,  # subprocess
+            supports_tools=True,        # Hermes  tool/skill
             supports_system_prompt=True,
-            supports_multi_turn=False,  # 当前实现是 batch one-shot
+            supports_multi_turn=False,  #  batch one-shot
             max_context_tokens=200_000,
             notes="Hermes via subprocess. Install with: pip install -e . (current repo)",
         )
 
-    # ─── 内部辅助 ───
+    #
 
     @staticmethod
     def _extract_usage(stdout: str, stderr: str) -> TokenUsage:
-        """从 Hermes 输出解析 token 用量（best-effort）"""
+        """ Hermes  token best-effort"""
         usage = TokenUsage()
-        # Hermes 的 statusline 通常带 token 信息：寻找类似 "[12345 tokens]"
+        # Hermes  statusline  token  "[12345 tokens]"
         combined = (stdout or "") + "\n" + (stderr or "")
         import re
         m = re.search(r"input[:\s]+(\d+)\s*tokens?", combined, re.I)

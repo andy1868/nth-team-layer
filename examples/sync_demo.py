@@ -1,17 +1,17 @@
 """
-PR 5 多终端协同 — 端到端演示
+PR 5
 
-场景模拟：
-  - 两台终端（alice-laptop / bob-desktop）各自运行 TeamAgent
-  - 各自记录 4 条 timeout_database 失败到本地 ledger
-  - 各自调用 LogCollector 导出零冲突文件到 logs/（不实际 push，避免噪音）
-  - 调用 CentralAggregator.run() 合并所有终端日志 → 触发 EvoLoop
-  - 验证：
-      ✓ logs/ 下生成 2 个零冲突命名的文件
-      ✓ sidechain/aggregated_ledger.jsonl 包含 8 条（去重后）
-      ✓ EvoLoop 触发 → fix_timeout_database AUTO_MERGE
-      ✓ sidechain/aggregate_report.md 生成可读 PR 报告
-      ✓ sync_audit.jsonl 记录所有操作
+
+  - alice-laptop / bob-desktop TeamAgent
+  -  4  timeout_database  ledger
+  -  LogCollector  logs/ push
+  -  CentralAggregator.run()    EvoLoop
+  -
+       logs/  2
+       sidechain/aggregated_ledger.jsonl  8
+       EvoLoop   fix_timeout_database AUTO_MERGE
+       sidechain/aggregate_report.md  PR
+       sync_audit.jsonl
 """
 
 import json
@@ -42,7 +42,7 @@ REPO_ROOT = Path(__file__).parent
 
 
 def cleanup():
-    """清理上次 demo 产物"""
+    """ demo """
     paths = [
         REPO_ROOT / "logs",
         REPO_ROOT / "sidechain" / "ledger.jsonl",
@@ -64,18 +64,18 @@ def cleanup():
 
 
 def simulate_terminal(hostname: str, username: str, agent_id: str, error_count: int):
-    """模拟一台终端记录日志 + collect"""
-    print(f"\n--- 终端: {hostname}/{username} (agent: {agent_id}) ---")
+    """ + collect"""
+    print(f"\n--- : {hostname}/{username} (agent: {agent_id}) ---")
 
-    # 用伪造的 hostname/username 构造 config
+    #  hostname/username  config
     cfg = SyncConfig(
         repo_root=REPO_ROOT,
         hostname=hostname,
         username=username,
-        auto_push=False,  # demo 不真推
+        auto_push=False,  # demo
     )
 
-    # 1. 写本地 ledger
+    # 1.  ledger
     ledger = LedgerProvider(str(cfg.ledger_full_path()))
     ledger.initialize({})
     for i in range(error_count):
@@ -94,19 +94,19 @@ def simulate_terminal(hostname: str, username: str, agent_id: str, error_count: 
     result = collector.collect(auto_push=False)
     print(f"  {result}")
 
-    # 重要：每个终端 collect 后清除本地 ledger（避免下一个终端读到旧数据）
+    #  collect  ledger
     cfg.ledger_full_path().unlink(missing_ok=True)
     (cfg.sidechain_path() / ".last_collected").unlink(missing_ok=True)
 
 
 def show_logs_dir():
-    """展示 logs/ 目录内容（零冲突命名验证）"""
+    """ logs/ """
     logs_dir = REPO_ROOT / "logs"
     if not logs_dir.exists():
-        print("  ❌ logs/ 不存在")
+        print("   logs/ ")
         return
     files = sorted(logs_dir.glob("*.jsonl"))
-    print(f"\n📁 logs/ 中有 {len(files)} 个文件:")
+    print(f"\n logs/  {len(files)} :")
     for f in files:
         size = f.stat().st_size
         lines = sum(1 for _ in f.open(encoding="utf-8")) if size > 0 else 0
@@ -114,10 +114,10 @@ def show_logs_dir():
 
 
 def show_aggregate_outputs():
-    """展示汇总产物"""
+    """"""
     print()
     print("=" * 70)
-    print("[Step 4] 验证汇总产物")
+    print("[Step 4] ")
     print("=" * 70)
 
     artifacts = [
@@ -129,19 +129,19 @@ def show_aggregate_outputs():
     ]
     for label, path in artifacts:
         if path.exists():
-            print(f"  ✅ {label}: {path.relative_to(REPO_ROOT)} ({path.stat().st_size} bytes)")
+            print(f"   {label}: {path.relative_to(REPO_ROOT)} ({path.stat().st_size} bytes)")
         else:
-            print(f"  ❌ {label}: MISSING")
+            print(f"   {label}: MISSING")
 
 
 def show_report_preview():
-    """展示 PR 报告前 30 行"""
+    """ PR  30 """
     report = REPO_ROOT / "sidechain" / "aggregate_report.md"
     if not report.exists():
         return
     print()
     print("=" * 70)
-    print("[Step 5] PR 报告预览 (sidechain/aggregate_report.md)")
+    print("[Step 5] PR  (sidechain/aggregate_report.md)")
     print("=" * 70)
     content = report.read_text(encoding="utf-8")
     for line in content.split("\n")[:30]:
@@ -150,20 +150,20 @@ def show_report_preview():
 
 def main():
     print("=" * 70)
-    print("PR 5 多终端协同 — 端到端演示")
+    print("PR 5   ")
     print("=" * 70)
 
-    print("\n[Step 0] 清理上一次演示产物...")
+    print("\n[Step 0] ...")
     cleanup()
 
-    print("\n[Step 1] 模拟两台终端各自记录失败日志 + collect")
+    print("\n[Step 1]  + collect")
     simulate_terminal("alice-laptop", "alice", "worker-alice", error_count=4)
     simulate_terminal("bob-desktop", "bob", "worker-bob", error_count=4)
 
-    print("\n[Step 2] 零冲突命名验证")
+    print("\n[Step 2] ")
     show_logs_dir()
 
-    print("\n[Step 3] 中央汇总器 — 合并 + 触发 EvoLoop")
+    print("\n[Step 3]    +  EvoLoop")
     cfg = SyncConfig(repo_root=REPO_ROOT)
     aggregator = CentralAggregator(cfg, noise_min_count=2)
     report = aggregator.run(trigger_evolution=True)
@@ -179,7 +179,7 @@ def main():
     show_aggregate_outputs()
     show_report_preview()
 
-    print("\n[Step 6] SkillLoader 干跑测试（不实际发信号）")
+    print("\n[Step 6] SkillLoader ")
     loader = SkillLoader(cfg)
     print(f"  Loader reload paths: {loader.reload_paths}")
     print(f"  Signal mechanism: {'pkill -HUP' if sys.platform != 'win32' else 'signal-file'}")
@@ -187,15 +187,15 @@ def main():
 
     print()
     print("=" * 70)
-    print("✅ PR 5 sync demo complete")
+    print(" PR 5 sync demo complete")
     print("=" * 70)
     print()
     print("In production:")
     print("  - LogCollector runs hourly on each terminal (cron/systemd)")
     print("  - CentralAggregator runs daily via GitHub Action")
-    print("    → .github/workflows/team-evolve-daily.yml")
+    print("     .github/workflows/team-evolve-daily.yml")
     print("  - SkillLoader runs after team merges Evolution PR")
-    print("    → atomic checkout + reload signal")
+    print("     atomic checkout + reload signal")
 
 
 if __name__ == "__main__":

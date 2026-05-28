@@ -1,12 +1,14 @@
-id: example_skill
-desc: "示例技能 — 演示 Skill Registry 的结构"
-trigger: "example"
-risk: low
-contract:
-  input: {"query": "str"}
-  output: {"result": "str"}
+---
+name: example-skill
+description: Minimal example skill for the NTH DAO skill registry.
+---
 
-## 修复步骤
-1. 这是一个示例技能
-2. 在 skills/registry/ 中添加更多 .md 文件
-3. 支持自动热加载
+# Example Skill
+
+This file demonstrates the shape of a registry skill.
+
+## Steps
+
+1. Give the skill a stable name.
+2. Describe when it should be used.
+3. Keep instructions short and auditable.

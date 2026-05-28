@@ -1,17 +1,17 @@
 """
-ClaudeCodeBackend — 调用 Anthropic Claude Code CLI
+ClaudeCodeBackend   Anthropic Claude Code CLI
 
-策略：
-- 调用 `claude -p "<prompt>" --output-format stream-json`
-- 解析 stream-json 输出（NDJSON：一行一个 JSON 事件）
-- 累计 token 用量，最后输出最终消息
 
-支持环境：
-- 用户已通过 npm 安装 @anthropic-ai/claude-code
-- 或本地有 cli.js（用户在 NTH Agent Pro 里的 ClaudeCodeBridge 用过这种方式）
+-  `claude -p "<prompt>" --output-format stream-json`
+-  stream-json NDJSON JSON
+-  token
 
-参考：
-- 用户的 NTH Agent Pro: src/nth_agent_pro/claude_code_bridge.py 用类似机制
+
+-  npm  @anthropic-ai/claude-code
+-  cli.js NTH Agent Pro  ClaudeCodeBridge
+
+
+-  NTH Agent Pro: src/nth_agent_pro/claude_code_bridge.py
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ from .base import (
 
 
 class ClaudeCodeBackend(AgentBackend):
-    """Claude Code CLI 适配器"""
+    """Claude Code CLI """
 
     backend_id = "claude_code"
 
-    # CLI 入口探测顺序
+    # CLI
     CLI_NAMES = ["claude", "claude-code"]
 
     def __init__(
@@ -53,9 +53,9 @@ class ClaudeCodeBackend(AgentBackend):
     ):
         """
         Args:
-            cli_path: 显式指定 CLI 路径（None 时自动探测）
-            model: 模型名（如 "claude-sonnet-4-6"）
-            allowed_tools: 允许的工具列表
+            cli_path:  CLI None
+            model:  "claude-sonnet-4-6"
+            allowed_tools:
         """
         super().__init__(cli_path=cli_path, model=model, **kwargs)
         self._cli_path = cli_path
@@ -64,7 +64,7 @@ class ClaudeCodeBackend(AgentBackend):
 
     @classmethod
     def is_available(cls, cli_path: Optional[str] = None, **kwargs) -> bool:
-        """探测 claude CLI 是否可用"""
+        """ claude CLI """
         if cli_path:
             return Path(cli_path).exists()
         for name in cls.CLI_NAMES:
@@ -73,7 +73,7 @@ class ClaudeCodeBackend(AgentBackend):
         return False
 
     def _resolve_cli(self) -> str:
-        """选择可用的 CLI 入口"""
+        """ CLI """
         if self._cli_path:
             return self._cli_path
         for name in self.CLI_NAMES:
@@ -104,7 +104,7 @@ class ClaudeCodeBackend(AgentBackend):
         start = self._track_turn_start()
         cli = self._resolve_cli()
 
-        # 组装命令（参考 ClaudeCodeBridge 的用法）
+        #  ClaudeCodeBridge
         args = [cli, "-p", "--output-format", "stream-json", "--verbose"]
         if self.model:
             args += ["--model", self.model]
@@ -119,8 +119,8 @@ class ClaudeCodeBackend(AgentBackend):
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
         try:
-            # 用 Popen + binary read（参见 hermes.py 注释：避免 Python 3.14 Windows
-            # 非 UTF-8 locale 下 subprocess.run reader thread 的 UnicodeDecodeError）
+            #  Popen + binary read hermes.py  Python 3.14 Windows
+            #  UTF-8 locale  subprocess.run reader thread  UnicodeDecodeError
             popen = subprocess.Popen(
                 args,
                 stdin=subprocess.PIPE,
@@ -135,7 +135,7 @@ class ClaudeCodeBackend(AgentBackend):
                     timeout=self._session_config.timeout,
                 )
             finally:
-                # communicate 已经关闭了 PIPE，这里只是 defensive
+                # communicate  PIPE defensive
                 pass
             returncode = popen.returncode
             stdout = (stdout_bytes or b"").decode("utf-8", errors="replace")
@@ -157,7 +157,7 @@ class ClaudeCodeBackend(AgentBackend):
                 error=f"subprocess failed: {type(e).__name__}: {e}",
             )
 
-        # 解析 stream-json (NDJSON)
+        #  stream-json (NDJSON)
         content, usage, finish_reason, error = self._parse_stream_json(
             stdout, stderr, returncode
         )
@@ -180,7 +180,7 @@ class ClaudeCodeBackend(AgentBackend):
             supports_streaming=True,
             supports_tools=True,
             supports_system_prompt=True,
-            supports_multi_turn=False,  # 当前实现是一次性
+            supports_multi_turn=False,  #
             max_context_tokens=200_000,
             cost_per_1k_input=3.0,    # Sonnet pricing ~ $3/M
             cost_per_1k_output=15.0,
@@ -191,7 +191,7 @@ class ClaudeCodeBackend(AgentBackend):
             ),
         )
 
-    # ─── 内部 ───
+    #
 
     def _parse_stream_json(
         self,
@@ -200,9 +200,9 @@ class ClaudeCodeBackend(AgentBackend):
         returncode: int,
     ) -> tuple:
         """
-        解析 Claude Code 的 stream-json 输出（NDJSON）
+         Claude Code  stream-json NDJSON
 
-        返回：(content, usage, finish_reason, error)
+        (content, usage, finish_reason, error)
         """
         if returncode != 0:
             error = (stderr or "")[:500] or f"exit {returncode}"
@@ -223,14 +223,14 @@ class ClaudeCodeBackend(AgentBackend):
 
             event_type = event.get("type", "")
 
-            # 文本内容
+            #
             if event_type == "assistant":
                 msg = event.get("message", {})
                 for block in msg.get("content", []):
                     if isinstance(block, dict) and block.get("type") == "text":
                         content_parts.append(block.get("text", ""))
 
-            # 最终结果（含 usage）
+            #  usage
             elif event_type == "result":
                 if event.get("subtype") == "success":
                     finish_reason = "stop"

@@ -1,16 +1,16 @@
 """
-MockBackend — 离线测试 / demo 用 backend
+MockBackend   / demo  backend
 
-100% 可用，无外部依赖。基于关键字的模板响应：
-  含 "error"/"fail"  → 模拟错误（finish_reason="error"）
-  含 "tool"          → 返回 mock tool_call
-  含 "timeout"       → 模拟 timeout
-  其他              → "Mock response for: <prompt 摘要>"
+100%
+   "error"/"fail"   finish_reason="error"
+   "tool"            mock tool_call
+   "timeout"         timeout
+                 "Mock response for: <prompt >"
 
-用于：
-- 单元测试 / CI
-- demo（无需 API key）
-- backend ABC 行为验证
+
+-  / CI
+- demo API key
+- backend ABC
 """
 
 import hashlib
@@ -30,7 +30,7 @@ from .base import (
 
 
 class MockBackend(AgentBackend):
-    """完全本地、确定性的 mock backend"""
+    """ mock backend"""
 
     backend_id = "mock"
 
@@ -43,9 +43,9 @@ class MockBackend(AgentBackend):
     ):
         """
         Args:
-            latency_ms: 模拟延迟（每个 turn 等待的毫秒数）
-            fail_rate: 模拟失败概率 [0,1]（基于 prompt hash 确定）
-            seed: 随机种子（确保可复现）
+            latency_ms:  turn
+            fail_rate:  [0,1] prompt hash
+            seed:
         """
         super().__init__(latency_ms=latency_ms, fail_rate=fail_rate, seed=seed, **kwargs)
         self.latency_ms = latency_ms
@@ -54,7 +54,7 @@ class MockBackend(AgentBackend):
 
     @classmethod
     def is_available(cls, **kwargs) -> bool:
-        """Mock 永远可用"""
+        """Mock """
         return True
 
     def start_session(self, config: SessionConfig) -> None:
@@ -73,10 +73,10 @@ class MockBackend(AgentBackend):
         if self.latency_ms > 0:
             time.sleep(self.latency_ms / 1000.0)
 
-        # 估算 token（按 4 chars/token 粗算）
+        #  token 4 chars/token
         input_tokens = (len(prompt) + len(system_prompt)) // 4
 
-        # 关键字驱动的模板响应
+        #
         content, finish_reason, tool_calls, error = self._dispatch(prompt)
         output_tokens = len(content) // 4
 
@@ -112,13 +112,13 @@ class MockBackend(AgentBackend):
             notes="Deterministic template-based mock. Free + offline.",
         )
 
-    # ─── 内部 ───
+    #
 
     def _dispatch(self, prompt: str):
-        """关键字路由 → (content, finish_reason, tool_calls, error)"""
+        """  (content, finish_reason, tool_calls, error)"""
         lower = prompt.lower()
 
-        # 显式错误
+        #
         if "fail" in lower or "raise error" in lower:
             return (
                 "[mock error: prompt contained 'fail']",
@@ -127,7 +127,7 @@ class MockBackend(AgentBackend):
                 "intentional failure (keyword 'fail' in prompt)",
             )
 
-        # 模拟 timeout
+        #  timeout
         if "timeout" in lower:
             return (
                 "[mock timeout: simulated]",
@@ -136,7 +136,7 @@ class MockBackend(AgentBackend):
                 "intentional timeout",
             )
 
-        # 模拟 tool call
+        #  tool call
         if "tool" in lower or "use_tool" in lower:
             tool_match = re.search(r"tool[:\s]+(\w+)", lower)
             tool_name = tool_match.group(1) if tool_match else "search_web"
@@ -147,7 +147,7 @@ class MockBackend(AgentBackend):
                 None,
             )
 
-        # 概率失败（基于 prompt hash，确定性）
+        #  prompt hash
         if self.fail_rate > 0:
             h = int(hashlib.md5(prompt.encode("utf-8")).hexdigest(), 16) % 1000
             if h < self.fail_rate * 1000:
@@ -158,7 +158,7 @@ class MockBackend(AgentBackend):
                     f"random fail (rate={self.fail_rate})",
                 )
 
-        # 默认响应
+        #
         summary = prompt[:60].replace("\n", " ")
         return (
             f"Mock response to: '{summary}{'...' if len(prompt) > 60 else ''}'",

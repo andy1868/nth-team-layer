@@ -1,12 +1,12 @@
 """
-EvoLoop — 自进化流水线编排器
+EvoLoop
 
-串联三阶段：
-    LedgerProvider → Trigger → Reflector → Verifier → Gate
 
-提供两种入口：
-    run_once()          — 单次扫描，触发所有满足 ROI 的进化
-    run_for_sig(sig)    — 强制对指定签名进化（手动触发）
+    LedgerProvider  Trigger  Reflector  Verifier  Gate
+
+
+    run_once()            ROI
+    run_for_sig(sig)
 """
 
 import json
@@ -23,7 +23,7 @@ from .verifier import VerifyResult, Verifier
 
 @dataclass
 class EvoCycleResult:
-    """一个 EvoLoop 周期的完整结果（供主代理观测）"""
+    """ EvoLoop """
     decision: EvolutionDecision
     patch: Optional[Patch] = None
     verify: Optional[VerifyResult] = None
@@ -43,7 +43,7 @@ class EvoCycleResult:
 
 
 class EvoLoop:
-    """EvoLoop 编排器"""
+    """EvoLoop """
 
     def __init__(
         self,
@@ -56,9 +56,9 @@ class EvoLoop:
     ):
         """
         Args:
-            ledger: LedgerProvider 实例（数据源）
-            trigger/reflector/verifier/gate: 可选自定义实例，未提供则用默认配置
-            llm_callback: 注入到 Reflector 的 LLM 回调
+            ledger: LedgerProvider
+            trigger/reflector/verifier/gate:
+            llm_callback:  Reflector  LLM
         """
         self.ledger = ledger
         self.trigger = trigger or EvoTrigger(ledger)
@@ -67,7 +67,7 @@ class EvoLoop:
         self.gate = gate or EvolutionGate()
 
     def run_once(self) -> List[EvoCycleResult]:
-        """扫描账本，触发所有满足 ROI 的进化"""
+        """ ROI """
         decisions = self.trigger.scan_all()
         if not decisions:
             print("[EVO] No error signatures meet evolution threshold.")
@@ -81,7 +81,7 @@ class EvoLoop:
         return results
 
     def run_for_sig(self, error_sig: str, force: bool = False) -> EvoCycleResult:
-        """对单个错误签名运行 EvoLoop（force=True 跳过 trigger 门槛）"""
+        """ EvoLoopforce=True  trigger """
         decision = self.trigger.check(error_sig)
         if not decision.should_evolve and not force:
             return EvoCycleResult(decision=decision, stopped_at="trigger")
@@ -98,10 +98,10 @@ class EvoLoop:
         return self._run_pipeline(decision)
 
     def _run_pipeline(self, decision: EvolutionDecision) -> EvoCycleResult:
-        """完整三阶段流水线"""
+        """"""
         sig = decision.error_sig
 
-        # Phase 1: 收集样本日志
+        # Phase 1:
         samples = self._collect_samples(sig, limit=5)
         if not samples:
             return EvoCycleResult(
@@ -109,21 +109,21 @@ class EvoLoop:
                 stopped_at="reflector",
             )
 
-        # Phase 2: Reflector 生成 Patch
+        # Phase 2: Reflector  Patch
         try:
             patch = self.reflector.reflect(sig, samples)
         except Exception as e:
             print(f"[EVO] Reflector failed for {sig}: {e}")
             return EvoCycleResult(decision=decision, stopped_at="reflector")
 
-        # Phase 3: Verifier 沙箱验证
+        # Phase 3: Verifier
         try:
             verify = self.verifier.verify(patch)
         except Exception as e:
             print(f"[EVO] Verifier crashed for {patch.skill_id}: {e}")
             return EvoCycleResult(decision=decision, patch=patch, stopped_at="verifier")
 
-        # Phase 4: Gate 决策
+        # Phase 4: Gate
         try:
             gate_decision = self.gate.decide(patch, verify)
         except Exception as e:
@@ -141,7 +141,7 @@ class EvoLoop:
         )
 
     def _collect_samples(self, error_sig: str, limit: int = 5) -> List[dict]:
-        """从账本收集匹配的样本日志（最近 N 条）"""
+        """ N """
         ledger_path = Path(self.ledger.ledger_path)
         if not ledger_path.exists():
             return []
@@ -157,5 +157,5 @@ class EvoLoop:
         except Exception as e:
             print(f"[EVO] Failed to collect samples: {e}")
 
-        # 保留最近 N 条
+        #  N
         return matches[-limit:]

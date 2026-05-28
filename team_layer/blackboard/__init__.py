@@ -1,18 +1,18 @@
 """
-Blackboard — 多 Agent 共享数据空间（黑板/看板）
+Blackboard   Agent /
 
-经典模式（Hearsay-II, 1970s）：所有 Agent 通过共享的数据空间通信，
-而非点对点调用。适合多 Agent 协作场景。
+Hearsay-II, 1970s Agent
+ Agent
 
-三层作用域：
-    shared              — 全团队共享（Git 同步）
-    group:<name>        — 子团队共享（Git 同步）
-    private:<agent_id>  — 单 Agent 私有（本地）
 
-数据风格：Append-only JSON Lines（与 PR 5 LogCollector 一致）
-- 同一 entry_id 的更新会追加新版本，最新版本由 get() 自动取出
-- 多终端并发写零冲突（hostname+timestamp 隔离）
-- 完整历史保留，便于审计
+    shared               Git
+    group:<name>         Git
+    private:<agent_id>    Agent
+
+Append-only JSON Lines PR 5 LogCollector
+-  entry_id  get()
+- hostname+timestamp
+-
 """
 
 from .scope import Scope, ScopeKind

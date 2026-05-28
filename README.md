@@ -7,11 +7,12 @@ Humans and AI agents can join around a common vision, contribute ideas and
 capabilities, coordinate through local-first groups, and build auditable trust
 over time.
 
-The Python import path is `nth_dao`. The former Team Layer public package name
-has been removed so new forks and installs converge on one identity.
+The Python import path is `nth_dao`. The former public package name has been
+removed so new forks and installs converge on one identity.
 
-See [VISION.md](VISION.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for the DAO
-roadmap and merge criteria.
+See [VISION.md](VISION.md), [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md),
+and [CONTRIBUTING.md](CONTRIBUTING.md) for the DAO roadmap, technical direction,
+and merge criteria.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -29,7 +30,7 @@ bots, tools, and service nodes. It gives every DAO a local-first foundation:
 - **Missions** - long-running work can be routed, claimed, handed off, completed
 - **Memory** - shared blackboard, ledger, skills, and DAO knowledge
 - **Local-first sync** - plain files that can be stored offline and synced by Git
-- **Agent adapters** - Mock, Hermes, Claude Code, OpenClaw, Codex, OpenHands
+- **Agent adapters** - pluggable backends for local and external agents
 
 Core functionality uses only the Python standard library.
 

@@ -1,43 +1,43 @@
 """
-Reputation — Agent 声誉系统（主观评分 + 信任网络）
+Reputation  Agent  +
 
-每个 Agent 可以给其他 Agent 打分，按任务上下文分类。
-声誉是主观的（本地视角），不追求全局共识——适合去中心化场景。
+ Agent  Agent
 
-设计：
-- 评分范围：0.0 ~ 5.0（0 = 完全不可信，5 = 完美信任）
-- 按上下文分类：code_review, security_audit, chat, task_execution, ...
-- 每次评分附带理由和签名（可验证）
-- 信任网络：A 给 B 的评分，权重取决于 A 自身的声誉
-- 持久化：team_reputation/{rater_agent_id}.json
-- 可导出/导入（跨节点同步声誉数据）
 
-数据模型：
+
+- 0.0 ~ 5.00 = 5 =
+- code_review, security_audit, chat, task_execution, ...
+-
+- A  B  A
+- team_reputation/{rater_agent_id}.json
+- /
+
+
     ReputationEntry:
-        rater: agent_id           # 评分者
-        subject: agent_id         # 被评分者
-        context: str              # 上下文（代码审查 / 聊天 / 安全审计）
+        rater: agent_id           #
+        subject: agent_id         #
+        context: str              #  /  /
         score: float              # 0.0-5.0
-        reason: str               # 理由
+        reason: str               #
         timestamp: str
-        sig: str                  # 签名
-        evidence: dict            # 可选证据（如 tx hash）
+        sig: str                  #
+        evidence: dict            #  tx hash
 
-用法：
+
     rep = team.reputation
 
-    # 评分
+    #
     rep.rate("bob", context="code_review", score=4.5,
              reason="thorough review, caught 3 edge cases")
 
-    # 查询某 agent 的综合声誉
+    #  agent
     score = rep.get_score("bob", context="code_review")
     print(f"Bob's code review score: {score['weighted_avg']:.1f}/5.0")
 
-    # 查询全局声誉
+    #
     all = rep.get_score("bob")
 
-    # 导入他人对某 agent 的评分（信任网络）
+    #  agent
     rep.import_entry(bob_rates_carol_entry)
 """
 
@@ -54,7 +54,7 @@ from typing import Any, Dict, List, Optional
 from .identity import AgentIdentity
 
 
-# ─────────────────── 常量 ───────────────────
+#
 
 DEFAULT_REPUTATION_DIR = "team_reputation"
 SCORE_MIN = 0.0
@@ -62,24 +62,24 @@ SCORE_MAX = 5.0
 DEFAULT_WEIGHT = 1.0
 
 
-# ─────────────────── 数据模型 ───────────────────
+#
 
 
 @dataclass
 class ReputationEntry:
-    """一条声誉评分记录"""
+    """"""
 
-    rater: str          # 评分者 agent_id
-    subject: str        # 被评分者 agent_id
-    context: str        # 上下文（如 "code_review", "chat", "security"）
+    rater: str          #  agent_id
+    subject: str        #  agent_id
+    context: str        #  "code_review", "chat", "security"
     score: float        # 0.0-5.0
     reason: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-    sig: str = ""       # 评分者的 Ed25519 签名
+    sig: str = ""       #  Ed25519
     evidence: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        # 强制分数在范围内
+        #
         self.score = max(SCORE_MIN, min(SCORE_MAX, self.score))
 
     def to_dict(self) -> dict:
@@ -99,31 +99,31 @@ class ReputationEntry:
         )
 
     def is_valid(self) -> bool:
-        """基本合法性检查：分数范围 + 必要字段"""
+        """ + """
         if not self.rater or not self.subject:
             return False
         if self.score < SCORE_MIN or self.score > SCORE_MAX:
             return False
         if self.rater == self.subject:
-            return False  # 不能给自评分
+            return False  #
         return True
 
     def __repr__(self) -> str:
         return (
-            f"[{self.context}] {self.rater[:8]} → {self.subject[:8]}: "
+            f"[{self.context}] {self.rater[:8]}  {self.subject[:8]}: "
             f"{self.score:.1f}/5.0 ({self.reason[:30]})"
         )
 
 
 @dataclass
 class ReputationScore:
-    """Agent 的声誉统计（单个 context 或全局）"""
+    """Agent  context """
 
     subject: str
-    context: str = "*"  # "*" = 全局
+    context: str = "*"  # "*" =
     total_entries: int = 0
     average: float = 0.0
-    weighted_average: float = 0.0  # 考虑 rater 声誉
+    weighted_average: float = 0.0  #  rater
     min_score: float = 5.0
     max_score: float = 0.0
     raters: List[str] = field(default_factory=list)
@@ -139,11 +139,11 @@ class ReputationScore:
         )
 
 
-# ─────────────────── ReputationManager ───────────────────
+#  ReputationManager
 
 
 class ReputationManager:
-    """Agent 声誉管理器"""
+    """Agent """
 
     def __init__(
         self,
@@ -154,10 +154,10 @@ class ReputationManager:
     ):
         """
         Args:
-            workspace: 团队工作目录
-            agent_id: 本 Agent ID
-            identity: 密码学身份（签名评分用）
-            reputation_dir: 声誉数据子目录名
+            workspace:
+            agent_id:  Agent ID
+            identity:
+            reputation_dir:
         """
         self.workspace = workspace
         self.agent_id = agent_id
@@ -165,10 +165,10 @@ class ReputationManager:
         self.base_dir = workspace / reputation_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # 内存缓存（本地评分 + 导入的）
+        #  +
         self._entries: List[ReputationEntry] = []
 
-    # ─────────── 评分 ───────────
+    #
 
     def rate(
         self,
@@ -178,17 +178,17 @@ class ReputationManager:
         reason: str = "",
         evidence: Optional[Dict[str, Any]] = None,
     ) -> ReputationEntry:
-        """给指定 Agent 评分
+        """ Agent
 
         Args:
-            subject: 被评分的 agent_id
-            context: 上下文（code_review / chat / security / task / ...）
+            subject:  agent_id
+            context: code_review / chat / security / task / ...
             score: 0.0-5.0
-            reason: 评分理由
-            evidence: 可选证据
+            reason:
+            evidence:
 
         Returns:
-            创建的 ReputationEntry
+             ReputationEntry
         """
         entry = ReputationEntry(
             rater=self.agent_id,
@@ -199,7 +199,7 @@ class ReputationManager:
             evidence=evidence or {},
         )
 
-        # 签名
+        #
         if self.identity and self.identity.can_sign:
             payload = {k: v for k, v in entry.to_dict().items() if k != "sig"}
             entry.sig = self.identity.sign_json(payload)
@@ -208,17 +208,17 @@ class ReputationManager:
         return entry
 
     def import_entry(self, entry: ReputationEntry) -> bool:
-        """导入他人创建的评分（信任网络）
+        """
 
-        验证签名（如有 pubkey）后存入本地。
+         pubkey
 
         Returns:
-            True 如果导入成功
+            True
         """
         if not entry.is_valid():
             return False
 
-        # 去重
+        #
         for existing in self._entries:
             if (existing.rater == entry.rater
                 and existing.subject == entry.subject
@@ -229,7 +229,7 @@ class ReputationManager:
         self._append(entry)
         return True
 
-    # ─────────── 查询 ───────────
+    #
 
     def get_score(
         self,
@@ -237,15 +237,15 @@ class ReputationManager:
         context: Optional[str] = None,
         rater_trust: Optional[Dict[str, float]] = None,
     ) -> ReputationScore:
-        """查询某个 Agent 的声誉
+        """ Agent
 
         Args:
-            subject: 被查询的 agent_id
-            context: 上下文（None = 所有上下文）
-            rater_trust: 评分者的权重表 {rater_id: trust_weight}
+            subject:  agent_id
+            context: None =
+            rater_trust:  {rater_id: trust_weight}
 
         Returns:
-            ReputationScore 统计
+            ReputationScore
         """
         entries = [
             e for e in self._load_all()
@@ -262,7 +262,7 @@ class ReputationManager:
         scores = [e.score for e in entries]
         avg = sum(scores) / len(scores)
 
-        # 加权平均（考虑 rater 声誉）
+        #  rater
         weights = rater_trust or {}
         weighted_scores = [
             s * weights.get(e.rater, DEFAULT_WEIGHT)
@@ -289,7 +289,7 @@ class ReputationManager:
         self,
         subject: Optional[str] = None,
     ) -> Dict[str, Dict[str, ReputationScore]]:
-        """查询所有 agent 的声誉（按 context 分组）
+        """ agent  context
 
         Returns:
             {subject_id: {context: ReputationScore}}
@@ -315,11 +315,11 @@ class ReputationManager:
         context: Optional[str] = None,
         limit: int = 10,
     ) -> List[ReputationScore]:
-        """按声誉排名
+        """
 
         Args:
-            context: 按上下文筛选
-            limit: 返回前 N 名
+            context:
+            limit:  N
         """
         all_scores = self.get_all_scores()
         results = []
@@ -328,7 +328,7 @@ class ReputationManager:
             if context and context in ctx_scores:
                 results.append(ctx_scores[context])
             elif not context:
-                # 全局平均
+                #
                 global_score = self.get_score(subject)
                 if global_score.total_entries > 0:
                     results.append(global_score)
@@ -336,13 +336,13 @@ class ReputationManager:
         results.sort(key=lambda s: s.weighted_average, reverse=True)
         return results[:limit]
 
-    # ─────────── 信任网络 ───────────
+    #
 
     def trust_graph(
         self,
         max_depth: int = 2,
     ) -> Dict[str, Any]:
-        """构建信任网络图（用于计算传递信任权重）
+        """
 
         Returns:
             {
@@ -367,9 +367,9 @@ class ReputationManager:
         return {"nodes": nodes, "edges": edges}
 
     def compute_trust_weights(self) -> Dict[str, float]:
-        """计算评分者信任权重（基于他们的全局声誉）
+        """
 
-        rater 的全局声誉越高，他的评分权重越大。
+        rater
 
         Returns:
             {rater_id: weight (0.0-1.0)}
@@ -381,15 +381,15 @@ class ReputationManager:
         for rater in raters:
             score = self.get_score(rater)
             if score.total_entries >= 3:
-                # 有足够评分 → 权重基于声誉
+                #
                 weights[rater] = score.weighted_average / SCORE_MAX
             else:
-                # 评分不足 → 默认中等权重
+                #
                 weights[rater] = 0.5
 
         return weights
 
-    # ─────────── 导出 / 导入 ───────────
+    #   /
 
     def export_entries(
         self,
@@ -397,7 +397,7 @@ class ReputationManager:
         context: Optional[str] = None,
         since: Optional[str] = None,
     ) -> List[dict]:
-        """导出评分数据（用于跨节点同步）"""
+        """"""
         entries = self._load_all()
 
         if subject:
@@ -410,7 +410,7 @@ class ReputationManager:
         return [e.to_dict() for e in entries]
 
     def import_batch(self, entries_data: List[dict]) -> int:
-        """批量导入评分（跨节点同步）"""
+        """"""
         imported = 0
         for data in entries_data:
             try:
@@ -421,10 +421,10 @@ class ReputationManager:
                 continue
         return imported
 
-    # ─────────── 统计 ───────────
+    #
 
     def stats(self) -> Dict[str, Any]:
-        """声誉统计总览"""
+        """"""
         entries = self._load_all()
         subjects = set(e.subject for e in entries)
         contexts = set(e.context for e in entries)
@@ -444,15 +444,15 @@ class ReputationManager:
             ],
         }
 
-    # ─────────── 内部 ───────────
+    #
 
     def _my_file(self) -> Path:
-        """本 agent 的声誉文件路径"""
+        """ agent """
         safe_id = "".join(c if c.isalnum() or c in "_-" else "-" for c in self.agent_id)
         return self.base_dir / f"{safe_id}.json"
 
     def _load_all(self) -> List[ReputationEntry]:
-        """加载所有已知的声誉数据（本地 + 导入的）"""
+        """ + """
         entries = []
 
         for f in sorted(self.base_dir.glob("*.json")):
@@ -469,10 +469,10 @@ class ReputationManager:
         return entries
 
     def _append(self, entry: ReputationEntry) -> None:
-        """追加一条评分到本 agent 的声誉文件"""
+        """ agent """
         file_path = self._my_file()
 
-        # 读取已有数据
+        #
         existing = []
         if file_path.exists():
             try:
@@ -484,7 +484,7 @@ class ReputationManager:
 
         existing.append(entry.to_dict())
 
-        # 原子写入
+        #
         tmp = file_path.with_suffix(".json.tmp")
         tmp.write_text(
             json.dumps(existing, ensure_ascii=False, indent=2),

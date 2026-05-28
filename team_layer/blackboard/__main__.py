@@ -1,8 +1,8 @@
 """
-Blackboard CLI 入口
+Blackboard CLI
 
-用法：
-    python -m team_layer.blackboard list                   # 全部活跃
+
+    python -m team_layer.blackboard list                   #
     python -m team_layer.blackboard list --scope shared
     python -m team_layer.blackboard list --status doing
     python -m team_layer.blackboard view --scope shared    # Kanban

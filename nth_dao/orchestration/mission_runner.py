@@ -1,17 +1,17 @@
 """
-MissionRunner — 跨 Agent 接力执行器
+MissionRunner   Agent
 
-工作流：
-    1. find_work()    — 找到一个可执行的 step（capability 匹配 + 依赖完成）
-    2. claim()        — 把这个 step 标记为本 Agent 占用（防止其他 Agent 也 claim）
-    3. execute()      — 用 backend 执行（或交给业务代码执行）
+
+    1. find_work()      stepcapability  +
+    2. claim()          step  Agent  Agent  claim
+    3. execute()        backend
     4. complete() / handoff() / fail()
-                      — 收尾，落盘，给下一棒留下接力上下文
 
-接力（handoff）的关键：
+
+handoff
     handoff(step_id, to_agent_id, note)
-    → 把 step.status = handed_off, assignee = to_agent_id
-    → 下次 to_agent_id 调 find_work() 时优先看到此 step
+      step.status = handed_off, assignee = to_agent_id
+      to_agent_id  find_work()  step
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from .mission_store import MissionStore
 
 @dataclass
 class RunnerOutcome:
-    """单次 claim+execute 周期的结果"""
+    """ claim+execute """
     success: bool
     mission_id: str
     step_id: str
@@ -35,7 +35,7 @@ class RunnerOutcome:
 
 
 class MissionRunner:
-    """跨 Agent 接力执行器"""
+    """ Agent """
 
     def __init__(
         self,
@@ -47,7 +47,7 @@ class MissionRunner:
         self.agent_id = agent_id
         self.capabilities = capabilities or []
 
-    # ─── 1. 发现工作 ───
+    #  1.
 
     def find_work(
         self,
@@ -55,20 +55,20 @@ class MissionRunner:
         prefer_handoff_to_me: bool = True,
     ) -> Optional[tuple]:
         """
-        在所有相关 Mission 里找一个可执行的 step。
-        优先级：
-            1. 显式 handoff 给本 Agent 的 step
-            2. prefer_mission_id 指定的 Mission
-            3. capability 完全匹配 + 全新 TODO
+         Mission  step
+
+            1.  handoff  Agent  step
+            2. prefer_mission_id  Mission
+            3. capability  +  TODO
 
         Returns:
-            (mission, step) 或 None
+            (mission, step)  None
         """
         relevant = self.store.list_for_agent(
             self.agent_id, self.capabilities, include_team=True
         )
 
-        # 优先：handed_off → me
+        # handed_off  me
         if prefer_handoff_to_me:
             for m in relevant:
                 for s in m.steps:
@@ -78,7 +78,7 @@ class MissionRunner:
                     ):
                         return m, s
 
-        # 优先：指定 mission
+        #  mission
         if prefer_mission_id:
             m = self.store.get(prefer_mission_id)
             if m:
@@ -86,7 +86,7 @@ class MissionRunner:
                 if actionable:
                     return m, actionable[0]
 
-        # 普通：任何 TODO + 依赖满足
+        #  TODO +
         for m in relevant:
             actionable = m.next_actionable(self.capabilities)
             if actionable:
@@ -94,10 +94,10 @@ class MissionRunner:
 
         return None
 
-    # ─── 2. claim ───
+    #  2. claim
 
     def claim(self, mission_id: str, step_id: str) -> Optional[MissionStep]:
-        """认领一个 step → 标记 active 状态"""
+        """ step   active """
         return self.store.update_step(
             mission_id=mission_id,
             step_id=step_id,
@@ -107,7 +107,7 @@ class MissionRunner:
             note_author=self.agent_id,
         )
 
-    # ─── 3. 收尾 ───
+    #  3.
 
     def complete(
         self,
@@ -116,7 +116,7 @@ class MissionRunner:
         output: Optional[dict] = None,
         note: str = "",
     ) -> RunnerOutcome:
-        """完成一个 step"""
+        """ step"""
         step = self.store.update_step(
             mission_id=mission_id,
             step_id=step_id,
@@ -140,7 +140,7 @@ class MissionRunner:
         to_agent_id: str,
         note: str = "",
     ) -> RunnerOutcome:
-        """把一个 step 交给另一个 Agent"""
+        """ step  Agent"""
         handoff_note = note or f"handed off from {self.agent_id} to {to_agent_id}"
         step = self.store.update_step(
             mission_id=mission_id,
@@ -178,7 +178,7 @@ class MissionRunner:
         )
 
     def block(self, mission_id: str, step_id: str, reason: str) -> RunnerOutcome:
-        """暂时挂起一个 step（等待外部条件）"""
+        """ step"""
         step = self.store.update_step(
             mission_id=mission_id,
             step_id=step_id,
@@ -193,10 +193,10 @@ class MissionRunner:
             note=reason,
         )
 
-    # ─── 4. 报告 ───
+    #  4.
 
     def my_active_steps(self) -> List[tuple]:
-        """当前本 Agent 正在执行的 step (mission, step)"""
+        """ Agent  step (mission, step)"""
         out = []
         for m in self.store.list_active():
             for s in m.steps:

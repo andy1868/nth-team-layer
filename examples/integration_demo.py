@@ -1,14 +1,14 @@
 """
-PR 1-5 集成端到端演示
+PR 1-5
 
-验证完整链路：
-    1. [启动钩子] 写一个 reload.signal → 启动时被消费 + reload SoulProvider
-    2. [Agent 创建] 4 个 Provider 全部初始化，记忆 fence 拼接 system prompt
-    3. [主循环] 跑 12 轮 → 触发压缩管线（context > 60% 时 Snip）
-    4. [触发进化] 注入 4 条 timeout 错误到 ledger → 收尾时 EvoLoop 自动触发
-    5. [收尾] auto-collect 导出到 team_logs/ + auto-evolve 生成 AUTO_MERGE skill
 
-不实际 push（--no-push）避免污染远程仓库。
+    1. []  reload.signal   + reload SoulProvider
+    2. [Agent ] 4  Provider  fence  system prompt
+    3. []  12   context > 60%  Snip
+    4. []  4  timeout  ledger   EvoLoop
+    5. [] auto-collect  team_logs/ + auto-evolve  AUTO_MERGE skill
+
+ push--no-push
 """
 
 import json
@@ -58,7 +58,7 @@ def cleanup():
 
 
 def plant_reload_signal():
-    """模拟一台终端发送 reload 信号（PR 5 → PR 1+2 联动）"""
+    """ reload PR 5  PR 1+2 """
     signal_path = REPO / "sidechain" / "reload.signal"
     payload = {
         "requested_at": datetime.now().isoformat(),
@@ -71,7 +71,7 @@ def plant_reload_signal():
 
 
 def seed_failure_logs():
-    """注入 4 条 timeout_database 错误（PR 4 EvoLoop 触发条件）"""
+    """ 4  timeout_database PR 4 EvoLoop """
     from team_layer.memory_providers import LedgerProvider
     ledger = LedgerProvider(str(REPO / "sidechain" / "ledger.jsonl"))
     ledger.initialize({})
@@ -81,14 +81,14 @@ def seed_failure_logs():
             action_type="db_query",
             result=f"Connection timeout (#{i+1})",
             error_sig="timeout_database",
-            token_cost=6000,  # 4*6000=24000 > 15000*1.5=22500 ✓
+            token_cost=6000,  # 4*6000=24000 > 15000*1.5=22500
         )
     ledger.on_session_end()
     print(f"  Seeded 4 timeout_database entries (24000t total, threshold 22500t)")
 
 
 def run_entrypoint(args: list) -> int:
-    """子进程跑 team_entrypoint.py 并实时显示输出"""
+    """ team_entrypoint.py """
     print(f"  Command: python team_entrypoint.py {' '.join(args)}\n")
     proc = subprocess.run(
         [sys.executable, str(REPO / "team_entrypoint.py"), *args],
@@ -96,24 +96,24 @@ def run_entrypoint(args: list) -> int:
         env={**__import__("os").environ, "PYTHONIOENCODING": "utf-8"},
         capture_output=True,
         text=True,
-        encoding="utf-8",       # Windows 默认 GBK，强制 UTF-8 解码子进程输出
-        errors="replace",       # 无法解码的字节用 � 替代而非崩溃
+        encoding="utf-8",       # Windows  GBK UTF-8
+        errors="replace",       #
         timeout=120,
     )
-    # 缩进显示子进程输出
+    #
     for line in (proc.stdout or "").split("\n"):
         if line.strip():
-            print(f"  │ {line}")
+            print(f"   {line}")
     if proc.returncode != 0:
         print("  STDERR:")
         for line in (proc.stderr or "").split("\n")[:20]:
             if line.strip():
-                print(f"  │ {line}")
+                print(f"   {line}")
     return proc.returncode
 
 
 def verify_artifacts():
-    """验证所有 PR 集成的产物"""
+    """ PR """
     checks = [
         ("PR 2: user model persisted",       REPO / "memory" / "user-model.json"),
         ("PR 5: signal consumed (no longer exists)", REPO / "sidechain" / "reload.signal", "absent"),
@@ -126,25 +126,25 @@ def verify_artifacts():
         if len(entry) == 3 and entry[2] == "absent":
             label, path, _ = entry
             ok = not path.exists()
-            print(f"  {'✅' if ok else '❌'} {label}")
+            print(f"  {'' if ok else ''} {label}")
         elif len(entry) == 3 and entry[2] == "has_jsonl":
             label, path, _ = entry
             files = list(path.glob("*.jsonl")) if path.exists() else []
             ok = len(files) > 0
-            print(f"  {'✅' if ok else '❌'} {label}  ({len(files)} files)")
+            print(f"  {'' if ok else ''} {label}  ({len(files)} files)")
             for f in files[:2]:
                 print(f"       - {f.name}")
         else:
             label, path = entry
             ok = path.exists()
             size = path.stat().st_size if ok else 0
-            print(f"  {'✅' if ok else '❌'} {label}  ({size} bytes)")
+            print(f"  {'' if ok else ''} {label}  ({size} bytes)")
 
 
 def show_audit_excerpt():
-    """显示 sync_audit + evolution_audit 关键条目"""
+    """ sync_audit + evolution_audit """
     print()
-    print("[sync_audit.jsonl 内容]")
+    print("[sync_audit.jsonl ]")
     sync = REPO / "sidechain" / "sync_audit.jsonl"
     if sync.exists():
         for line in sync.read_text(encoding="utf-8").strip().split("\n"):
@@ -155,7 +155,7 @@ def show_audit_excerpt():
                       f"pushed={entry.get('pushed', '-')}")
 
     print()
-    print("[evolution_audit.jsonl 内容]")
+    print("[evolution_audit.jsonl ]")
     evo = REPO / "sidechain" / "evolution_audit.jsonl"
     if evo.exists():
         for line in evo.read_text(encoding="utf-8").strip().split("\n"):
@@ -166,41 +166,41 @@ def show_audit_excerpt():
 
 
 def main():
-    section("PR 1-5 集成端到端演示")
-    print("场景：模拟一个完整的 TeamAgent 会话生命周期，覆盖全部 5 个 PR")
+    section("PR 1-5 ")
+    print(" TeamAgent  5  PR")
 
-    section("[Setup] 清理 + 注入测试数据")
+    section("[Setup]  + ")
     cleanup()
-    print("  ✓ cleaned previous artifacts")
+    print("   cleaned previous artifacts")
     plant_reload_signal()
     seed_failure_logs()
 
-    section("[Run] team_entrypoint.py 完整流程（启用 4 个集成 flag）")
+    section("[Run] team_entrypoint.py  4  flag")
     rc = run_entrypoint([
         "--goal", "integration-demo-task",
         "--agent", "integration-1",
         "--iterations", "5",
-        "--reload-skills",       # PR 5: 启动主动拉取
-        "--auto-collect",        # PR 5: 收尾自动 collect
-        "--auto-evolve",         # PR 4: 收尾跑 EvoLoop
-        "--no-push",             # 安全：不推送到 GitHub
+        "--reload-skills",       # PR 5:
+        "--auto-collect",        # PR 5:  collect
+        "--auto-evolve",         # PR 4:  EvoLoop
+        "--no-push",             #  GitHub
     ])
     print(f"\n  exit code = {rc}")
 
-    section("[Verify] PR 1-5 产物清单")
+    section("[Verify] PR 1-5 ")
     verify_artifacts()
 
-    section("[Audit] 同步与进化审计")
+    section("[Audit] ")
     show_audit_excerpt()
 
-    section("✅ 集成 demo 完成")
+    section("  demo ")
     print()
-    print("全链路验证通过 → 启动 → 主循环 → 收尾的每个钩子都被触发。")
+    print("      ")
     print()
-    print("生产模式启动：")
+    print("")
     print("  python team_entrypoint.py --goal '...' --auto-collect --auto-evolve --reload-skills")
     print()
-    print("（去掉 --no-push 即可推送到 GitHub）")
+    print(" --no-push  GitHub")
 
 
 if __name__ == "__main__":

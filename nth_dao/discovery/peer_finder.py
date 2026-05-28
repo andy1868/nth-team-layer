@@ -1,17 +1,17 @@
 """
-PeerFinder — 在注册表里查找队友
+PeerFinder
 
-典型用法：
+
     finder = PeerFinder(registry)
     pythonistas = finder.find(capability="python", status="idle")
     teammate = finder.best_match(needed_capabilities=["python", "web"])
-    finder.exclude_self(my_agent_id)  # 链式过滤
+    finder.exclude_self(my_agent_id)  #
 
-匹配评分：
-    - 每命中一个 needed_capability 加 1 分
-    - status=idle 加 0.5 分（优于 busy）
-    - 同 group 加 0.3 分
-    - 同 hostname 加 0.2 分（同机协作零延迟）
+
+    -  needed_capability  1
+    - status=idle  0.5  busy
+    -  group  0.3
+    -  hostname  0.2
 """
 
 from __future__ import annotations
@@ -24,19 +24,19 @@ from .agent_registry import AgentRecord, AgentRegistry
 
 @dataclass
 class MatchResult:
-    """匹配结果（按 score 排序）"""
+    """ score """
     record: AgentRecord
     score: float
     matched_capabilities: List[str]
 
 
 class PeerFinder:
-    """队友查找器"""
+    """"""
 
     def __init__(self, registry: AgentRegistry):
         self.registry = registry
 
-    # ─────────────────── 基础过滤 ───────────────────
+    #
 
     def find(
         self,
@@ -47,7 +47,7 @@ class PeerFinder:
         only_alive: bool = True,
         exclude_agent_ids: Optional[List[str]] = None,
     ) -> List[AgentRecord]:
-        """按单个条件过滤（多个条件可叠加）"""
+        """"""
         records = (
             self.registry.list_alive() if only_alive else self.registry.list_all()
         )
@@ -70,7 +70,7 @@ class PeerFinder:
         backend_ids: Optional[List[str]] = None,
         only_alive: bool = True,
     ) -> List[AgentRecord]:
-        """需要满足多个 capability（AND 关系）"""
+        """ capabilityAND """
         records = (
             self.registry.list_alive() if only_alive else self.registry.list_all()
         )
@@ -82,7 +82,7 @@ class PeerFinder:
             records = [r for r in records if r.backend_id in allowed]
         return records
 
-    # ─────────────────── 加权匹配 ───────────────────
+    #
 
     def best_match(
         self,
@@ -93,7 +93,7 @@ class PeerFinder:
         exclude_agent_ids: Optional[List[str]] = None,
         only_alive: bool = True,
     ) -> Optional[MatchResult]:
-        """返回最佳匹配（按 score 最高）"""
+        """ score """
         results = self.rank(
             needed_capabilities=needed_capabilities,
             prefer_idle=prefer_idle,
@@ -114,7 +114,7 @@ class PeerFinder:
         only_alive: bool = True,
         min_score: float = 0.5,
     ) -> List[MatchResult]:
-        """对所有候选打分排序"""
+        """"""
         candidates = (
             self.registry.list_alive() if only_alive else self.registry.list_all()
         )
@@ -142,13 +142,13 @@ class PeerFinder:
         results.sort(key=lambda x: x.score, reverse=True)
         return results
 
-    # ─────────────────── 便利方法 ───────────────────
+    #
 
     def count_alive(self) -> int:
         return len(self.registry.list_alive())
 
     def capability_index(self) -> dict:
-        """返回 {capability: [agent_id, ...]} 索引"""
+        """ {capability: [agent_id, ...]} """
         idx: dict = {}
         for r in self.registry.list_alive():
             for cap in r.capabilities:
@@ -156,7 +156,7 @@ class PeerFinder:
         return idx
 
     def summary_table(self) -> str:
-        """ASCII 表格列出所有 alive Agent"""
+        """ASCII  alive Agent"""
         records = self.registry.list_alive()
         if not records:
             return "(no agents online)"

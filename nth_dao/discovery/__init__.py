@@ -1,14 +1,14 @@
 """
-Agent 发现子系统
+Agent
 
-让每个加载 nth_dao 的 Agent 互相发现，无需中心服务器。
+ nth_dao  Agent
 
-机制：
-1. AgentRegistry — 每个 Agent 启动时在共享目录写心跳文件
-                   后台定期更新 last_seen
-                   Git 可同步（跨终端发现）
-2. PeerFinder    — 按 capability / backend / status / scope 查询队友
-                   自动过滤心跳超时的 Agent
+
+1. AgentRegistry   Agent
+                    last_seen
+                   Git
+2. PeerFinder      capability / backend / status / scope
+                    Agent
 """
 
 from .agent_registry import AgentRegistry, AgentRecord

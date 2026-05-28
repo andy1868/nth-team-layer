@@ -1,21 +1,21 @@
 """
-SkillLoader — 原子级技能热加载
+SkillLoader
 
-核心思路（来自原始设计第 6.3 节）：
+ 6.3
     git fetch origin main
     git checkout origin/main -- skills/ TEAM-SOUL.md
-    # ↑ 仅更新 skills 目录，不切换分支、不动工作区其他文件
-    if 成功:
-        发送热加载信号 (pkill -HUP / 写信号文件)
+    #   skills
+    if :
+         (pkill -HUP / )
 
-为什么是"原子"：
-- git checkout -- <paths> 只更新指定路径
-- 失败时 git 不会留下半截文件（要么全成功，要么不动）
-- 主代理在收到信号前不会读到中间状态
+""
+- git checkout -- <paths>
+-  git
+-
 
-信号机制（跨平台）：
-- POSIX：尝试 pkill -HUP；失败则降级写信号文件
-- Windows：始终用信号文件（sidechain/reload.signal）
+
+- POSIX pkill -HUP
+- Windowssidechain/reload.signal
 """
 
 import json
@@ -32,7 +32,7 @@ from .config import SyncConfig
 
 @dataclass
 class ReloadResult:
-    """热加载结果"""
+    """"""
     success: bool
     fetched_from: str = ""
     updated_paths: List[str] = field(default_factory=list)
@@ -42,19 +42,19 @@ class ReloadResult:
 
     def __str__(self) -> str:
         if not self.success:
-            return f"RELOAD [FAIL] — {self.error}"
+            return f"RELOAD [FAIL]  {self.error}"
         return (
-            f"RELOAD [OK] from {self.fetched_from} → "
+            f"RELOAD [OK] from {self.fetched_from}  "
             f"{len(self.updated_paths)} path(s) updated, "
             f"signal={'sent via ' + self.signal_method if self.signal_sent else 'skipped'}"
         )
 
 
 class SkillLoader:
-    """原子级技能热加载器"""
+    """"""
 
-    # 默认热加载的路径白名单（git checkout -- 的目标）
-    # 仅技能与灵魂相关，绝不包含核心代码
+    # git checkout --
+    #
     DEFAULT_RELOAD_PATHS = (
         "skills/",
         "memory/auto-memory.md",
@@ -69,16 +69,16 @@ class SkillLoader:
         """
         Args:
             config: SyncConfig
-            reload_paths: 要热加载的路径列表（默认 skills/ + memory/auto-memory.md）
-            agent_process_pattern: pkill -f 用的进程匹配模式
+            reload_paths:  skills/ + memory/auto-memory.md
+            agent_process_pattern: pkill -f
         """
         self.cfg = config or SyncConfig()
         self.reload_paths = reload_paths or self.DEFAULT_RELOAD_PATHS
         self.agent_process_pattern = agent_process_pattern
 
     def reload(self, send_signal: bool = True) -> ReloadResult:
-        """执行原子级热加载"""
-        # 1. fetch 远程最新
+        """"""
+        # 1. fetch
         try:
             self._git("fetch", self.cfg.push_remote, self.cfg.branch)
         except subprocess.CalledProcessError as e:
@@ -86,7 +86,7 @@ class SkillLoader:
             self._audit("reload_failed", error=err)
             return ReloadResult(success=False, error=err)
 
-        # 2. 原子 checkout 指定路径
+        # 2.  checkout
         fetched_ref = f"{self.cfg.push_remote}/{self.cfg.branch}"
         updated = []
         for rel_path in self.reload_paths:
@@ -97,7 +97,7 @@ class SkillLoader:
                 if result.returncode == 0:
                     updated.append(rel_path)
                 else:
-                    # 路径不存在等情况 — 跳过但不算失败
+                    #
                     stderr_lower = (result.stderr or "").lower()
                     if "did not match" in stderr_lower or "pathspec" in stderr_lower:
                         continue
@@ -122,7 +122,7 @@ class SkillLoader:
                 error="no paths matched (nothing to reload)",
             )
 
-        # 3. 发送热加载信号
+        # 3.
         signal_sent = False
         signal_method = ""
         if send_signal:
@@ -144,8 +144,8 @@ class SkillLoader:
         )
 
     def _send_reload_signal(self) -> tuple:
-        """跨平台发送热加载信号 → (sent: bool, method: str)"""
-        # 优先：POSIX pkill -HUP
+        """  (sent: bool, method: str)"""
+        # POSIX pkill -HUP
         if sys.platform != "win32":
             try:
                 result = subprocess.run(
@@ -159,7 +159,7 @@ class SkillLoader:
             except FileNotFoundError:
                 pass
 
-        # 降级：写信号文件
+        #
         signal_path = self.cfg.reload_signal_full_path()
         signal_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -171,13 +171,13 @@ class SkillLoader:
         signal_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         return True, f"signal-file ({signal_path.name})"
 
-    # —— Agent 端配合：检查 reload 信号 ——
+    #  Agent  reload
     @staticmethod
     def check_reload_pending(config: Optional[SyncConfig] = None) -> Optional[dict]:
         """
-        Agent 主循环调用此函数检查是否有待处理的 reload 信号。
-        返回 dict 表示需要 reload；返回 None 表示无信号。
-        消费后自动删除信号文件。
+        Agent  reload
+         dict  reload None
+
         """
         cfg = config or SyncConfig()
         signal_path = cfg.reload_signal_full_path()
@@ -185,7 +185,7 @@ class SkillLoader:
             return None
         try:
             payload = json.loads(signal_path.read_text(encoding="utf-8"))
-            signal_path.unlink()  # 消费掉
+            signal_path.unlink()  #
             return payload
         except Exception:
             return None

@@ -1,15 +1,15 @@
 """
-EvolutionGate — 风险分级 + Merge 决策
+EvolutionGate   + Merge
 
-策略：
-- Low Risk (Lint/timeout/retry)  → AUTO_MERGE 写入 skills/registry/
-- Medium Risk                    → PENDING_REVIEW 暂存为 .patch
-- High Risk (auth/destructive)   → REJECTED 或 ESCALATE 人工审批
 
-所有动作都是 append-only：
-- 合并：skills/registry/<skill_id>.md
-- 暂存：sidechain/pending_patches/<skill_id>.patch.json
-- 审计：sidechain/evolution_audit.jsonl
+- Low Risk (Lint/timeout/retry)   AUTO_MERGE  skills/registry/
+- Medium Risk                     PENDING_REVIEW  .patch
+- High Risk (auth/destructive)    REJECTED  ESCALATE
+
+ append-only
+- skills/registry/<skill_id>.md
+- sidechain/pending_patches/<skill_id>.patch.json
+- sidechain/evolution_audit.jsonl
 """
 
 import json
@@ -37,18 +37,18 @@ class GateAction(str, Enum):
 
 @dataclass
 class GateDecision:
-    """Gate 输出"""
+    """Gate """
     action: GateAction
     skill_id: str
-    artifact_path: Optional[str] = None  # 写入的文件路径
+    artifact_path: Optional[str] = None  #
     reason: str = ""
 
     def __str__(self) -> str:
-        return f"GATE [{self.action.value.upper()}] {self.skill_id} → {self.artifact_path or 'n/a'} ({self.reason})"
+        return f"GATE [{self.action.value.upper()}] {self.skill_id}  {self.artifact_path or 'n/a'} ({self.reason})"
 
 
 class EvolutionGate:
-    """进化门 — 决定 Patch 命运"""
+    """   Patch """
 
     def __init__(
         self,
@@ -59,24 +59,24 @@ class EvolutionGate:
     ):
         """
         Args:
-            skills_dir: 自动合并的目标目录
-            pending_dir: 待审批 patch 暂存目录
-            audit_log: Gate 决策审计日志（append-only）
-            auto_merge_risks: 哪些风险等级允许自动合并
+            skills_dir:
+            pending_dir:  patch
+            audit_log: Gate append-only
+            auto_merge_risks:
         """
         self.skills_dir = Path(skills_dir)
         self.pending_dir = Path(pending_dir)
         self.audit_log = Path(audit_log)
         self.auto_merge_risks = set(auto_merge_risks)
 
-        # 确保目录存在
+        #
         self.skills_dir.mkdir(parents=True, exist_ok=True)
         self.pending_dir.mkdir(parents=True, exist_ok=True)
         self.audit_log.parent.mkdir(parents=True, exist_ok=True)
 
     def decide(self, patch: Patch, verify_result: VerifyResult) -> GateDecision:
-        """根据 Patch + 验证结果做决策"""
-        # 验证失败 → 直接拒绝
+        """ Patch + """
+        #
         if not verify_result.passed:
             decision = GateDecision(
                 action=GateAction.REJECTED,
@@ -86,11 +86,11 @@ class EvolutionGate:
             self._audit(patch, verify_result, decision)
             return decision
 
-        # 风险分级路由
+        #
         try:
             risk = RiskLevel(patch.risk_level)
         except ValueError:
-            risk = RiskLevel.MEDIUM  # 未知风险 → 保守判定
+            risk = RiskLevel.MEDIUM  #
 
         if risk in self.auto_merge_risks:
             decision = self._auto_merge(patch)
@@ -101,10 +101,10 @@ class EvolutionGate:
         return decision
 
     def _auto_merge(self, patch: Patch) -> GateDecision:
-        """自动合并到 skills/registry/"""
+        """ skills/registry/"""
         target = self.skills_dir / f"{patch.skill_id}.md"
 
-        # 已存在则版本化（不覆盖历史 patch）
+        #  patch
         if target.exists():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             target = self.skills_dir / f"{patch.skill_id}_{ts}.md"
@@ -119,10 +119,10 @@ class EvolutionGate:
         )
 
     def _pending_review(self, patch: Patch, risk: RiskLevel) -> GateDecision:
-        """暂存为待审批 patch"""
+        """ patch"""
         target = self.pending_dir / f"{patch.skill_id}.patch.json"
 
-        # 已存在则版本化
+        #
         if target.exists():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             target = self.pending_dir / f"{patch.skill_id}_{ts}.patch.json"
@@ -143,7 +143,7 @@ class EvolutionGate:
         )
 
     def _audit(self, patch: Patch, verify: VerifyResult, decision: GateDecision) -> None:
-        """append-only 审计日志（防篡改）"""
+        """append-only """
         entry = {
             "timestamp": datetime.now().isoformat(),
             "skill_id": patch.skill_id,

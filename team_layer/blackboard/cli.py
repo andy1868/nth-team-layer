@@ -1,13 +1,13 @@
 """
-Blackboard CLI — 命令行工具实现
+Blackboard CLI
 
-子命令：
-    list      列出条目（可过滤 scope/status/author/topic）
-    view      Kanban 视图
-    post      新建条目
-    update    更新条目状态/内容
-    history   查看版本历史
-    get       获取最新版本
+
+    list       scope/status/author/topic
+    view      Kanban
+    post
+    update    /
+    history
+    get
 """
 
 import argparse
@@ -48,7 +48,7 @@ def cmd_view(args):
     bb = Blackboard(args.root)
     scope = Scope.parse(args.scope) if args.scope else None
     entries = bb.list(scope=scope, author=args.author)
-    print(f"\nBlackboard — scope: {args.scope or 'ALL'}\n")
+    print(f"\nBlackboard  scope: {args.scope or 'ALL'}\n")
     print(render_kanban(entries, width=args.width))
 
 
@@ -79,7 +79,7 @@ def cmd_update(args):
             metadata_patch=json.loads(args.metadata) if args.metadata else None,
             scope=args.scope,
         )
-        print(f"Updated {new_entry.id} → version {new_entry.version}")
+        print(f"Updated {new_entry.id}  version {new_entry.version}")
         if args.json:
             print(json.dumps(new_entry.to_dict(), indent=2, ensure_ascii=False))
     except (ValueError, PermissionError) as e:
@@ -112,7 +112,7 @@ def cmd_history(args):
 def build_parser():
     p = argparse.ArgumentParser(
         prog="python -m team_layer.blackboard",
-        description="Blackboard CLI — multi-agent shared workspace",
+        description="Blackboard CLI  multi-agent shared workspace",
     )
     p.add_argument("--root", default="blackboard", help="blackboard root dir (default: ./blackboard)")
     sub = p.add_subparsers(dest="command", required=True)

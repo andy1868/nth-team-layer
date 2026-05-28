@@ -1,55 +1,55 @@
 """
-Channel — Agent 间带签名的消息通道（群聊/分组/私聊）
+Channel  Agent //
 
-QQ/微信群的核心功能：Agents 可以在团队频道里发消息、@提及其他 Agent、
-回复特定消息、轮询新消息。
+QQ/Agents @ Agent
 
-设计：
-- 消息持久化：team_messages/{channel_id}/*.jsonl（append-only，与 ledger 同模式）
-- 零冲突命名：{hostname}_{agent_id}_{timestamp}.jsonl（git_sync 兼容）
-- 三种 scope：
-    - "team"         → 全团队频道（类似「全员群」）
-    - "group:<name>" → 分组频道（类似「项目群」）
-    - "dm:<a>_<b>"   → 私聊频道（agent_id 按字典序排列）
-- 每条消息可选 Ed25519 签名（有 identity 时自动签名）
-- 轮询模式（pull）：fetch(since=...) 拉取新消息
-- @提及追踪：mentions 列表，可以查询「谁 @ 了我」
 
-用法：
+
+- team_messages/{channel_id}/*.jsonlappend-only ledger
+- {hostname}_{agent_id}_{timestamp}.jsonlgit_sync
+-  scope
+    - "team"
+    - "group:<name>"
+    - "dm:<a>_<b>"    agent_id
+-  Ed25519  identity
+- pullfetch(since=...)
+- @mentions  @
+
+
     team = nth.attach(identity=ident, ...)
 
-    # 发群消息
-    team.channel.send("大家好，今天谁值班？", scope="team")
+    #
+    team.channel.send("", scope="team")
 
-    # 发给分组
-    team.channel.send("后端接口更新了", scope="group:backend")
+    #
+    team.channel.send("", scope="group:backend")
 
-    # 私聊
-    team.channel.dm("bob", "你的 PR 我看完了，LGTM!")
+    #
+    team.channel.dm("bob", " PR LGTM!")
 
-    # @提及
-    team.channel.send("请 @alice 看看这个问题", mentions=["alice"])
+    # @
+    team.channel.send(" @alice ", mentions=["alice"])
 
-    # 拉取新消息
+    #
     msgs = team.channel.fetch(since=last_checkpoint)
     for m in msgs:
         print(f"[{m.from_agent}] {m.content}")
 
-    # 拉取所有频道的新消息（多频道聚合）
+    #
     all_msgs = team.channel.fetch_all(since=last_checkpoint)
 
-    # 查谁 @ 了我
+    #  @
     mentions = team.channel.mentions_for(my_agent_id)
 
-文件布局：
+
     team_messages/
-    ├── team/
-    │   ├── host1_alice_2026-05-27.jsonl
-    │   └── host2_bob_2026-05-27.jsonl
-    ├── group--backend/
-    │   └── host1_alice_2026-05-27.jsonl
-    └── dm--alice--bob/
-        └── host1_alice_2026-05-27.jsonl
+     team/
+        host1_alice_2026-05-27.jsonl
+        host2_bob_2026-05-27.jsonl
+     group--backend/
+        host1_alice_2026-05-27.jsonl
+     dm--alice--bob/
+         host1_alice_2026-05-27.jsonl
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ from typing import Any, Dict, Iterator, List, Optional
 from .identity import AgentIdentity
 
 
-# ─────────────────── 常量 ───────────────────
+#
 
 DEFAULT_MESSAGES_DIR = "team_messages"
 TEAM_CHANNEL = "team"
@@ -74,22 +74,22 @@ DM_PREFIX = "dm"
 GROUP_PREFIX = "group"
 
 
-# ─────────────────── 数据模型 ───────────────────
+#
 
 
 @dataclass
 class ChannelMessage:
-    """一条频道消息"""
+    """"""
 
     msg_id: str
     channel: str           # "team" | "group:xxx" | "dm:alice--bob"
     from_agent: str        # agent_id
     content: str
     content_type: str = "text"  # "text" | "markdown" | "json"
-    reply_to: str = ""     # 回复的 msg_id（空 = 顶级消息）
-    mentions: List[str] = field(default_factory=list)  # @提及的 agent_id 列表
+    reply_to: str = ""     #  msg_id =
+    mentions: List[str] = field(default_factory=list)  # @ agent_id
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-    sig: str = ""          # Ed25519 签名（128 字符 hex）
+    sig: str = ""          # Ed25519 128  hex
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -134,32 +134,32 @@ class ChannelMessage:
         return f"[{self.channel}] {self.from_agent}: {preview}"
 
 
-# ─────────────────── 频道编码 ───────────────────
+#
 
 
 def _channel_dir(channel: str) -> str:
-    """将频道名转为文件系统安全的目录名
+    """
 
-    "team"      → "team"
-    "group:backend" → "group--backend"
-    "dm:alice--bob" → "dm--alice--bob"
+    "team"       "team"
+    "group:backend"  "group--backend"
+    "dm:alice--bob"  "dm--alice--bob"
     """
     return channel.replace(":", "--").replace("/", "-")
 
 
 def _dm_channel(agent_a: str, agent_b: str) -> str:
-    """生成 DM 频道名（两个 agent 按字典序排列，保证唯一）"""
+    """ DM  agent """
     a, b = sorted([agent_a, agent_b])
     return f"{DM_PREFIX}:{a}--{b}"
 
 
-# ─────────────────── TeamChannel ───────────────────
+#  TeamChannel
 
 
 class TeamChannel:
-    """Agent 间消息通道——群聊、分组、私聊"""
+    """Agent """
 
-    # 每条消息最大长度（防止存储膨胀）
+    #
     MAX_CONTENT_LENGTH = 10000
 
     def __init__(
@@ -171,10 +171,10 @@ class TeamChannel:
     ):
         """
         Args:
-            workspace: 团队工作目录
-            agent_id: 本 Agent 的 ID
-            identity: 可选密码学身份（有则自动签名）
-            messages_dir: 消息存储子目录名
+            workspace:
+            agent_id:  Agent  ID
+            identity:
+            messages_dir:
         """
         self.workspace = workspace
         self.agent_id = agent_id
@@ -182,7 +182,7 @@ class TeamChannel:
         self.base_dir = workspace / messages_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    # ─────────── 发送 ───────────
+    #
 
     def send(
         self,
@@ -193,20 +193,20 @@ class TeamChannel:
         mentions: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> ChannelMessage:
-        """发送消息到指定频道
+        """
 
         Args:
-            content: 消息内容
+            content:
             scope: "team" / "group:<name>" / "dm:<alice>--<bob>"
             content_type: "text" | "markdown" | "json"
-            reply_to: 回复的消息 ID
-            mentions: @提及的 agent_id 列表
-            metadata: 附加元数据
+            reply_to:  ID
+            mentions: @ agent_id
+            metadata:
 
         Returns:
-            已创建的 ChannelMessage
+             ChannelMessage
         """
-        # 截断过长消息
+        #
         if len(content) > self.MAX_CONTENT_LENGTH:
             content = content[: self.MAX_CONTENT_LENGTH - 50] + "\n... [truncated]"
 
@@ -221,7 +221,7 @@ class TeamChannel:
             metadata=metadata or {},
         )
 
-        # 如果有密码学身份 → 签名
+        #
         if self.identity and self.identity.can_sign:
             payload = {
                 "msg_id": msg.msg_id,
@@ -245,7 +245,7 @@ class TeamChannel:
         content: str,
         content_type: str = "text",
     ) -> ChannelMessage:
-        """发私聊消息"""
+        """"""
         channel = _dm_channel(self.agent_id, to_agent)
         return self.send(content=content, scope=channel, content_type=content_type)
 
@@ -255,7 +255,7 @@ class TeamChannel:
         content: str,
         mentions: Optional[List[str]] = None,
     ) -> ChannelMessage:
-        """回复一条消息"""
+        """"""
         return self.send(
             content=content,
             scope=to_msg.channel,
@@ -263,25 +263,25 @@ class TeamChannel:
             mentions=mentions,
         )
 
-    # ─────────── 读取 ───────────
+    #
 
     def fetch(
         self,
         channel: str = TEAM_CHANNEL,
         since: Optional[str] = None,      # ISO timestamp
-        since_msg_id: Optional[str] = None,  # 或按消息 ID
+        since_msg_id: Optional[str] = None,  #  ID
         limit: int = 50,
     ) -> List[ChannelMessage]:
-        """拉取指定频道的新消息（按时间顺序）
+        """
 
         Args:
-            channel: 频道名
-            since: 只返回此时间戳之后的消息
-            since_msg_id: 只返回此消息 ID 之后的消息
-            limit: 最大返回数
+            channel:
+            since:
+            since_msg_id:  ID
+            limit:
 
         Returns:
-            消息列表（最早 → 最新）
+
         """
         dir_path = self.base_dir / _channel_dir(channel)
         if not dir_path.exists():
@@ -298,11 +298,11 @@ class TeamChannel:
                     data = json.loads(line)
                     msg = ChannelMessage.from_dict(data)
 
-                    # since 过滤
+                    # since
                     if not found_since:
                         if since_msg_id and msg.msg_id == since_msg_id:
                             found_since = True
-                            continue  # 跳过 since_msg_id 本身
+                            continue  #  since_msg_id
                         if since and msg.timestamp > since:
                             found_since = True
                         if not found_since:
@@ -323,12 +323,12 @@ class TeamChannel:
         limit_per_channel: int = 20,
         channels: Optional[List[str]] = None,
     ) -> Dict[str, List[ChannelMessage]]:
-        """拉取所有频道的新消息（多频道聚合）
+        """
 
         Args:
-            since: 时间戳过滤
-            limit_per_channel: 每个频道最多返回数
-            channels: 限制的频道列表（None = 所有已有频道）
+            since:
+            limit_per_channel:
+            channels: None =
 
         Returns:
             {channel_name: [messages]}
@@ -346,7 +346,7 @@ class TeamChannel:
             )
 
         for dir_name in dirs:
-            # 还原频道名
+            #
             channel = dir_name.replace("--", ":", 1)
             msgs = self.fetch(channel=channel, since=since, limit=limit_per_channel)
             if msgs:
@@ -360,15 +360,15 @@ class TeamChannel:
         since: Optional[str] = None,
         limit: int = 30,
     ) -> List[ChannelMessage]:
-        """查询 @提及本 Agent 的消息（未读提醒）
+        """ @ Agent
 
         Args:
-            agent_id: 被 @ 的 agent（默认 = self.agent_id）
-            since: 时间过滤
-            limit: 最大返回数
+            agent_id:  @  agent = self.agent_id
+            since:
+            limit:
 
         Returns:
-            包含 @mention 的消息列表
+             @mention
         """
         target = agent_id or self.agent_id
         results = []
@@ -398,7 +398,7 @@ class TeamChannel:
 
         return results
 
-    # ─────────── 消息搜索 ───────────
+    #
 
     def search(
         self,
@@ -407,13 +407,13 @@ class TeamChannel:
         from_agent: Optional[str] = None,
         limit: int = 20,
     ) -> List[ChannelMessage]:
-        """关键词搜索消息
+        """
 
         Args:
-            keyword: 搜索词（大小写不敏感）
-            channel: 限制频道（None = 全部）
-            from_agent: 限制发送者
-            limit: 最大返回数
+            keyword:
+            channel: None =
+            from_agent:
+            limit:
         """
         results = []
         keyword_lower = keyword.lower()
@@ -445,10 +445,10 @@ class TeamChannel:
 
         return results
 
-    # ─────────── 管理 ───────────
+    #
 
     def list_channels(self) -> List[str]:
-        """列出所有已有频道"""
+        """"""
         if not self.base_dir.exists():
             return []
         return sorted(
@@ -458,7 +458,7 @@ class TeamChannel:
         )
 
     def stats(self) -> Dict[str, Any]:
-        """频道统计"""
+        """"""
         total_messages = 0
         channels = {}
 
@@ -483,13 +483,13 @@ class TeamChannel:
         }
 
     def cleanup(self, before: str) -> int:
-        """清理指定时间之前的消息文件
+        """
 
         Args:
-            before: ISO 时间戳字符串
+            before: ISO
 
         Returns:
-            删除的文件数
+
         """
         removed = 0
         if not self.base_dir.exists():
@@ -497,8 +497,8 @@ class TeamChannel:
 
         for file_path in self.base_dir.rglob("*.jsonl"):
             try:
-                # 文件名格式：{hostname}_{agent_id}_{timestamp}.jsonl
-                # 取 timestamp 部分
+                # {hostname}_{agent_id}_{timestamp}.jsonl
+                #  timestamp
                 stem = file_path.stem
                 parts = stem.rsplit("_", 1)
                 if len(parts) == 2:
@@ -510,14 +510,14 @@ class TeamChannel:
                 continue
         return removed
 
-    # ─────────── 内部 ───────────
+    #
 
     def _append(self, msg: ChannelMessage) -> None:
-        """原子追加一条消息到 JSONL 文件"""
+        """ JSONL """
         channel_dir = self.base_dir / _channel_dir(msg.channel)
         channel_dir.mkdir(parents=True, exist_ok=True)
 
-        # 零冲突命名：{hostname}_{agent_id}_{date}.jsonl
+        # {hostname}_{agent_id}_{date}.jsonl
         date = msg.timestamp[:10]
         hostname = socket.gethostname().replace(".", "-")
         safe_agent = "".join(

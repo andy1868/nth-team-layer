@@ -1,11 +1,11 @@
 """
-MissionStore — Mission 持久化存储
+MissionStore  Mission
 
-设计：
-- 每个 Mission 一个 JSON 文件：missions/<mission_id>.json
-- 支持原子写（写 .tmp 后 rename）
-- 支持 Git 同步（与 PR 5 git_sync 配合，跨终端共享 Mission 列表）
-- 文件锁：同进程内多线程安全
+
+-  Mission  JSON missions/<mission_id>.json
+-  .tmp  rename
+-  Git  PR 5 git_sync  Mission
+-
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from .mission import Mission, MissionStatus, MissionStep, StepStatus
 
 
-# 同进程文件锁（保护单 Mission 的并发读写）
+#  Mission
 _LOCKS: Dict[str, threading.RLock] = {}
 _LOCK_GUARD = threading.Lock()
 
@@ -32,22 +32,22 @@ def _lock_for(path: str) -> threading.RLock:
 
 
 class MissionStore:
-    """Mission 持久化仓库"""
+    """Mission """
 
     DEFAULT_DIR = "missions"
 
     def __init__(self, root: Optional[str] = None):
         """
         Args:
-            root: Mission 根目录（默认 ./missions/，会被 git_sync 拾取）
+            root: Mission  ./missions/ git_sync
         """
         self.root = Path(root) if root else Path(self.DEFAULT_DIR)
         self.root.mkdir(parents=True, exist_ok=True)
 
-    # ─── 写入 ───
+    #
 
     def save(self, mission: Mission) -> Path:
-        """原子保存（写 .tmp 再 rename）"""
+        """ .tmp  rename"""
         path = self._path_for(mission.id)
         lock = _lock_for(str(path))
         with lock:
@@ -61,7 +61,7 @@ class MissionStore:
         return path
 
     def create(self, mission: Mission) -> Path:
-        """新建（若 id 已存在则抛 FileExistsError）"""
+        """ id  FileExistsError"""
         path = self._path_for(mission.id)
         if path.exists():
             raise FileExistsError(f"mission {mission.id} already exists")
@@ -75,7 +75,7 @@ class MissionStore:
             path.unlink()
         return True
 
-    # ─── 读取 ───
+    #
 
     def get(self, mission_id: str) -> Optional[Mission]:
         path = self._path_for(mission_id)
@@ -111,11 +111,11 @@ class MissionStore:
         include_team: bool = True,
     ) -> List[Mission]:
         """
-        列出与此 Agent 相关的 Mission：
-        - 自己 owner 的
-        - 有 step.assignee=自己的
-        - shared scope 的（如果 include_team）
-        - 有可 claim 的 step 且 capability 匹配
+         Agent  Mission
+        -  owner
+        -  step.assignee=
+        - shared scope  include_team
+        -  claim  step  capability
         """
         all_missions = self.list_active()
         relevant = []
@@ -132,7 +132,7 @@ class MissionStore:
                     relevant.append(m)
         return relevant
 
-    # ─── 局部更新（便利方法） ───
+    #
 
     def update_step(
         self,
@@ -144,7 +144,7 @@ class MissionStore:
         note: Optional[str] = None,
         note_author: str = "system",
     ) -> Optional[MissionStep]:
-        """读改写一个 step（自动加锁 + 持久化）"""
+        """ step + """
         path = self._path_for(mission_id)
         with _lock_for(str(path)):
             mission = self.get(mission_id)
@@ -155,7 +155,7 @@ class MissionStore:
                 return None
 
             if status is not None:
-                # 状态转换 — 记录历史
+                #
                 if assignee is not None and step.assignee and step.assignee != assignee:
                     step.previous_assignees.append(step.assignee)
                 step.status = status
@@ -171,7 +171,7 @@ class MissionStore:
             if note:
                 step.add_note(note, note_author)
 
-            # Mission 级别状态推导
+            # Mission
             if mission.is_finished():
                 mission.status = MissionStatus.COMPLETED.value
                 from datetime import datetime
@@ -184,7 +184,7 @@ class MissionStore:
             self.save(mission)
             return step
 
-    # ─── 内部 ───
+    #
 
     def _path_for(self, mission_id: str) -> Path:
         safe = "".join(c if c.isalnum() or c in "_-." else "-" for c in mission_id)

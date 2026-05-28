@@ -1,13 +1,13 @@
 """
-Reflector — 生成修复 Patch 的 Subagent
+Reflector   Patch  Subagent
 
-输入：sidechain 中的失败日志
-输出：Patch（SKILL.md + Pydantic 契约 + 元数据）
+sidechain
+PatchSKILL.md + Pydantic  +
 
-设计：
-- Subagent 隔离 — 不污染主上下文（实际是独立函数，结果通过 Patch 对象传出）
-- LLM 可选 — 注册 llm_callback 后用 LLM 生成；否则用模板降级
-- 替代 Z3 — 用 Pydantic Schema 校验输入输出契约（轻量、可运行）
+
+- Subagent    Patch
+- LLM    llm_callback  LLM
+-  Z3   Pydantic Schema
 """
 
 import json
@@ -20,20 +20,20 @@ from typing import Callable, Dict, List, Optional
 
 @dataclass
 class Patch:
-    """Reflector 输出的修复 Patch"""
-    skill_id: str                          # 唯一 id，作为文件名
-    error_sig: str                         # 触发此 patch 的错误签名
-    description: str                       # <60 token 描述
-    trigger_pattern: str                   # 正则匹配触发条件
+    """Reflector  Patch"""
+    skill_id: str                          #  id
+    error_sig: str                         #  patch
+    description: str                       # <60 token
+    trigger_pattern: str                   #
     risk_level: str                        # "low" / "medium" / "high"
-    fix_steps: List[str]                   # 修复步骤
-    contract: Dict[str, Dict[str, str]]    # Pydantic 契约 {input: {field: type}, output: {...}}
-    sample_failures: List[str] = field(default_factory=list)  # 触发此 patch 的样本日志
+    fix_steps: List[str]                   #
+    contract: Dict[str, Dict[str, str]]    # Pydantic  {input: {field: type}, output: {...}}
+    sample_failures: List[str] = field(default_factory=list)  #  patch
     generated_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    generator: str = "template"            # "template" 或 "llm"
+    generator: str = "template"            # "template"  "llm"
 
     def to_skill_md(self) -> str:
-        """渲染为 skills/registry/*.md 格式"""
+        """ skills/registry/*.md """
         contract_yaml = "\n".join([
             f"  {kind}: {json.dumps(fields)}"
             for kind, fields in self.contract.items()
@@ -50,10 +50,10 @@ generator: {self.generator}
 contract:
 {contract_yaml}
 
-## 修复步骤
+##
 {steps}
 
-## 触发样本
+##
 {chr(10).join(['- ' + s[:80] for s in self.sample_failures[:3]])}
 """
 
@@ -62,9 +62,9 @@ contract:
 
 
 class Reflector:
-    """生成修复 Patch 的 Subagent"""
+    """ Patch  Subagent"""
 
-    # 错误签名到风险等级的映射（启发式）
+    #
     RISK_HEURISTICS = {
         "timeout": "low",
         "retry": "low",
@@ -72,7 +72,7 @@ class Reflector:
         "connection_refused": "low",
         "lint": "low",
         "import": "low",
-        "permission": "high",      # 权限相关 → 高风险
+        "permission": "high",      #
         "auth": "high",
         "destructive": "high",
         "drop_table": "high",
@@ -82,9 +82,9 @@ class Reflector:
     def __init__(self, llm_callback: Optional[Callable] = None):
         """
         Args:
-            llm_callback: 可选的 LLM 调用函数 fn(prompt: str) -> str
-                          签名: 接收提示词，返回 JSON 字符串
-                          若为 None，使用模板降级
+            llm_callback:  LLM  fn(prompt: str) -> str
+                          :  JSON
+                           None
         """
         self.llm_callback = llm_callback
 
@@ -94,14 +94,14 @@ class Reflector:
         sample_logs: List[dict],
     ) -> Patch:
         """
-        基于错误签名和样本日志生成 Patch
+         Patch
 
         Args:
-            error_sig: 错误签名（如 "timeout_database"）
-            sample_logs: 触发此错误的样本日志条目（ledger 中的 entry）
+            error_sig:  "timeout_database"
+            sample_logs: ledger  entry
 
         Returns:
-            Patch 对象，包含完整的修复 skill + 契约
+            Patch  skill +
         """
         sample_results = [str(log.get("result", ""))[:100] for log in sample_logs]
 
@@ -114,11 +114,11 @@ class Reflector:
         return self._template_reflect(error_sig, sample_results)
 
     def _template_reflect(self, error_sig: str, sample_results: List[str]) -> Patch:
-        """模板化生成 Patch（无 LLM 时的降级路径）"""
+        """ Patch LLM """
         risk = self._infer_risk(error_sig)
         skill_id = f"fix_{re.sub(r'[^a-z0-9_]', '_', error_sig.lower())}"
 
-        # 根据 error_sig 类型生成对应修复策略
+        #  error_sig
         fix_steps = self._template_fix_steps(error_sig)
 
         return Patch(
@@ -142,11 +142,11 @@ class Reflector:
         sample_logs: List[dict],
         sample_results: List[str],
     ) -> Patch:
-        """用 LLM 生成 Patch"""
+        """ LLM  Patch"""
         prompt = self._build_llm_prompt(error_sig, sample_logs)
         response = self.llm_callback(prompt)
 
-        # 解析 LLM 返回的 JSON
+        #  LLM  JSON
         try:
             data = json.loads(response)
         except json.JSONDecodeError:
@@ -171,59 +171,59 @@ class Reflector:
         )
 
     def _infer_risk(self, error_sig: str) -> str:
-        """启发式判断风险等级"""
+        """"""
         sig_lower = error_sig.lower()
         for keyword, risk in self.RISK_HEURISTICS.items():
             if keyword in sig_lower:
                 return risk
-        return "medium"  # 未知类型 → 中风险（保守）
+        return "medium"  #
 
     @staticmethod
     def _template_fix_steps(error_sig: str) -> List[str]:
-        """根据 error_sig 关键字推断修复步骤模板"""
+        """ error_sig """
         sig_lower = error_sig.lower()
 
         if "timeout" in sig_lower or "connection" in sig_lower:
             return [
-                "定位发生超时的调用点",
-                "引入 tenacity 库或等价重试机制",
-                "添加 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))",
-                "确保 timeout 参数显式设置（避免无限阻塞）",
+                "",
+                " tenacity ",
+                " @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))",
+                " timeout ",
             ]
         if "rate_limit" in sig_lower:
             return [
-                "定位被限流的 API 调用",
-                "添加指数退避：wait_exponential(min=1, max=60)",
-                "检查是否需要降低并发度",
+                " API ",
+                "wait_exponential(min=1, max=60)",
+                "",
             ]
         if "import" in sig_lower or "module" in sig_lower:
             return [
-                "检查 import 是否在 try/except 中保护",
-                "添加 lazy import 或 importlib 降级路径",
-                "在 requirements 中固定版本",
+                " import  try/except ",
+                " lazy import  importlib ",
+                " requirements ",
             ]
         if "lint" in sig_lower:
             return [
-                "运行格式化工具（ruff/black）",
-                "修复 lint 警告（行长、未使用变量等）",
+                "ruff/black",
+                " lint ",
             ]
         if "permission" in sig_lower or "auth" in sig_lower:
             return [
-                "[HIGH RISK] 检查 permission_gate 配置",
-                "确认 token/key 未过期",
-                "考虑增加 7 层权限审计",
-                "等待人工审批",
+                "[HIGH RISK]  permission_gate ",
+                " token/key ",
+                " 7 ",
+                "",
             ]
 
         return [
-            f"分析 {error_sig} 的根因",
-            "添加防御性代码（try/except + 日志）",
-            "补充单元测试覆盖此场景",
+            f" {error_sig} ",
+            "try/except + ",
+            "",
         ]
 
     @staticmethod
     def _build_llm_prompt(error_sig: str, sample_logs: List[dict]) -> str:
-        """构建 LLM 提示词"""
+        """ LLM """
         samples = "\n".join([
             f"  - {json.dumps(log)[:200]}"
             for log in sample_logs[:5]

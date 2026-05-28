@@ -1,15 +1,15 @@
 """
-Mission & MissionStep — 数据模型
+Mission & MissionStep
 
-Mission 状态机：
-    planning → active → completed
-                     ↘ failed
-                     ↘ paused
+Mission
+    planning  active  completed
+                      failed
+                      paused
 
-Step 状态机：
-    todo → claimed → active → done
-                                ↘ failed
-                                ↘ handed_off  (交给另一个 Agent)
+Step
+    todo  claimed  active  done
+                                 failed
+                                 handed_off  ( Agent)
 """
 
 from __future__ import annotations
@@ -32,37 +32,37 @@ class MissionStatus(str, Enum):
 
 class StepStatus(str, Enum):
     TODO = "todo"
-    CLAIMED = "claimed"      # 被某 Agent 认领，但还没开始
-    ACTIVE = "active"        # 该 Agent 正在执行
+    CLAIMED = "claimed"      #  Agent
+    ACTIVE = "active"        #  Agent
     DONE = "done"
     FAILED = "failed"
-    HANDED_OFF = "handed_off"  # 当前 Agent 主动交给另一个 Agent
+    HANDED_OFF = "handed_off"  #  Agent  Agent
     BLOCKED = "blocked"
 
 
 @dataclass
 class MissionStep:
-    """长期 Mission 的单个步骤"""
+    """ Mission """
     id: str
     description: str
     status: str = StepStatus.TODO.value
 
-    # 需求与契约
+    #
     required_capabilities: List[str] = field(default_factory=list)
     inputs: Dict[str, Any] = field(default_factory=dict)
     output: Optional[Dict[str, Any]] = None
 
-    # 依赖与接力
-    depends_on: List[str] = field(default_factory=list)   # 其他 step id
-    assignee: Optional[str] = None                         # 当前 owner agent_id
-    previous_assignees: List[str] = field(default_factory=list)  # 接力历史
+    #
+    depends_on: List[str] = field(default_factory=list)   #  step id
+    assignee: Optional[str] = None                         #  owner agent_id
+    previous_assignees: List[str] = field(default_factory=list)  #
 
-    # 时间戳
+    #
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     completed_at: Optional[str] = None
 
-    # 失败原因 / 备注
+    #  /
     notes: List[str] = field(default_factory=list)
 
     def add_note(self, note: str, author: str = "system") -> None:
@@ -71,7 +71,7 @@ class MissionStep:
         self.updated_at = ts
 
     def can_start(self, completed_step_ids: set) -> bool:
-        """依赖的 step 都完成了吗？"""
+        """ step """
         return set(self.depends_on).issubset(completed_step_ids)
 
     @property
@@ -84,7 +84,7 @@ class MissionStep:
 
     @property
     def is_open(self) -> bool:
-        """是否还能被 claim"""
+        """ claim"""
         return self.status in (StepStatus.TODO.value, StepStatus.HANDED_OFF.value, StepStatus.BLOCKED.value)
 
     def to_dict(self) -> dict:
@@ -98,23 +98,23 @@ class MissionStep:
 
 @dataclass
 class Mission:
-    """超长期任务"""
+    """"""
     id: str
     title: str
     goal: str
     status: str = MissionStatus.PLANNING.value
-    owner: str = ""                          # 发起 Agent
-    scope: str = "shared"                    # 与 Blackboard scope 一致（共享 / group:X / private:X）
+    owner: str = ""                          #  Agent
+    scope: str = "shared"                    #  Blackboard scope  / group:X / private:X
 
     steps: List[MissionStep] = field(default_factory=list)
 
-    # 元数据
+    #
     deadline: Optional[str] = None
     priority: str = "normal"  # low / normal / high / critical
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # 时间戳
+    #
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
     completed_at: Optional[str] = None
@@ -129,7 +129,7 @@ class Mission:
         steps: Optional[List[dict]] = None,
         **kwargs,
     ) -> "Mission":
-        """工厂：创建新 Mission，steps 可以传 dict 列表"""
+        """ Missionsteps  dict """
         m = cls(
             id=uuid.uuid4().hex[:12],
             title=title,
@@ -164,7 +164,7 @@ class Mission:
         m.steps = [MissionStep.from_dict(s) for s in steps_data]
         return m
 
-    # ─── 状态查询 ───
+    #
 
     def get_step(self, step_id: str) -> Optional[MissionStep]:
         for s in self.steps:
@@ -176,7 +176,7 @@ class Mission:
         return {s.id for s in self.steps if s.status == StepStatus.DONE.value}
 
     def next_actionable(self, agent_capabilities: Optional[List[str]] = None) -> List[MissionStep]:
-        """返回当前可以被 claim 的 step（依赖已完成 + capability 匹配）"""
+        """ claim  step + capability """
         done_ids = self.completed_step_ids()
         candidates = []
         for s in self.steps:
@@ -184,7 +184,7 @@ class Mission:
                 continue
             if not s.can_start(done_ids):
                 continue
-            # capability 检查
+            # capability
             if agent_capabilities is not None and s.required_capabilities:
                 if not set(s.required_capabilities).issubset(set(agent_capabilities)):
                     continue
@@ -192,7 +192,7 @@ class Mission:
         return candidates
 
     def progress(self) -> dict:
-        """整体进度统计"""
+        """"""
         total = len(self.steps)
         if total == 0:
             return {"total": 0, "done": 0, "active": 0, "open": 0, "failed": 0, "percent": 0.0}
@@ -217,7 +217,7 @@ class Mission:
     def short(self) -> str:
         p = self.progress()
         return (
-            f"[{self.status:9s}] {self.id} '{self.title}' — "
+            f"[{self.status:9s}] {self.id} '{self.title}'  "
             f"{p['done']}/{p['total']} done ({p['percent']}%), "
             f"{p['active']} active, {p['failed']} failed"
         )

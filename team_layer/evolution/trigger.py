@@ -1,12 +1,12 @@
 """
-EvoTrigger — ROI 滞后触发器
+EvoTrigger  ROI
 
-原则：
-- 杜绝基于 LLM 的"未来预测"，只看历史硬指标
-- 双重门槛：count >= 3 AND wasted_tokens > budget * 1.5
-- 滞后机制：避免单次异常触发进化，必须有持续性失败模式
 
-数据源：LedgerProvider 的 sidechain/ledger.jsonl
+-  LLM ""
+- count >= 3 AND wasted_tokens > budget * 1.5
+-
+
+LedgerProvider  sidechain/ledger.jsonl
 """
 
 import os
@@ -16,7 +16,7 @@ from typing import List, Dict, Optional
 
 @dataclass
 class EvolutionDecision:
-    """触发器输出 — 是否进化 + 触发原因"""
+    """   + """
     should_evolve: bool
     error_sig: Optional[str] = None
     occurrences: int = 0
@@ -27,32 +27,32 @@ class EvolutionDecision:
         if self.should_evolve:
             return (
                 f"EVOLVE [{self.error_sig}] "
-                f"count={self.occurrences} wasted={self.wasted_tokens}t — {self.reason}"
+                f"count={self.occurrences} wasted={self.wasted_tokens}t  {self.reason}"
             )
-        return f"SKIP — {self.reason}"
+        return f"SKIP  {self.reason}"
 
 
 class EvoTrigger:
-    """ROI 滞后触发器"""
+    """ROI """
 
-    # 默认门槛（可通过 env 覆盖）
+    #  env
     DEFAULT_MIN_OCCURRENCES = 3
     DEFAULT_BUDGET = 15000
     DEFAULT_WASTE_MULTIPLIER = 1.5
 
     def __init__(
         self,
-        ledger,  # LedgerProvider 实例
+        ledger,  # LedgerProvider
         min_occurrences: Optional[int] = None,
         evolution_budget: Optional[int] = None,
         waste_multiplier: Optional[float] = None,
     ):
         """
         Args:
-            ledger: LedgerProvider 实例
-            min_occurrences: 最小发生次数（默认 3）
-            evolution_budget: 进化预算 token（默认 15000，可由 EVOLUTION_BUDGET 环境变量覆盖）
-            waste_multiplier: 浪费倍数（默认 1.5）
+            ledger: LedgerProvider
+            min_occurrences:  3
+            evolution_budget:  token 15000 EVOLUTION_BUDGET
+            waste_multiplier:  1.5
         """
         self.ledger = ledger
         self.min_occurrences = min_occurrences or self.DEFAULT_MIN_OCCURRENCES
@@ -63,11 +63,11 @@ class EvoTrigger:
         self.waste_threshold = self.evolution_budget * self.waste_multiplier
 
     def check(self, error_sig: str) -> EvolutionDecision:
-        """检查单个错误签名是否触发进化"""
+        """"""
         count = self.ledger.count_error_occurrences(error_sig)
         wasted = self.ledger.sum_token_cost_by_sig(error_sig)
 
-        # 双重门槛
+        #
         if count < self.min_occurrences:
             return EvolutionDecision(
                 should_evolve=False,
@@ -96,12 +96,12 @@ class EvoTrigger:
 
     def scan_all(self) -> List[EvolutionDecision]:
         """
-        扫描账本中所有错误签名，返回触发了进化的决策列表
 
-        用法：
+
+
             for decision in trigger.scan_all():
                 if decision.should_evolve:
-                    # 启动 Reflector
+                    #  Reflector
                     pass
         """
         sigs = self._collect_error_sigs()
@@ -109,7 +109,7 @@ class EvoTrigger:
         return [d for d in decisions if d.should_evolve]
 
     def _collect_error_sigs(self) -> List[str]:
-        """从账本提取所有不同的 error_sig"""
+        """ error_sig"""
         import json
         from pathlib import Path
 

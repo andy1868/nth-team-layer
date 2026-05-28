@@ -1,16 +1,16 @@
 """
-CodexBackend — OpenAI Codex CLI 适配器
+CodexBackend  OpenAI Codex CLI
 
-OpenAI 的 codex CLI（基于 GPT-5），主要用于代码生成任务。
-调用方式：subprocess + JSON 输出
+OpenAI  codex CLI GPT-5
+subprocess + JSON
 
-适用场景：
-- 用户已安装 `codex` CLI（OpenAI 官方）
-- 需要专门的代码生成 Agent
 
-实装：
-- 通过 `codex --json --task "<task>"` 调用
-- 解析 JSON 输出获取 code / explanation / usage
+-  `codex` CLIOpenAI
+-  Agent
+
+
+-  `codex --json --task "<task>"`
+-  JSON  code / explanation / usage
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from .base import (
 
 
 class CodexBackend(AgentBackend):
-    """OpenAI Codex CLI 适配器"""
+    """OpenAI Codex CLI """
 
     backend_id = "codex"
 
@@ -69,7 +69,7 @@ class CodexBackend(AgentBackend):
 
         start = self._track_turn_start()
 
-        # 拼装命令
+        #
         args = [self.cli_name, "--json"]
         if self.model:
             args += ["--model", self.model]
@@ -81,8 +81,8 @@ class CodexBackend(AgentBackend):
         cwd = str(self._session_config.workdir) if self._session_config.workdir else None
 
         try:
-            # 用 Popen + binary read（参见 hermes.py 注释：避免 Python 3.14 Windows
-            # 非 UTF-8 locale 下 subprocess.run reader thread 的 UnicodeDecodeError）
+            #  Popen + binary read hermes.py  Python 3.14 Windows
+            #  UTF-8 locale  subprocess.run reader thread  UnicodeDecodeError
             popen = subprocess.Popen(
                 args + ["--task", prompt],
                 stdin=subprocess.DEVNULL,
@@ -121,7 +121,7 @@ class CodexBackend(AgentBackend):
                 error=f"{type(e).__name__}: {e}",
             )
 
-        # 解析 JSON 输出
+        #  JSON
         try:
             payload = json.loads(stdout or "{}")
         except json.JSONDecodeError:
@@ -156,7 +156,7 @@ class CodexBackend(AgentBackend):
     def capabilities(self) -> BackendCapabilities:
         return BackendCapabilities(
             supports_streaming=False,
-            supports_tools=False,  # Codex CLI 通常是 single-shot code gen
+            supports_tools=False,  # Codex CLI  single-shot code gen
             supports_system_prompt=True,
             supports_multi_turn=False,
             max_context_tokens=64_000,
