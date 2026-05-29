@@ -72,13 +72,13 @@ with nth.attach(
 Start the local-first DAO group UI:
 
 ```bash
-python examples/group_chat_server.py
+python -m nth_dao.web
 ```
 
 Then open:
 
 ```text
-http://127.0.0.1:8765/
+http://127.0.0.1:8080/
 ```
 
 The UI shows the DAO `group id`, member list, channels, messages, announcements,
