@@ -62,6 +62,8 @@ packages = [
     "nth_dao.discovery",
     "nth_dao.orchestration",
     "nth_dao.web",
+    "nth_dao.web.static",
+    "nth_dao.web.static.assets",
     "team_layer",
     "team_layer.memory_providers",
     "team_layer.compression",
@@ -74,6 +76,7 @@ packages = [
 # Optional package data: include INTEGRATION_GUIDE inside nth_dao/
 [tool.setuptools.package-data]
 "nth_dao" = ["INTEGRATION_GUIDE.md", "*.toml"]
+"nth_dao.web" = ["static/index.html", "static/assets/*"]
 
 [tool.setuptools.exclude-package-data]
 "*" = [".gitignore", ".gitkeep", "__pycache__/*", "*.pyc"]

@@ -6,7 +6,6 @@ membership and group APIs without bypassing their permission checks.
 
 from __future__ import annotations
 
-import html
 import os
 from dataclasses import asdict
 from datetime import datetime
@@ -14,7 +13,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from nth_dao.discovery import AgentRegistry
@@ -25,6 +25,7 @@ from team_layer.blackboard import Blackboard
 
 
 DEFAULT_ADMIN_ID = "admin"
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 class WebState:
@@ -90,10 +91,6 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         version="0.9.0",
     )
     app.state.nth = state
-
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
-        return _html()
 
     @app.get("/api/summary")
     def summary() -> dict[str, Any]:
@@ -201,6 +198,29 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return task.to_dict()
 
+    assets_dir = STATIC_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/", response_class=HTMLResponse, response_model=None)
+    def index():
+        index_file = STATIC_DIR / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        return HTMLResponse(_frontend_missing_html(), status_code=503)
+
+    @app.get("/{path:path}", include_in_schema=False, response_model=None)
+    def frontend_fallback(path: str):
+        if path.startswith("api/"):
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        index_file = STATIC_DIR / "index.html"
+        if index_file.exists():
+            return FileResponse(index_file)
+        return JSONResponse(
+            {"detail": "frontend assets are not built; run npm --prefix frontend run build"},
+            status_code=503,
+        )
+
     return app
 
 
@@ -212,8 +232,9 @@ def _bootstrap(state: WebState) -> None:
             policy="open",
             admin_ids=[DEFAULT_ADMIN_ID],
         )
-    elif DEFAULT_ADMIN_ID not in config.member_ids:
-        config.member_ids.append(DEFAULT_ADMIN_ID)
+    elif DEFAULT_ADMIN_ID not in config.admin_ids:
+        if DEFAULT_ADMIN_ID not in config.member_ids:
+            config.member_ids.append(DEFAULT_ADMIN_ID)
         config.admin_ids.append(DEFAULT_ADMIN_ID)
         config.roles[DEFAULT_ADMIN_ID] = TeamRole.OWNER.value
         state.membership.save_config(config)
@@ -269,96 +290,19 @@ def _members(state: WebState, config: TeamConfig) -> list[dict[str, Any]]:
     ]
 
 
-def _html() -> str:
-    return html.escape("", quote=False) + """<!doctype html>
+def _frontend_missing_html() -> str:
+    return """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NTH DAO Console</title>
-  <style>
-    body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: #0e1117; color: #e6edf3; }
-    header { padding: 14px 18px; border-bottom: 1px solid #30363d; display: flex; gap: 16px; align-items: center; }
-    main { display: grid; grid-template-columns: 260px 1fr 300px; min-height: calc(100vh - 57px); }
-    section, aside { padding: 14px; border-right: 1px solid #30363d; overflow: auto; }
-    aside:last-child { border-right: 0; border-left: 1px solid #30363d; }
-    input, textarea, button, select { font: inherit; border-radius: 6px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; padding: 8px; }
-    button { cursor: pointer; background: #238636; border-color: #2ea043; }
-    textarea { min-height: 64px; resize: vertical; }
-    .card { border: 1px solid #30363d; background: #161b22; border-radius: 8px; padding: 10px; margin: 8px 0; }
-    .muted { color: #8b949e; }
-    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
-    .row > * { flex: 1; }
-    .msg { max-width: 760px; }
-    code { color: #79c0ff; }
-  </style>
 </head>
 <body>
-  <header>
-    <strong>NTH DAO Console</strong>
-    <span id="summary" class="muted">loading...</span>
-  </header>
   <main>
-    <aside>
-      <label>Agent ID</label>
-      <div class="row"><input id="agent" value="admin"><button onclick="join()">Join</button></div>
-      <h3>Members</h3><div id="members"></div>
-      <h3>Channels</h3><div id="channels"></div>
-    </aside>
-    <section>
-      <h3>Messages</h3>
-      <div id="messages"></div>
-      <textarea id="body" placeholder="Message #general"></textarea>
-      <div class="row"><button onclick="sendMessage()">Send Message</button></div>
-    </section>
-    <aside>
-      <h3>Announcement</h3>
-      <input id="annTitle" placeholder="Title">
-      <textarea id="annBody" placeholder="Body"></textarea>
-      <button onclick="postAnnouncement()">Post</button>
-      <h3>Tasks</h3>
-      <input id="taskTitle" placeholder="Task title">
-      <input id="taskAssignee" placeholder="Assignee">
-      <button onclick="createTask()">Create Task</button>
-      <div id="tasks"></div>
-    </aside>
+    <h1>NTH DAO Console</h1>
+    <p>Frontend assets are not built. Run <code>npm --prefix frontend run build</code>.</p>
   </main>
-  <script>
-    let channel = "general";
-    const $ = (id) => document.getElementById(id);
-    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    async function api(path, opts) {
-      const res = await fetch(path, opts);
-      if (!res.ok) throw new Error(await res.text());
-      return res.json();
-    }
-    async function refresh() {
-      const agent = $("agent").value || "admin";
-      const s = await api(`/api/state?agent_id=${encodeURIComponent(agent)}&channel_id=${encodeURIComponent(channel)}`);
-      $("summary").textContent = `${s.team.team_name} | members ${s.members.length} | role ${s.actor.role}`;
-      $("members").innerHTML = s.members.map(m => `<div class="card"><code>${esc(m.agent_id)}</code><br><span class="muted">${esc(m.role)} ${m.online ? "online" : ""}</span></div>`).join("");
-      $("channels").innerHTML = s.channels.map(c => `<button class="card" onclick="channel='${esc(c.channel_id)}';refresh()"># ${esc(c.name)}</button>`).join("");
-      $("messages").innerHTML = s.messages.map(m => `<div class="card msg"><code>${esc(m.sender_id)}</code> <span class="muted">${esc(m.created_at)}</span><br>${esc(m.body)}</div>`).join("");
-      $("tasks").innerHTML = s.tasks.map(t => `<div class="card"><strong>${esc(t.title)}</strong><br><span class="muted">${esc(t.status)} ${esc(t.assignee_id)}</span></div>`).join("");
-    }
-    async function join() {
-      await api("/api/join", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({agent_id:$("agent").value})});
-      refresh();
-    }
-    async function sendMessage() {
-      await api("/api/messages", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({agent_id:$("agent").value, channel_id:channel, body:$("body").value})});
-      $("body").value = ""; refresh();
-    }
-    async function postAnnouncement() {
-      await api("/api/announcements", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({author_id:$("agent").value, channel_id:channel, title:$("annTitle").value, body:$("annBody").value})});
-      $("annTitle").value = ""; $("annBody").value = ""; refresh();
-    }
-    async function createTask() {
-      await api("/api/tasks", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify({created_by:$("agent").value, channel_id:channel, title:$("taskTitle").value, assignee_id:$("taskAssignee").value})});
-      $("taskTitle").value = ""; $("taskAssignee").value = ""; refresh();
-    }
-    refresh(); setInterval(refresh, 5000);
-  </script>
 </body>
 </html>"""
 

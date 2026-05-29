@@ -29,7 +29,7 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Nth Team Layer runtime artifacts (per-user, not part of package)
+# NTH DAO runtime artifacts (per-user, not part of package)
 # These are populated when agents attach() into a workspace.
 memory/user-model.json
 sidechain/ledger.jsonl
@@ -52,6 +52,10 @@ team_announcements/
 team_trust/
 team_messages/
 group_chat_server*.log
+nth_dao_web*.log
+
+# Frontend dependencies
+frontend/node_modules/
 
 # Auto-generated EvoLoop skills (uncomment to commit them as team knowledge)
 # skills/registry/fix_*.md

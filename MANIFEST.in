@@ -15,6 +15,7 @@ include pyproject.toml
 include IMPLEMENTATION_GUIDE.md
 recursive-include nth_dao *.md
 recursive-include nth_dao *.py
+recursive-include nth_dao/web/static *
 
 # Examples stay included because they are how users learn the API.
 recursive-include examples *.py
@@ -50,3 +51,4 @@ prune .git
 prune .pytest_cache
 prune .mypy_cache
 prune .ruff_cache
+prune frontend/node_modules
