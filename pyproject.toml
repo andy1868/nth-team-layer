@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nth-dao"
-version = "0.9.3"
+version = "0.9.4"
 description = "AI-native Web3 DAO layer for humans and agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,6 +57,8 @@ Changelog = "https://github.com/AlexNthLab/nth-dao/blob/main/CHANGELOG.md"
 [project.scripts]
 nth-blackboard = "team_layer.blackboard.cli:main"
 nth-web = "nth_dao.web:main"
+nth-status = "nth_dao.cli.status:main"
+nth-metrics = "nth_dao.cli.metrics:main"
 
 [tool.setuptools]
 packages = [

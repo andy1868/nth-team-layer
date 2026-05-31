@@ -5,6 +5,108 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.4] — 2026-05-31 — Sustainability sprint
+
+This release does NOT add new protocol surface. It fills six holes the
+v0.9.1 code review identified as preventing the project from outliving its
+single maintainer:
+
+### Added — SECURITY.md + key recovery
+
+- `SECURITY.md` — supported versions, disclosure address, threat model
+  (what we defend against + what we explicitly don't), per-vulnerability
+  history.
+- `nth_dao/key_recovery.py` — passphrase-protected `RecoveryKit` for
+  exporting / re-importing an `AgentIdentity`. Uses libsodium
+  `crypto_secretbox` (XSalsa20 + Poly1305) with Argon2id key derivation
+  at INTERACTIVE difficulty (~0.5s per try). Rejects tampered kits;
+  rejects wrong passwords without revealing whether the kit format itself
+  is valid.
+- 14 tests in `tests/test_key_recovery.py`.
+
+### Added — docs/MIGRATIONS.md + migration test runner
+
+- `docs/MIGRATIONS.md` — forward-compat policy for 0.9.x, per-version
+  delta, contributor rule that all new fields default-init safely.
+- `tests/test_migrations.py` + `tests/migration_fixtures/0.9.0/`
+  fixtures — a v0.9.0 mission and team.json file. The runner asserts
+  current code parses them cleanly and preserves the originally-set
+  fields. Unknown fields are tolerated.
+- 4 tests confirm round-trip integrity through the current code.
+
+### Added — nth-status + nth-metrics CLI
+
+- `nth_dao/cli/status.py` — text or JSON snapshot of a workspace.
+  Sections: version, team, agents (alive vs registered), missions
+  (by status + archived count), templates (total + deprecated +
+  reviews), trust (anchors, endorsements, revocations).
+- `nth_dao/cli/metrics.py` — Prometheus exposition-format `/metrics`
+  endpoint, served by the stdlib `ThreadingHTTPServer`. Each metric is
+  a gauge with HELP + TYPE comments. Includes `/healthz`. Pure stdlib —
+  no `prometheus_client` dependency.
+- New console scripts: `nth-status`, `nth-metrics`.
+- 12 tests in `tests/test_cli_status_metrics.py` including a smoke test
+  that actually starts the HTTP server, scrapes it, and shuts it down.
+
+### Added — requirements.lock files
+
+- `requirements/README.md` — reproducibility rationale + usage.
+- `requirements/base.txt` (empty — core is stdlib only).
+- `requirements/crypto.lock.txt`, `requirements/ux.lock.txt`,
+  `requirements/web.lock.txt`, `requirements/dev.lock.txt` — pinned
+  transitive dependency trees for each extra.
+- CI hint: rebuild quarterly with `pip-compile`. Between rebuilds the
+  locks are immutable.
+
+### Added — conformance test suite
+
+- `nth_dao/conformance/` — vectors-based wire-protocol conformance.
+  Vectors are written by `python -m nth_dao.conformance.regenerate` and
+  shipped in `nth_dao/conformance/vectors.json`. The reference runner
+  in `nth_dao/conformance/runner.py` verifies the Python implementation
+  passes its own vectors.
+- 22 vectors across 6 categories: `canonical_json`, `fingerprint`,
+  `signature_verify`, `endorsement_canonical_payload`,
+  `template_canonical_payload`, `replay_window`.
+- `docs/CONFORMANCE.md` — contract for non-Python implementations.
+  Wire-compatible = zero failures under the equivalent runner.
+- 5 tests in `tests/test_conformance.py`.
+
+### Added — A2A alignment report
+
+- `docs/research/A2A_ALIGNMENT.md` — comparison vs Google's Agent2Agent
+  protocol (Linux Foundation, Apache 2.0, 150+ orgs, v1.0 in 2026):
+  identity, discovery, capability advertisement, task lifecycle,
+  transport, trust, streaming, push, auth, marketplace, decentralization.
+  Strategic conclusion: our protocol stays distinct (the deep choices
+  are not reconcilable), but a v0.10.0+ `nth-dao-a2a-adapter` package
+  will translate at the boundary. Adopt A2A vocabulary in user-facing
+  docs; code names stay NTH DAO.
+
+### Why these and not AgentLedger / DID:key
+
+The v0.9.3 retrospective ("self-pivoting" 4-question check) identified
+that *every* assumption about NTH DAO surviving 12+ months ran through
+one of the six holes above:
+
+  R-2 key recovery, R-3 observability, R-4 dep lockfile, R-5 upgrade
+  path, M-2 ecosystem alignment, conformance for portability.
+
+`AgentLedger` (history aggregation) and `DID:key` standards-compliance
+have value but neither blocks survival. They're moved to v0.9.5.
+
+### Tests
+
+- Total: **169 passing + 1 skipped** (was 138 + 1). +31 tests covering
+  the six holes above. No existing test regressed.
+
+### No protocol changes
+
+- `MissionTemplate`, `Mission`, `TeamConfig`, `Endorsement`, `Revocation`,
+  `Invitation`, gossip envelope, LAN discovery — **all unchanged on disk
+  and on the wire**. v0.9.3 artifacts are byte-identical to v0.9.4
+  artifacts when produced by the same code path.
+
 ## [0.9.3] — 2026-05-31 — Mission templates: "decentralized App Store" layer
 
 This release lifts MissionStore from a one-shot quest board into a reusable,
@@ -341,6 +443,7 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 
+[0.9.4]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.4
 [0.9.3]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.3
 [0.9.2]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.2
 [0.9.1]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.1

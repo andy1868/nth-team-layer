@@ -1,0 +1,2 @@
+# NTH DAO core package — Python stdlib only, no third-party deps.
+# This file is intentionally empty; kept for symmetry with crypto.lock.txt etc.

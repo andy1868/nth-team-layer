@@ -36,9 +36,9 @@ try:
     try:
         __version__ = _pkg_version("nth-dao")
     except PackageNotFoundError:
-        __version__ = "0.9.3+source"
+        __version__ = "0.9.4+source"
 except ImportError:
-    __version__ = "0.9.3+source"
+    __version__ = "0.9.4+source"
 
 #
 # Facade — re-export all team_layer public APIs.
@@ -177,6 +177,13 @@ from .web_of_trust import (
     issue_revocation,
 )
 from .invitation import Invitation, InvitationError
+# v0.9.4: Encrypted recovery kits — restore an identity from a passphrase-protected blob
+from .key_recovery import (
+    RecoveryKit,
+    KeyRecoveryError,
+    export_recovery_kit,
+    import_recovery_kit,
+)
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -282,4 +289,9 @@ __all__ = [
     # Invitation (P6): one-scan team bootstrap (QR / URL / paste)
     "Invitation",
     "InvitationError",
+    # Key recovery (v0.9.4): passphrase-protected identity export / import
+    "RecoveryKit",
+    "KeyRecoveryError",
+    "export_recovery_kit",
+    "import_recovery_kit",
 ]

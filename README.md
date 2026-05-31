@@ -18,7 +18,44 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-138%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.9.4 — Sustainability sprint
+
+No new protocol surface. We filled the six holes that prevented NTH DAO
+from outliving its single maintainer:
+
+- **`SECURITY.md` + key recovery** — `nth_dao.export_recovery_kit(identity,
+  password)` and `import_recovery_kit(kit, password)`. libsodium
+  `crypto_secretbox` + Argon2id. Lose your identity, restore from a
+  passphrase-encrypted blob.
+- **`docs/MIGRATIONS.md` + migration test runner** — forward-compat policy
+  for 0.9.x, per-version delta, automated 0.9.0-fixture regression tests.
+- **`nth-status` + `nth-metrics` CLI** — text/JSON workspace snapshot;
+  Prometheus exposition-format `/metrics` HTTP endpoint. Pure stdlib.
+- **`requirements/*.lock.txt`** — pinned transitive deps per extra
+  (`crypto`, `ux`, `web`, `dev`). Reproducible builds.
+- **`nth_dao/conformance/`** — 22 wire-protocol test vectors in 6 categories.
+  A non-Python port is "wire-compatible" when it produces zero failures.
+  See `docs/CONFORMANCE.md`.
+- **`docs/research/A2A_ALIGNMENT.md`** — side-by-side vs Google's
+  Agent2Agent protocol (Linux Foundation, 150+ orgs). Our protocol stays
+  distinct; an A2A adapter is targeted for v0.10.0+.
+
+```bash
+# Status snapshot
+nth-status --workspace ./my-team
+
+# Prometheus metrics endpoint
+nth-metrics --port 9090 --workspace ./my-team
+
+# Backup an identity into a portable encrypted blob
+python -c "import nth_dao as nth; \
+    from nth_dao.identity import AgentIdentity; \
+    ident = AgentIdentity.load('~/.nth/identity.json'); \
+    print(nth.export_recovery_kit(ident, 'correct horse battery staple').to_json())" \
+    > ~/secrets/alice.recovery.json
+```
 
 ## What's New in 0.9.3 — Mission Template registry
 
