@@ -92,7 +92,10 @@ class RecoveryKit:
             "ciphertext":"<base64 of crypto_secretbox(plaintext)>",
             "agent_id":  "<plaintext for UX; NOT used for decryption>",
             "label":     "<plaintext for UX>",
-            "created_at":"<ISO timestamp>"
+            "created_at":"<ISO timestamp>",
+            "kdf":       "argon2id",
+            "opslimit":  2,
+            "memlimit":  67108864
         }
 
     The plaintext encrypted under `crypto_secretbox` is the JSON of:
@@ -116,6 +119,9 @@ class RecoveryKit:
     agent_id: str
     label: str
     created_at: str
+    kdf: str = "argon2id"
+    opslimit: int = _OPSLIMIT_INTERACTIVE
+    memlimit: int = _MEMLIMIT_INTERACTIVE
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -151,6 +157,9 @@ class RecoveryKit:
             agent_id=data.get("agent_id", ""),
             label=data.get("label", ""),
             created_at=data.get("created_at", ""),
+            kdf=data.get("kdf", "argon2id"),
+            opslimit=int(data.get("opslimit", _OPSLIMIT_INTERACTIVE)),
+            memlimit=int(data.get("memlimit", _MEMLIMIT_INTERACTIVE)),
         )
 
     @classmethod
@@ -231,6 +240,9 @@ def export_recovery_kit(
         agent_id=str(identity.agent_id),
         label=identity.label,
         created_at=datetime.now().isoformat(),
+        kdf="argon2id",
+        opslimit=int(opslimit),
+        memlimit=int(memlimit),
     )
 
 
@@ -238,8 +250,8 @@ def import_recovery_kit(
     kit: Union[RecoveryKit, dict, str],
     password: str,
     *,
-    opslimit: int = _OPSLIMIT_INTERACTIVE,
-    memlimit: int = _MEMLIMIT_INTERACTIVE,
+    opslimit: Optional[int] = None,
+    memlimit: Optional[int] = None,
 ):
     """Decrypt a recovery kit back into a usable AgentIdentity.
 
@@ -274,6 +286,12 @@ def import_recovery_kit(
 
     if not password:
         raise KeyRecoveryError("password must not be empty")
+    if kit_obj.kdf != "argon2id":
+        raise KeyRecoveryError(f"unsupported recovery kit kdf: {kit_obj.kdf!r}")
+    if opslimit is None:
+        opslimit = kit_obj.opslimit
+    if memlimit is None:
+        memlimit = kit_obj.memlimit
 
     try:
         salt = base64.b64decode(kit_obj.salt)

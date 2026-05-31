@@ -9,7 +9,7 @@ from.
 Design aligned with industry standards (see docs/PROTOCOLS.md §9):
 
     - cargo-crev "Proof" model:  signed by publisher, append-only, P2P
-    - F-Droid metadata layout:   one file per template, signed index
+    - F-Droid metadata layout:   one file per template, derived index
     - TUF wire format (future):  monotonic version, delegations placeholder
     - Argo WorkflowTemplate:     template_type enum (5 kinds)
     - GitHub Actions action.yml: inputs/outputs schema field naming
@@ -20,7 +20,7 @@ Storage layout:
     ├── templates/
     │   ├── <template_id>-v<version>.json   # one file per (template, version)
     │   └── ...
-    ├── _template_index.json                # signed index (F-Droid style)
+    ├── _template_index.json                # derived index (F-Droid/TUF style)
     └── ...
 
 Each template file is signed by its publisher; the index file is signed
@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from ..identity import AgentIdentity, _NACL_AVAILABLE, _VerifyKey, canonical_json
-from ..util import atomic_write_json, safe_load_json, safe_id
+from ..util import InterProcessLock, atomic_write_json, safe_load_json, safe_id
 
 logger = logging.getLogger("nth_dao.orchestration.template")
 
@@ -101,18 +101,23 @@ class IOField:
 
     def validate_value(self, value: Any) -> Optional[str]:
         """Return None if value is acceptable, else an error string."""
+        known_types = {"string", "int", "float", "bool", "enum", "json"}
+        if self.type not in known_types:
+            return f"unknown field type {self.type!r}"
         if value is None or value == "":
             if self.required and not self.default:
                 return "required but not provided"
             return None
         if self.type == "string" and not isinstance(value, str):
             return f"expected string, got {type(value).__name__}"
-        if self.type == "int" and not isinstance(value, int):
-            return f"expected int, got {type(value).__name__}"
-        if self.type == "float" and not isinstance(value, (int, float)):
-            return f"expected float, got {type(value).__name__}"
         if self.type == "bool" and not isinstance(value, bool):
             return f"expected bool, got {type(value).__name__}"
+        if self.type == "int" and (not isinstance(value, int) or isinstance(value, bool)):
+            return f"expected int, got {type(value).__name__}"
+        if self.type == "float" and (
+            not isinstance(value, (int, float)) or isinstance(value, bool)
+        ):
+            return f"expected float, got {type(value).__name__}"
         if self.type == "enum" and value not in self.values:
             return f"value {value!r} not in {self.values}"
         return None
@@ -158,6 +163,25 @@ _SEMVER_RE = re.compile(
 
 def _valid_semver(version: str) -> bool:
     return bool(_SEMVER_RE.match(version))
+
+
+def _semver_key(version: str):
+    match = _SEMVER_RE.match(version)
+    if not match:
+        return (0, 0, 0, -1, (), "")
+    major, minor, patch, prerelease, _build = match.groups()
+    release = (int(major), int(minor), int(patch))
+    if prerelease is None:
+        prerelease_rank = (1,)
+    else:
+        parts = []
+        for part in prerelease.split("."):
+            if part.isdigit():
+                parts.append((0, int(part)))
+            else:
+                parts.append((1, part))
+        prerelease_rank = (0, tuple(parts))
+    return (*release, *prerelease_rank)
 
 
 @dataclass
@@ -430,13 +454,15 @@ class TemplateStore:
                 f"signature does not verify"
             )
         path = self.dir / f"{template.file_stem}.json"
-        if path.exists() and not allow_overwrite:
-            raise TemplatePublishError(
-                f"template {template.file_stem} already exists; "
-                f"bump version or pass allow_overwrite=True"
-            )
-        atomic_write_json(path, template.to_dict())
-        self._refresh_index()
+        with InterProcessLock(path):
+            if path.exists() and not allow_overwrite:
+                raise TemplatePublishError(
+                    f"template {template.file_stem} already exists; "
+                    f"bump version or pass allow_overwrite=True"
+                )
+            atomic_write_json(path, template.to_dict())
+        with InterProcessLock(self.index_path):
+            self._refresh_index_unlocked()
         return path
 
     def load(self, template_id: str, version: str) -> Optional[MissionTemplate]:
@@ -479,14 +505,7 @@ class TemplateStore:
             prefix = f"{sid}-v"
             if stem.startswith(prefix):
                 versions.append(stem[len(prefix):])
-        # Sort by semver (simple component-wise sort)
-        def _sortkey(v: str):
-            parts = v.split("-")[0].split(".")
-            try:
-                return tuple(int(p) for p in parts[:3]) + (v,)
-            except ValueError:
-                return (0, 0, 0, v)
-        return sorted(versions, key=_sortkey, reverse=True)
+        return sorted(versions, key=_semver_key, reverse=True)
 
     def latest_version(self, template_id: str) -> Optional[str]:
         versions = self.list_versions(template_id)
@@ -521,15 +540,15 @@ class TemplateStore:
         self.publish(t, allow_overwrite=True)
         return t
 
-    # ── signed index (F-Droid style) ──
+    # Derived index (F-Droid/TUF-style field names; not a trust anchor)
 
     def _refresh_index(self) -> None:
-        """Rebuild _template_index.json from on-disk files.
+        with InterProcessLock(self.index_path):
+            self._refresh_index_unlocked()
 
-        Index field naming aligned with TUF snapshot.json conventions:
-        `version` is monotonic per index rebuild, `meta` is a map of
-        template-file → { hashes-placeholder, file-size, last-modified }.
-        """
+    def _refresh_index_unlocked(self) -> None:
+        """Rebuild the unsigned derived _template_index.json."""
+
         templates = self.list_all(include_deprecated=True)
         prev = safe_load_json(self.index_path, fallback={}) or {}
         prev_version = int(prev.get("version", 0)) if isinstance(prev, dict) else 0

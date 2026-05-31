@@ -643,6 +643,11 @@ class MissionStore:
                 f"mission {mission_id} was not instantiated from a template; "
                 "free-form missions cannot accept reviews in v0.9.3"
             )
+        if mission.status != MissionStatus.COMPLETED.value:
+            raise ValueError(
+                f"mission {mission_id} is not completed; "
+                f"current status={mission.status!r}"
+            )
         # Self-review guard: the mission's owner cannot review their own work
         if mission.owner == str(getattr(reviewer, "agent_id", "")):
             raise ValueError("cannot review your own mission")

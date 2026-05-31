@@ -158,6 +158,96 @@ def check_template_canonical_payload(vectors: List[dict]) -> List[ConformanceFai
     return failures
 
 
+def check_channel_message_canonical(vectors: List[dict]) -> List[ConformanceFailure]:
+    """Channel message signable payload bytes are stable."""
+    failures = []
+    for v in vectors:
+        actual = canonical_json(v["input"]).hex()
+        expected = v["expected_canonical_hex"]
+        if actual != expected:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="channel_message_canonical",
+                description=v.get("description", ""),
+                expected=expected, actual=actual,
+            ))
+    return failures
+
+
+def check_invitation_canonical(vectors: List[dict]) -> List[ConformanceFailure]:
+    """Invitation.signable_dict() canonical bytes are stable."""
+    from ..invitation import Invitation
+    failures = []
+    for v in vectors:
+        inv = Invitation.from_dict(v["input"])
+        actual = canonical_json(inv.signable_dict()).hex()
+        expected = v["expected_canonical_hex"]
+        if actual != expected:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="invitation_canonical",
+                description=v.get("description", ""),
+                expected=expected, actual=actual,
+            ))
+    return failures
+
+
+def check_team_config_canonical(vectors: List[dict]) -> List[ConformanceFailure]:
+    """TeamConfig.signable_dict() canonical bytes are stable."""
+    from ..membership import TeamConfig
+    failures = []
+    for v in vectors:
+        cfg = TeamConfig.from_dict(v["input"])
+        actual = canonical_json(cfg.signable_dict()).hex()
+        expected = v["expected_canonical_hex"]
+        if actual != expected:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="team_config_canonical",
+                description=v.get("description", ""),
+                expected=expected, actual=actual,
+            ))
+    return failures
+
+
+def check_did_key_encoding(vectors: List[dict]) -> List[ConformanceFailure]:
+    """did:key encoding of Ed25519 pubkeys produces stable strings."""
+    from ..did_key import encode_ed25519_did_key_hex
+    failures = []
+    for v in vectors:
+        actual = encode_ed25519_did_key_hex(v["input"]["pubkey_hex"])
+        expected = v["expected_did"]
+        if actual != expected:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="did_key_encoding",
+                description=v.get("description", ""),
+                expected=expected, actual=actual,
+            ))
+    return failures
+
+
+def check_lan_psk_tag(vectors: List[dict]) -> List[ConformanceFailure]:
+    """HMAC-SHA256(psk, canonical(message - psk_tag)) — locked construction."""
+    import hashlib
+    import hmac as _hmac
+    import json as _json
+    failures = []
+    for v in vectors:
+        psk = v["input"]["psk"]
+        msg = v["input"]["message"]
+        canon = _json.dumps(
+            {k: m for k, m in msg.items() if k != "psk_tag"},
+            sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        actual = _hmac.new(psk.encode("utf-8"), canon, hashlib.sha256).hexdigest()
+        expected = v["expected_psk_tag"]
+        if actual != expected:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="lan_psk_tag",
+                description=v.get("description", ""),
+                expected=expected, actual=actual,
+            ))
+    return failures
+
+
 def check_replay_window(vectors: List[dict]) -> List[ConformanceFailure]:
     """gossip replay window: accept (now - 600s, now + 60s], reject otherwise."""
     from ..gossip import _within_replay_window
@@ -190,6 +280,11 @@ _CHECKERS: Dict[str, Callable[[List[dict]], List[ConformanceFailure]]] = {
     "signature_verify":            check_signature_verify,
     "endorsement_canonical_payload": check_endorsement_canonical_payload,
     "template_canonical_payload":  check_template_canonical_payload,
+    "channel_message_canonical":   check_channel_message_canonical,
+    "invitation_canonical":        check_invitation_canonical,
+    "team_config_canonical":       check_team_config_canonical,
+    "did_key_encoding":            check_did_key_encoding,
+    "lan_psk_tag":                 check_lan_psk_tag,
     "replay_window":               check_replay_window,
 }
 
@@ -212,5 +307,12 @@ def run_all_vectors(
             failures = checker(category_data)
             all_failures.extend(failures)
         except Exception as e:
-            logger.warning("checker %s raised %s; skipping category", category, e)
+            logger.exception("checker %s raised", category)
+            all_failures.append(ConformanceFailure(
+                vector_id=f"{category}:checker-error",
+                category=category,
+                description=f"checker raised {type(e).__name__}",
+                expected="checker completes without exception",
+                actual=str(e),
+            ))
     return all_failures

@@ -439,7 +439,7 @@ This is the "decentralized App Store" layer in the project vision (cf.
 | Standard | We align with |
 |----------|--------------|
 | **cargo-crev** Proof model | Templates and reviews are append-only, signed-by-author payloads. |
-| **F-Droid** metadata layout | One file per template version + a signed index. |
+| **F-Droid** metadata layout | One file per template version + a derived index. |
 | **TUF** wire format | `_template_index.json.version` is monotonic; `meta` field name preserved; `delegations` placeholder reserved. |
 | **Argo WorkflowTemplate** | 5-value `template_type` enum. |
 | **GitHub Actions** `action.yml` | `inputs` / `outputs` field naming (description / type / required / default / values). |
@@ -460,7 +460,7 @@ missions/
 ├── reviews/
 │   ├── <template_id>-v<version>.jsonl   # signed reviews, append-only
 │   └── ...
-├── _template_index.json                 # signed/derived index, F-Droid + TUF style
+├── _template_index.json                 # derived index, F-Droid + TUF style
 ├── _review_index.json                   # aggregated stats per (template, version)
 ├── <mission_instance_id>.json           # active missions (Layer 1)
 └── archive/
@@ -526,6 +526,8 @@ missions/
 ### 9.5 Index file (`_template_index.json`)
 
 TUF-style derived state, rebuilt on every publish. Never authored by hand.
+This index is not a trust anchor; consumers must verify each template file's
+`publisher_sig` before instantiation.
 
 ```json
 {

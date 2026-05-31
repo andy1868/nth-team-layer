@@ -130,7 +130,7 @@ Argo / GitHub Actions / Nix flake.lock — zero new runtime dependencies.
 - **Deprecation** — `templates.deprecate(publisher, id, version, reason)`;
   only the original publisher can deprecate; subsequent `instantiate()` of
   a deprecated template raises `ValueError`.
-- **F-Droid style signed index** — `_template_index.json` rebuilt on every
+- **F-Droid/TUF-style derived index** — `_template_index.json` rebuilt on every
   publish with TUF-style `version` monotonic counter, `meta` map, and three
   inverted indexes (`by_category` / `by_publisher` / `by_capability`).
 
@@ -182,7 +182,7 @@ toolchains. UI changes weekly, protocol changes yearly.
 ### Added — docs
 
 - **`docs/PROTOCOLS.md §9`** — full wire-format spec for MissionTemplate,
-  MissionReview, signed index, mission template lock, archive layout, and
+  MissionReview, derived index, mission template lock, archive layout, and
   the 5 Layer-3 reserved fields. Documents alignment with 7 industry
   standards.
 - **`docs/CATEGORIES.md`** — recommended bootstrap taxonomy (Tier 1: 10
@@ -200,7 +200,7 @@ toolchains. UI changes weekly, protocol changes yearly.
 ### Aligned with (not depended on)
 
 - cargo-crev — Proof model (sign-by-author, append-only, P2P)
-- F-Droid metadata — one file per template + signed index
+- F-Droid metadata — one file per template + derived index
 - TUF — `version` monotonic, `meta` field name, `delegations` placeholder
 - Argo WorkflowTemplate — 5-value `template_type`
 - GitHub Actions `action.yml` — input/output schema field naming

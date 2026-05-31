@@ -116,7 +116,7 @@ Highlights:
   story without on-disk format breaks.
 - **Aligned with industry standards** (no new runtime dependencies): the
   schema and on-disk layout track **cargo-crev** (Proof model), **F-Droid**
-  (one-file + signed index), **TUF** (monotonic version + `meta` field +
+  (one-file + derived index), **TUF** (monotonic version + `meta` field +
   `delegations` placeholder), **Argo WorkflowTemplate** (5-value
   `template_type`), **GitHub Actions** (`inputs`/`outputs` field naming),
   **Nix `flake.lock`** (`template_lock`), and **W3C `did:key`**

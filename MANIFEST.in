@@ -15,6 +15,7 @@ include pyproject.toml
 include IMPLEMENTATION_GUIDE.md
 recursive-include nth_dao *.md
 recursive-include nth_dao *.py
+recursive-include nth_dao/conformance *.json
 recursive-include nth_dao/web/static *
 
 # Examples stay included because they are how users learn the API.

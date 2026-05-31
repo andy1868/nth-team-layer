@@ -63,8 +63,11 @@ nth-metrics = "nth_dao.cli.metrics:main"
 [tool.setuptools]
 packages = [
     "nth_dao",
+    "nth_dao.cli",
+    "nth_dao.conformance",
     "nth_dao.discovery",
     "nth_dao.orchestration",
+    "nth_dao.util",
     "nth_dao.web",
     "nth_dao.web.static",
     "nth_dao.web.static.assets",
@@ -80,6 +83,7 @@ packages = [
 # Optional package data: include INTEGRATION_GUIDE inside nth_dao/
 [tool.setuptools.package-data]
 "nth_dao" = ["INTEGRATION_GUIDE.md", "*.toml"]
+"nth_dao.conformance" = ["vectors.json"]
 "nth_dao.web" = ["static/index.html", "static/assets/*"]
 
 [tool.setuptools.exclude-package-data]

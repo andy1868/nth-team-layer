@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from ..identity import AgentIdentity, _NACL_AVAILABLE, _VerifyKey, canonical_json
-from ..util import atomic_write_json, safe_load_json, safe_id
+from ..util import InterProcessLock, atomic_write_json, safe_load_json, safe_id
 
 logger = logging.getLogger("nth_dao.orchestration.review")
 
@@ -176,9 +176,11 @@ class ReviewStore:
             raise ValueError("review signature does not verify")
         path = self._path_for(review.template_id, review.template_version)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(review.to_dict(), ensure_ascii=False) + "\n")
-        self._refresh_index_for(review.template_id, review.template_version)
+        with InterProcessLock(path):
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(review.to_dict(), ensure_ascii=False) + "\n")
+        with InterProcessLock(self.index_path):
+            self._refresh_index_for_unlocked(review.template_id, review.template_version)
         return path
 
     def list_for(
@@ -254,6 +256,10 @@ class ReviewStore:
         )
 
     def _refresh_index_for(self, template_id: str, version: str) -> None:
+        with InterProcessLock(self.index_path):
+            self._refresh_index_for_unlocked(template_id, version)
+
+    def _refresh_index_for_unlocked(self, template_id: str, version: str) -> None:
         """Recompute and persist aggregated stats for one template version."""
         index = safe_load_json(self.index_path, fallback={}) or {}
         if not isinstance(index, dict):
@@ -277,5 +283,6 @@ class ReviewStore:
             index[f"{template_id}@{version}"] = asdict(
                 self.stats(template_id, version)
             )
-        atomic_write_json(self.index_path, index)
+        with InterProcessLock(self.index_path):
+            atomic_write_json(self.index_path, index)
         return index

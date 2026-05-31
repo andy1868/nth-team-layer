@@ -61,6 +61,12 @@ def _basic_template(publisher: AgentIdentity, **overrides) -> MissionTemplate:
     return mint_template(publisher, **kwargs)
 
 
+def _mark_completed(store: MissionStore, mission) -> None:
+    mission.status = "completed"
+    mission.completed_at = "2026-01-01T00:00:00"
+    store.save(mission)
+
+
 def test_mint_template_signs_payload(tmp_path):
     pub = AgentIdentity.generate(label="alice")
     t = _basic_template(pub)
@@ -145,6 +151,21 @@ def test_list_versions_descending(tmp_path):
     versions = store.templates.list_versions("code-review")
     assert versions == ["2.0.0", "1.0.1", "1.0.0", "0.9.0"]
     assert store.templates.latest_version("code-review") == "2.0.0"
+
+
+def test_list_versions_uses_semver_prerelease_precedence(tmp_path):
+    pub = AgentIdentity.generate(label="alice")
+    store = MissionStore(str(tmp_path / "missions"))
+    for v in ("1.0.0-rc.1", "1.0.0", "1.0.1"):
+        store.publish_template(_basic_template(pub, version=v))
+    assert store.templates.list_versions("code-review") == [
+        "1.0.1", "1.0.0", "1.0.0-rc.1",
+    ]
+
+
+def test_iofield_rejects_bool_as_int_and_unknown_type():
+    assert IOField(type="int").validate_value(True) == "expected int, got bool"
+    assert IOField(type="mystery").validate_value("x") == "unknown field type 'mystery'"
 
 
 # ─────────────────── Instantiation ───────────────────
@@ -256,6 +277,7 @@ def test_review_signs_and_persists(tmp_path):
     store.publish_template(_basic_template(pub))
     m = store.instantiate("code-review", "1.0.0", owner="alice",
                           inputs={"diff_url": "x"})
+    _mark_completed(store, m)
     r = store.review_mission(m.id, reviewer=bob, score=4.5,
                              feedback="caught 3 edge cases")
     assert r.verify_signature()
@@ -280,6 +302,7 @@ def test_review_self_review_rejected(tmp_path):
     m = store.instantiate("code-review", "1.0.0",
                           owner=str(pub.agent_id),
                           inputs={"diff_url": "x"})
+    _mark_completed(store, m)
     with pytest.raises(ValueError, match="own mission"):
         store.review_mission(m.id, reviewer=pub, score=5.0)
 
@@ -293,6 +316,17 @@ def test_review_non_template_mission_rejected(tmp_path):
     store.create(m)
     with pytest.raises(ValueError, match="not instantiated from a template"):
         store.review_mission(m.id, reviewer=bob, score=5.0)
+
+
+def test_review_unfinished_template_mission_rejected(tmp_path):
+    pub = AgentIdentity.generate(label="alice")
+    bob = AgentIdentity.generate(label="bob")
+    store = MissionStore(str(tmp_path / "missions"))
+    store.publish_template(_basic_template(pub))
+    m = store.instantiate("code-review", "1.0.0", owner="alice",
+                          inputs={"diff_url": "x"})
+    with pytest.raises(ValueError, match="not completed"):
+        store.review_mission(m.id, reviewer=bob, score=4.0)
 
 
 def test_review_tamper_rejected_at_append(tmp_path):
@@ -318,6 +352,7 @@ def test_template_stats_aggregate_ratings(tmp_path):
         bob = AgentIdentity.generate(label=f"bob-{i}")
         m = store.instantiate("code-review", "1.0.0", owner="alice",
                               inputs={"diff_url": f"diff-{i}"})
+        _mark_completed(store, m)
         store.review_mission(m.id, reviewer=bob, score=score)
     stats = store.template_stats("code-review", "1.0.0")
     assert stats.review_count == 3
@@ -335,6 +370,7 @@ def test_review_dedup_per_reviewer_per_mission(tmp_path):
     store.publish_template(_basic_template(pub))
     m = store.instantiate("code-review", "1.0.0", owner="alice",
                           inputs={"diff_url": "x"})
+    _mark_completed(store, m)
     store.review_mission(m.id, reviewer=bob, score=3.0)
     store.review_mission(m.id, reviewer=bob, score=4.5)  # bob updates rating
     reviews = store.reviews.list_for("code-review", "1.0.0",
@@ -358,8 +394,10 @@ def test_browse_orders_by_rating(tmp_path):
     store.publish_template(_basic_template(pub, template_id="b", version="1.0.0"))
     bob = AgentIdentity.generate(label="bob")
     m1 = store.instantiate("a", "1.0.0", owner="alice", inputs={"diff_url": "x"})
+    _mark_completed(store, m1)
     store.review_mission(m1.id, reviewer=bob, score=2.0)
     m2 = store.instantiate("b", "1.0.0", owner="alice", inputs={"diff_url": "x"})
+    _mark_completed(store, m2)
     store.review_mission(m2.id, reviewer=bob, score=4.8)
 
     results = store.browse_templates(sort_by="rating")

@@ -45,6 +45,19 @@ def test_export_round_trip_restores_keypair():
     assert ident.verify(msg, sig)
 
 
+def test_import_uses_kdf_parameters_stored_in_kit():
+    ident = AgentIdentity.generate(label="alice")
+    kit = export_recovery_kit(
+        ident,
+        password="correct horse battery staple",
+        **_kdf_kwargs(),
+    )
+    assert kit.opslimit == _TEST_OPSLIMIT
+    assert kit.memlimit == _TEST_MEMLIMIT
+    restored = import_recovery_kit(kit, password="correct horse battery staple")
+    assert restored.pubkey_hex == ident.pubkey_hex
+
+
 def test_export_returns_kit_with_v1_format_and_metadata():
     ident = AgentIdentity.generate(label="alice's laptop")
     kit = export_recovery_kit(ident, password="x" * 30, **_kdf_kwargs())
