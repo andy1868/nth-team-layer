@@ -117,6 +117,7 @@ from .membership import (
     TeamConfig,
     TeamRole,
     MembershipManager,
+    TamperedTeamConfigError,
 )
 # 注意：与 .channel.TeamChannel/ChannelMessage 是 *两套不同语义* 的概念。
 #   - .groups.Channel: GroupManager 维护的"话题频道"，可私有、有 member_ids
@@ -217,6 +218,7 @@ __all__ = [
     "TeamConfig",
     "TeamRole",
     "MembershipManager",
+    "TamperedTeamConfigError",
     # Local-first group layer: channels, messages, tasks, audit, trust
     "Announcement",
     "AuditEvent",

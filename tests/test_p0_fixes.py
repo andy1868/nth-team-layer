@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import nth_dao as nth
+from nth_dao.membership import TamperedTeamConfigError
 from nth_dao.orchestration import Mission
 from nth_dao.orchestration.mission_store import ClaimConflict, MissionStore
 from nth_dao.identity import AgentIdentity, crypto_available
@@ -323,10 +324,30 @@ def test_membership_tampered_signed_config_rejected(tmp_path):
 
     # 任何 reader（甚至不持私钥的）load_config 应该看到空 cfg —— 拒绝 tamper
     reader = nth.MembershipManager(tmp_path)
-    cfg = reader.load_config()
-    # 篡改被识别 → 返回默认空 cfg，不是被毒化的 admin 列表
-    assert "evil" not in cfg.admin_ids
-    assert cfg.team_name == "Unnamed Team"  # default fallback
+    with pytest.raises(TamperedTeamConfigError):
+        reader.load_config()
+
+
+def test_membership_tampered_signed_config_cannot_rebootstrap_admin(tmp_path):
+    """Invalid owner signature must not become a fresh unsigned team."""
+    if not crypto_available():
+        pytest.skip("PyNaCl not installed")
+    owner = AgentIdentity.generate(label="owner")
+    mm = nth.MembershipManager(tmp_path, owner_identity=owner)
+    mm.init_team(team_name="signed-team", admin_ids=["owner"])
+
+    path = tmp_path / "team.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["admin_ids"].append("evil")
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    attacker = nth.MembershipManager(tmp_path)
+    with pytest.raises(TamperedTeamConfigError):
+        attacker.add_admin("evil", actor_id="evil")
+
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["owner_pubkey"] == owner.pubkey_hex
+    assert after["admin_ids"].count("evil") == 1
 
 
 def test_membership_unsigned_config_still_loads(tmp_path):

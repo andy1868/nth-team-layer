@@ -66,22 +66,18 @@ class MissionStore:
     #
 
     def save(self, mission: Mission) -> Path:
-        """原子写。注意：本方法 *不* 取跨进程锁，避免和 update_step/try_claim
-        的外层锁重入死锁（msvcrt.locking 非递归）。
-        多进程并发请用 try_claim/update_step 入口（它们各自取锁）。
-        """
+        """Atomically save a mission under thread and process locks."""
         path = self._path_for(mission.id)
-        mission.updated_at = datetime.now().isoformat()
-        with _thread_lock_for(str(path)):
-            atomic_write_json(path, mission.to_dict())
-        return path
+        with _thread_lock_for(str(path)), InterProcessLock(path):
+            return self._save_unlocked(mission)
 
     def create(self, mission: Mission) -> Path:
-        """ id  FileExistsError"""
+        """Create a new mission, failing if the id already exists."""
         path = self._path_for(mission.id)
-        if path.exists():
-            raise FileExistsError(f"mission {mission.id} already exists")
-        return self.save(mission)
+        with _thread_lock_for(str(path)), InterProcessLock(path):
+            if path.exists():
+                raise FileExistsError(f"mission {mission.id} already exists")
+            return self._save_unlocked(mission)
 
     def delete(self, mission_id: str) -> bool:
         path = self._path_for(mission_id)
@@ -232,7 +228,7 @@ class MissionStore:
             ):
                 mission.status = MissionStatus.ACTIVE.value
 
-            self.save(mission)
+            self._save_unlocked(mission)
             return step
 
     def try_claim(
@@ -301,13 +297,19 @@ class MissionStore:
             if mission.status == MissionStatus.PLANNING.value:
                 mission.status = MissionStatus.ACTIVE.value
 
-            self.save(mission)
+            self._save_unlocked(mission)
             return step
 
     #
 
     def _path_for(self, mission_id: str) -> Path:
         return self.root / f"{_safe_id(mission_id)}.json"
+
+    def _save_unlocked(self, mission: Mission) -> Path:
+        path = self._path_for(mission.id)
+        mission.updated_at = datetime.now().isoformat()
+        atomic_write_json(path, mission.to_dict())
+        return path
 
 
 def _mission_is_dead(mission: Mission) -> bool:

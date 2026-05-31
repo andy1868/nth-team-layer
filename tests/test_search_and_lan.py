@@ -271,3 +271,36 @@ def test_lan_context_manager(tmp_path):
         assert r._listener_thread is not None
     # After exit, stopped
     assert r._listener_thread is None
+
+
+def test_lan_psk_authenticates_full_hello_payload():
+    lan = LANDiscovery(
+        agent_id="alice",
+        label="Alice",
+        capabilities=["python"],
+        ws_url="ws://127.0.0.1:9876",
+        pubkey_hex="deadbeef",
+        psk="shared-secret",
+    )
+    hello = lan._build_hello("nonce-1")
+    assert lan._psk_ok(hello)
+
+    tampered = dict(hello)
+    tampered["ws_url"] = "ws://attacker:9876"
+    assert not lan._psk_ok(tampered)
+
+
+def test_lan_psk_authenticates_full_query_payload():
+    lan = LANDiscovery(agent_id="alice", psk="shared-secret")
+    query = lan._seal_message({
+        "type": MSG_QUERY,
+        "v": WIRE_VERSION,
+        "from": "alice",
+        "wants": ["python"],
+        "nonce": "nonce-1",
+    })
+    assert lan._psk_ok(query)
+
+    tampered = dict(query)
+    tampered["wants"] = ["admin"]
+    assert not lan._psk_ok(tampered)

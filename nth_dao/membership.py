@@ -41,6 +41,10 @@ DEFAULT_TEAM_CONFIG = "team.json"
 DEFAULT_REQUESTS_DIR = "team_agents/requests"
 
 
+class TamperedTeamConfigError(RuntimeError):
+    """Raised when a signed team config fails owner-signature verification."""
+
+
 class JoinPolicy(str, Enum):
     OPEN = "open"
     APPROVAL = "approval"
@@ -276,7 +280,9 @@ class MembershipManager:
                     "rejecting and returning empty config. Possible tamper.",
                     self.config_path,
                 )
-                return TeamConfig()
+                raise TamperedTeamConfigError(
+                    f"team config at {self.config_path} has invalid owner signature"
+                )
 
         return cfg
 

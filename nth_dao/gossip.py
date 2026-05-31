@@ -128,6 +128,7 @@ class GossipNode:
         bootstrap_peers: Optional[List[str]] = None,
         trusted_pubkeys: Optional[Dict[str, str]] = None,
         require_signature: bool = True,
+        allow_tofu: bool = True,
         trust_graph=None,  # 可选 TrustGraph：启用 web-of-trust 传递信任
         wot_max_depth: int = 2,
     ):
@@ -153,6 +154,7 @@ class GossipNode:
         self.host = host
         self.port = port
         self.require_signature = require_signature
+        self.allow_tofu = allow_tofu
 
         # Peer 连接
         self.peers: Dict[str, websockets.WebSocketServerProtocol] = {}
@@ -208,10 +210,7 @@ class GossipNode:
             raise ValueError("agent_id and pubkey_hex required")
         old = self._trusted_pubkeys.get(agent_id)
         if old and old != pubkey_hex:
-            logger.warning(
-                "trust_agent: rotating pubkey for %s (was %s..)",
-                agent_id, old[:16],
-            )
+            raise ValueError(f"agent '{agent_id}' is already pinned to a different pubkey")
         self._trusted_pubkeys[agent_id] = pubkey_hex
 
     def is_trusted(self, agent_id: str) -> bool:
@@ -334,8 +333,19 @@ class GossipNode:
             remote_agent_id = welcome.get("agent_id", "")
             remote_pubkey = welcome.get("pubkey_hex", "")
             server_nonce = welcome.get("server_challenge", "")
-            if not (remote_agent_id and remote_pubkey and server_nonce):
+            server_sig = welcome.get("server_sig", "")
+            if not (remote_agent_id and remote_pubkey and server_nonce and server_sig):
                 await ws.close(1008, "incomplete welcome")
+                return False
+            known_pubkey = self._trusted_pubkeys.get(remote_agent_id)
+            if known_pubkey and known_pubkey != remote_pubkey:
+                await ws.close(1008, "pubkey mismatch with trust anchor")
+                return False
+            if not known_pubkey and not self.allow_tofu:
+                await ws.close(1008, "untrusted server")
+                return False
+            if not _verify_nonce(remote_pubkey, server_nonce, server_sig):
+                await ws.close(1008, "invalid server signature")
                 return False
 
             # 5) 我们也签 server_nonce 证身（已经在 step 3 证过，但服务端可能要双签）
@@ -343,7 +353,8 @@ class GossipNode:
             # 客户端不需要再回签 server_challenge。welcome 就是 ack。
 
             # 把对端 pubkey 加入信任锚（首次见 = TOFU；之后 rotate 会 warn）
-            self.trust_agent(remote_agent_id, remote_pubkey)
+            if not known_pubkey:
+                self.trust_agent(remote_agent_id, remote_pubkey)
 
             self.peers[remote_agent_id] = ws
             self.peer_infos[remote_agent_id] = PeerInfo(
@@ -519,6 +530,10 @@ class GossipNode:
                 return
 
             # 2) 发 challenge
+            if not known_pubkey and not self.allow_tofu:
+                await ws.close(1008, "untrusted peer")
+                return
+
             nonce = secrets.token_hex(16)
             await self._send_json(ws, {"type": "challenge", "nonce": nonce})
 
@@ -537,16 +552,19 @@ class GossipNode:
                 return
 
             # client 通过了 → 把 pubkey 锚定到 agent_id
-            self.trust_agent(remote_agent_id, remote_pubkey)
+            if not known_pubkey:
+                self.trust_agent(remote_agent_id, remote_pubkey)
 
             # 4) welcome（也带 server_challenge，可选给 client 验证）
             server_nonce = secrets.token_hex(16)
+            server_sig = self.identity.sign(_canon({"nonce": server_nonce})).hex()
             await self._send_json(ws, {
                 "type": "welcome",
                 "agent_id": str(self.identity.agent_id),
                 "pubkey_hex": self.identity.pubkey_hex,
                 "channels": list(self.subscriptions),
                 "server_challenge": server_nonce,
+                "server_sig": server_sig,
             })
 
             # 注册 peer
@@ -664,12 +682,7 @@ class GossipNode:
         # 1) 去重
         if msg_id in self._seen_set:
             return
-        self._seen_set.add(msg_id)
-        if len(self._seen) == self._seen.maxlen:
-            # 维护 set 与 deque 同步
-            evicted = self._seen[0]
-            self._seen_set.discard(evicted)
-        self._seen.append(msg_id)
+        # Mark as seen only after trust and signature checks pass.
 
         # 2) 时间戳防回放
         if not _within_replay_window(ts):
@@ -724,6 +737,7 @@ class GossipNode:
                     )
 
         # 通过 → 入本地 channel ledger
+        self._mark_seen(msg_id)
         self._channel_append(msg_dict)
 
         # 回调
@@ -753,6 +767,13 @@ class GossipNode:
         from .channel import ChannelMessage
         msg = ChannelMessage.from_dict(msg_dict)
         self.channel._append(msg)
+
+    def _mark_seen(self, msg_id: str) -> None:
+        if len(self._seen) == self._seen.maxlen:
+            evicted = self._seen[0]
+            self._seen_set.discard(evicted)
+        self._seen_set.add(msg_id)
+        self._seen.append(msg_id)
 
     #
 
