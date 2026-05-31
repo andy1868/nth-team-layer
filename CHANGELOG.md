@@ -5,6 +5,62 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.2] — 2026-05-31 — Revocation, invitations, LAN privacy, protocol spec
+
+### Added — P6 follow-on roadmap items
+
+- **Endorsement revocation** (`web_of_trust.py`):
+  - New `Revocation` dataclass — owner-signed cancellation tied to a specific
+    `(endorser, subject, issued_at)` triple.
+  - `issue_revocation(endorser, endorsement, reason)` mints + signs.
+  - `TrustGraph.revoke()` issues + imports in one call;
+    `TrustGraph.import_revocation()` validates signature, requires a
+    matching endorsement on disk (prevents pre-emptive DoS revocations),
+    and dedupes.
+  - `_load_all()` now filters out revoked endorsements; chains break
+    immediately. Persisted at `team_trust/revocations.jsonl`.
+- **Invitation tokens** (`nth_dao/invitation.py`):
+  - New `Invitation` dataclass that bundles `team_id` + `owner_pubkey` +
+    `join_token` + optional `ws_url` + optional LAN `psk`, signed by owner.
+  - `Invitation.mint(team_config, owner_identity, ...)` — fails fast if the
+    minting identity doesn't match `team_config.owner_pubkey`.
+  - URL form: `nthdao+invite://<base64url payload>`, ≤ 2 KB so it fits
+    inside one QR code.
+  - `to_qr_terminal()` (qrcode lib only) and `to_qr_png()` (`pip install
+    nth-dao[ux]`) render the URL as ASCII / PNG QR code.
+  - `Invitation.from_url()` + `validate()` reject expired/tampered/wrong-scheme.
+- **LAN discovery privacy** (`discovery/lan.py`):
+  - New `psk=` argument on `LANDiscovery`. Both query and hello carry an
+    `HMAC-SHA256(psk, nonce)` tag; responder only answers queries with
+    matching tag, querier only accepts hellos with matching tag.
+    `hmac.compare_digest` used throughout.
+  - Empty `psk` = open mode (unchanged behavior, backward compatible).
+- **`docs/PROTOCOLS.md`** — 350-line wire-protocol spec covering identity,
+  gossip handshake + envelope, endorsements / revocations, signed team
+  config, invitations, LAN discovery, marketplace orders, missions. Enables
+  Rust / Go / TypeScript implementations to interop with the Python reference.
+- **`CONTRIBUTING.md`** "Hard Rules" section documents the eight enforcement
+  rules learned from the v0.9.1 review (file I/O via util, signed wire
+  protocols, CAS for concurrency, no `except: pass`, etc.).
+
+### Added — extras
+
+- `[lan]` extra: `zeroconf>=0.131` (placeholder for v0.9.3 mDNS backend).
+- `[ux]` extra: `qrcode[pil]>=7.4` for invitation QR rendering.
+
+### Tests
+
+- 19 new tests in `tests/test_p6_revoke_psk_invite.py`:
+  - revocation round-trip, wrong-issuer rejection, immediate de-trust,
+    cross-instance persistence, pre-emptive revocation drop,
+    tampered-signature drop;
+  - LAN PSK: blocks unauth queries, allows matching, rejects wrong PSK,
+    backward-compat open mode;
+  - Invitation: mint round-trip, validation, tamper rejection, expiry,
+    non-owner mint rejection, wrong-scheme / garbage URL rejection, QR
+    terminal rendering, helpful ImportError without extra.
+- Total test count now: **102 + 1 skip** (was 83).
+
 ## [0.9.1] — 2026-05-31 — P0/P1 security & correctness review fixes
 
 ### Security
@@ -185,6 +241,7 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 
+[0.9.2]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.2
 [0.9.1]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.1
 [0.9.0]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.0
 [0.8.1]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.8.1

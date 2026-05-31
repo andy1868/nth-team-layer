@@ -18,7 +18,38 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-83%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.9.2 — Revocation, invitations, private LAN
+
+- **Endorsement revocation** — owners can now revoke previously-issued
+  trust endorsements. `TrustGraph.revoke(endorser, endorsement, reason)`;
+  load_all filters revoked entries; signed revocation records persist at
+  `team_trust/revocations.jsonl`. Pre-emptive revocations are rejected
+  (the matching endorsement must exist) so they can't be used for DoS.
+- **Invitation tokens** (`nth_dao.Invitation`) — one signed bundle that
+  carries `team_id` + `owner_pubkey` + `join_token` + optional `ws_url`
+  + optional LAN `psk`. Encode as a URL (`nthdao+invite://...`) or as
+  a QR code (`pip install nth-dao[ux]`). New members scan/paste and
+  attach without out-of-band setup.
+- **Private LAN discovery** — `LANDiscovery(..., psk="team-secret")` adds
+  an HMAC-SHA256 tag to every query and hello; peers without the shared
+  PSK see only opaque traffic. Empty PSK keeps the public/open mode.
+- **`docs/PROTOCOLS.md`** — a wire-format spec so other-language
+  implementations (Rust / Go / TS) can interop with the Python reference.
+- **`CONTRIBUTING.md`** — new "Hard Rules" section documenting the
+  eight enforcement rules that prevent re-introducing the v0.9.1 bugs.
+
+```python
+# Invite flow:
+inv = nth.Invitation.mint(team_cfg, owner_identity, ws_url="ws://...", ttl_days=7)
+print(inv.to_url())              # "nthdao+invite://AAAAB3Nz..."  -> QR scan / paste
+print(inv.to_qr_terminal())      # ASCII QR ready to print on a terminal
+
+# Revoke flow:
+tg.revoke(alice, alice_endorses_bob, reason="key rotated")
+assert not tg.is_trusted("bob", bob_pubkey)
+```
 
 ## What's New in 0.9.1 — Hardened release
 

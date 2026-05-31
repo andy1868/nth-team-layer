@@ -36,9 +36,9 @@ try:
     try:
         __version__ = _pkg_version("nth-dao")
     except PackageNotFoundError:
-        __version__ = "0.9.1+source"
+        __version__ = "0.9.2+source"
 except ImportError:
-    __version__ = "0.9.1+source"
+    __version__ = "0.9.2+source"
 
 #
 # Facade — re-export all team_layer public APIs.
@@ -152,7 +152,14 @@ from .reputation import ReputationEntry, ReputationScore, ReputationManager
 from .gossip import PeerInfo, GossipNode
 from .marketplace import OrderStatus, TaskOrder, TaskMarketplace
 # Web-of-Trust: endorsement-based multi-hop trust propagation
-from .web_of_trust import Endorsement, TrustGraph, issue_endorsement
+from .web_of_trust import (
+    Endorsement,
+    Revocation,
+    TrustGraph,
+    issue_endorsement,
+    issue_revocation,
+)
+from .invitation import Invitation, InvitationError
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -238,8 +245,13 @@ __all__ = [
     "OrderStatus",      # PR #6 task marketplace
     "TaskOrder",
     "TaskMarketplace",
-    # Web-of-Trust (P4): endorsement-based multi-hop trust
+    # Web-of-Trust (P4 + P6): endorsement-based multi-hop trust with revocation
     "Endorsement",
+    "Revocation",
     "TrustGraph",
     "issue_endorsement",
+    "issue_revocation",
+    # Invitation (P6): one-scan team bootstrap (QR / URL / paste)
+    "Invitation",
+    "InvitationError",
 ]

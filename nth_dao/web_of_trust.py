@@ -119,6 +119,65 @@ class Endorsement:
             return False
 
 
+@dataclass
+class Revocation:
+    """A signed revocation cancels a previously-issued endorsement.
+
+    Only the original endorser can revoke their own endorsement; verification
+    requires the revocation signature to be valid under `endorser_pubkey` and
+    `endorser_pubkey` to match the endorsement being revoked.
+    """
+
+    endorser_pubkey: str
+    subject_pubkey: str
+    subject_agent_id: str
+    endorsement_issued_at: str  # identifies which endorsement to revoke
+    reason: str = ""
+    revoked_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    sig: str = ""
+
+    def signable_dict(self) -> dict:
+        d = asdict(self)
+        d.pop("sig", None)
+        return d
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Revocation":
+        return cls(
+            endorser_pubkey=data.get("endorser_pubkey", ""),
+            subject_pubkey=data.get("subject_pubkey", ""),
+            subject_agent_id=data.get("subject_agent_id", ""),
+            endorsement_issued_at=data.get("endorsement_issued_at", ""),
+            reason=data.get("reason", ""),
+            revoked_at=data.get("revoked_at", ""),
+            sig=data.get("sig", ""),
+        )
+
+    def verify_sig(self) -> bool:
+        if not (_NACL_AVAILABLE and _VerifyKey and self.sig and self.endorser_pubkey):
+            return False
+        try:
+            payload = canonical_json(self.signable_dict())
+            _VerifyKey(bytes.fromhex(self.endorser_pubkey)).verify(
+                payload, bytes.fromhex(self.sig),
+            )
+            return True
+        except Exception:
+            return False
+
+    def matches(self, e: Endorsement) -> bool:
+        """True iff this revocation cancels the given endorsement."""
+        return (
+            self.endorser_pubkey == e.endorser_pubkey
+            and self.subject_pubkey == e.subject_pubkey
+            and self.subject_agent_id == e.subject_agent_id
+            and self.endorsement_issued_at == e.issued_at
+        )
+
+
 def issue_endorsement(
     endorser: AgentIdentity,
     subject_pubkey: str,
@@ -156,6 +215,36 @@ def issue_endorsement(
     return e
 
 
+def issue_revocation(
+    endorser: AgentIdentity,
+    endorsement: Endorsement,
+    reason: str = "",
+) -> Revocation:
+    """Mint and sign a revocation of an endorsement that *this* identity issued.
+
+    Raises:
+        ValueError: endorsement was not issued by this identity (you can only
+                    revoke your own endorsements).
+    """
+    if not endorser.can_sign:
+        raise ValueError("issue_revocation requires a signing-capable identity")
+    if endorsement.endorser_pubkey != endorser.pubkey_hex:
+        raise ValueError(
+            "cannot revoke an endorsement issued by another identity "
+            f"(endorsement.endorser_pubkey={endorsement.endorser_pubkey[:16]}.., "
+            f"you={endorser.pubkey_hex[:16]}..)"
+        )
+    r = Revocation(
+        endorser_pubkey=endorser.pubkey_hex,
+        subject_pubkey=endorsement.subject_pubkey,
+        subject_agent_id=endorsement.subject_agent_id,
+        endorsement_issued_at=endorsement.issued_at,
+        reason=reason,
+    )
+    r.sig = endorser.sign_json(r.signable_dict())
+    return r
+
+
 class TrustGraph:
     """Append-only endorsement store + BFS-based trust resolution.
 
@@ -178,6 +267,7 @@ class TrustGraph:
         self.base_dir = self.workspace / trust_dir
         self.base_dir.mkdir(parents=True, exist_ok=True)
         self._endorsements_path = self.base_dir / "endorsements.jsonl"
+        self._revocations_path = self.base_dir / "revocations.jsonl"
         self._roots_path = self.base_dir / "roots.json"
 
     # ─── roots ─────────────────────────────────────────────────────────
@@ -259,7 +349,8 @@ class TrustGraph:
                 return True
         return False
 
-    def _load_all(self) -> List[Endorsement]:
+    def _load_raw_endorsements(self) -> List[Endorsement]:
+        """All endorsements from disk, NOT yet filtered by revocation status."""
         if not self._endorsements_path.exists():
             return []
         out = []
@@ -277,10 +368,100 @@ class TrustGraph:
                 continue
         return out
 
+    def _load_all(self) -> List[Endorsement]:
+        """All endorsements, with revoked entries filtered out.
+
+        A revocation is honored only when its signature verifies and the
+        endorser_pubkey matches the original endorsement (you can't revoke
+        someone else's endorsement). Invalid revocations are dropped silently.
+        """
+        endorsements = self._load_raw_endorsements()
+        revocations = self._load_revocations()
+        if not revocations:
+            return endorsements
+        return [
+            e for e in endorsements
+            if not any(r.matches(e) for r in revocations)
+        ]
+
+    def _load_revocations(self) -> List[Revocation]:
+        """Load + signature-verify all revocations from disk."""
+        if not self._revocations_path.exists():
+            return []
+        out = []
+        try:
+            lines = self._revocations_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = Revocation.from_dict(json.loads(line))
+            except (json.JSONDecodeError, KeyError):
+                continue
+            if r.verify_sig():
+                out.append(r)
+            else:
+                logger.warning(
+                    "dropping revocation of %s with invalid signature",
+                    r.subject_agent_id,
+                )
+        return out
+
     def _append(self, e: Endorsement) -> None:
         self._endorsements_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._endorsements_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
+
+    def import_revocation(self, r: Revocation) -> bool:
+        """Validate + store a revocation. Returns True if accepted.
+
+        A revocation only takes effect when:
+            1) its signature verifies under r.endorser_pubkey, AND
+            2) a matching endorsement exists locally (the (endorser, subject,
+               issued_at) triple must be known).
+
+        The second check is essential — without it, anyone with a signing
+        identity could "preemptively revoke" endorsements that don't exist,
+        effectively planting denial-of-service entries.
+        """
+        if not r.verify_sig():
+            logger.warning("import_revocation: bad signature")
+            return False
+        # Must reference an actual endorsement on disk
+        endorsements = self._load_raw_endorsements()
+        if not any(r.matches(e) for e in endorsements):
+            logger.debug(
+                "import_revocation: no matching endorsement on disk for "
+                "%s -> %s @ %s; dropping",
+                r.endorser_pubkey[:16], r.subject_agent_id, r.endorsement_issued_at,
+            )
+            return False
+        # Dedupe
+        for existing in self._load_revocations():
+            if (existing.endorser_pubkey == r.endorser_pubkey
+                and existing.subject_pubkey == r.subject_pubkey
+                and existing.endorsement_issued_at == r.endorsement_issued_at):
+                return False
+        self._revocations_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._revocations_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
+        return True
+
+    def revoke(
+        self,
+        endorser: AgentIdentity,
+        endorsement: Endorsement,
+        reason: str = "",
+    ) -> Optional[Revocation]:
+        """Convenience: issue + import a revocation in one call.
+
+        Returns the Revocation if accepted, None otherwise.
+        """
+        rev = issue_revocation(endorser, endorsement, reason=reason)
+        return rev if self.import_revocation(rev) else None
 
     # ─── trust resolution ──────────────────────────────────────────────
 

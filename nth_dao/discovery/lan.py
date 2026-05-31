@@ -118,7 +118,18 @@ class LANDiscovery:
         port: int = DEFAULT_DISCOVERY_PORT,
         broadcast_addrs: Tuple[str, ...] = DEFAULT_BROADCAST_ADDRS,
         bind_addr: str = "",  # "" = bind to all interfaces
+        psk: str = "",
     ):
+        """
+        Args:
+            ... (others as above) ...
+            psk: optional pre-shared key. When set, both query and hello carry
+                 an HMAC-SHA256(psk, nonce) tag; the listener only responds to
+                 queries carrying a matching tag, and the querier only accepts
+                 hellos carrying one. This makes LAN discovery private to peers
+                 who share the same psk — anyone else on the same broadcast
+                 domain sees only opaque traffic.
+        """
         self.agent_id = agent_id
         self.label = label
         self.capabilities = list(capabilities or [])
@@ -129,12 +140,40 @@ class LANDiscovery:
         self.port = port
         self.broadcast_addrs = tuple(broadcast_addrs)
         self.bind_addr = bind_addr
+        self.psk = psk  # empty = open / public discovery
 
         self._listener_sock: Optional[socket.socket] = None
         self._listener_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         # Optional filter: lambda (peer_dict) -> bool; reject silently if False
         self.peer_filter: Optional[Callable[[dict], bool]] = None
+
+    # ─── psk helpers ───────────────────────────────────────────────────
+
+    def _psk_tag(self, nonce: str) -> str:
+        """HMAC-SHA256(psk, nonce).hex() — empty psk → empty tag."""
+        if not self.psk:
+            return ""
+        import hashlib
+        import hmac as _hmac
+        return _hmac.new(
+            self.psk.encode("utf-8"),
+            nonce.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _psk_ok(self, nonce: str, claimed_tag: str) -> bool:
+        """Constant-time verify a peer's psk tag.
+
+        - If we have no psk:  accept everything (open mode).
+        - If we have a psk:   peer's tag must equal HMAC(psk, nonce).
+        """
+        if not self.psk:
+            return True
+        if not claimed_tag:
+            return False
+        import hmac as _hmac
+        return _hmac.compare_digest(claimed_tag, self._psk_tag(nonce))
 
     # ─── responder ─────────────────────────────────────────────────────
 
@@ -202,6 +241,11 @@ class LANDiscovery:
                 continue
             if msg.get("type") != MSG_QUERY or msg.get("v") != WIRE_VERSION:
                 continue
+            # Pre-shared-key gate: reject queries without matching tag.
+            nonce = msg.get("nonce", "")
+            if not self._psk_ok(nonce, msg.get("psk_tag", "")):
+                logger.debug("dropping query from %s: psk mismatch", addr)
+                continue
             # Optional capability filter — sender said `wants`, only respond
             # if we satisfy all of them. Empty wants = match everyone.
             wants = msg.get("wants") or []
@@ -210,7 +254,7 @@ class LANDiscovery:
             # Don't echo our own queries back to ourselves
             if msg.get("from") == self.agent_id:
                 continue
-            self._send_hello(sock, addr, reply_nonce=msg.get("nonce", ""))
+            self._send_hello(sock, addr, reply_nonce=nonce)
 
     def _build_hello(self, nonce: str) -> dict:
         return {
@@ -224,6 +268,7 @@ class LANDiscovery:
             "pubkey_hex": self.pubkey_hex,
             "metadata": self.metadata,
             "nonce": nonce,
+            "psk_tag": self._psk_tag(nonce),  # empty when no psk
             "ts": time.time(),
         }
 
@@ -264,6 +309,7 @@ class LANDiscovery:
             "from": self.agent_id,
             "wants": list(wanted_capabilities or []),
             "nonce": nonce,
+            "psk_tag": self._psk_tag(nonce),
         }
         payload = json.dumps(query).encode("utf-8")
         if len(payload) > MAX_MESSAGE_BYTES:
@@ -312,6 +358,11 @@ class LANDiscovery:
                     continue
                 if msg.get("nonce") != nonce:
                     continue  # stale response from a previous round
+                # psk gate (querier side): only accept hellos whose psk_tag
+                # matches our nonce under our psk
+                if not self._psk_ok(nonce, msg.get("psk_tag", "")):
+                    logger.debug("dropping hello from %s: psk mismatch", addr)
+                    continue
                 aid = msg.get("agent_id", "")
                 if not aid or aid == self.agent_id or aid in peers:
                     continue
