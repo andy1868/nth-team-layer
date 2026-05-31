@@ -41,6 +41,11 @@ def test_each_category_has_at_least_one_vector():
         "fingerprint",
         "endorsement_canonical_payload",
         "template_canonical_payload",
+        "channel_message_canonical",
+        "invitation_canonical",
+        "team_config_canonical",
+        "did_key_encoding",
+        "lan_psk_tag",
         "replay_window",
     }
     data = load_vectors()

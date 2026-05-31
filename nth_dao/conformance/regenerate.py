@@ -208,6 +208,7 @@ def gen_endorsement_canonical_payload() -> list:
 def gen_template_canonical_payload() -> list:
     """MissionTemplate.signable_dict() canonical bytes are stable."""
     alice = _seed_keypair(ALICE_SEED_HEX)
+    from ..did_key import encode_ed25519_did_key_hex
     case = {
         "id": "template-001",
         "description": "Minimal v1.0.0 template",
@@ -215,7 +216,7 @@ def gen_template_canonical_payload() -> list:
             "template_id":        "code-review",
             "version":            "1.0.0",
             "publisher_pubkey":   alice["pubkey_hex"],
-            "publisher_did":      f"did:key:{alice['pubkey_hex'][:32]}",
+            "publisher_did":      encode_ed25519_did_key_hex(alice["pubkey_hex"]),
             "name":               "Code Review",
             "description":        "Review a diff.",
             "template_type":      "agent_task",

@@ -55,7 +55,6 @@ Issues = "https://github.com/AlexNthLab/nth-dao/issues"
 Changelog = "https://github.com/AlexNthLab/nth-dao/blob/main/CHANGELOG.md"
 
 [project.scripts]
-nth-blackboard = "team_layer.blackboard.cli:main"
 nth-web = "nth_dao.web:main"
 nth-status = "nth_dao.cli.status:main"
 nth-metrics = "nth_dao.cli.metrics:main"
@@ -63,6 +62,7 @@ nth-metrics = "nth_dao.cli.metrics:main"
 [tool.setuptools]
 packages = [
     "nth_dao",
+    "nth_dao.a2a",
     "nth_dao.cli",
     "nth_dao.conformance",
     "nth_dao.discovery",
@@ -71,13 +71,6 @@ packages = [
     "nth_dao.web",
     "nth_dao.web.static",
     "nth_dao.web.static.assets",
-    "team_layer",
-    "team_layer.memory_providers",
-    "team_layer.compression",
-    "team_layer.evolution",
-    "team_layer.git_sync",
-    "team_layer.blackboard",
-    "team_layer.backends",
 ]
 
 # Optional package data: include INTEGRATION_GUIDE inside nth_dao/

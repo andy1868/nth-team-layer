@@ -87,24 +87,24 @@ def template_to_a2a_skill(template) -> Dict[str, Any]:
             for name, field_dict in (td.get("outputs") or {}).items()
         },
     }
+    nth_extension = {
+        "category": td.get("category", "general"),
+        "publisher_did":  td.get("publisher_did", ""),
+        "template_type":  td.get("template_type", "agent_task"),
+        "version":        td.get("version", ""),
+        "suggested_reward": td.get("suggested_reward", 0.0),
+        "input_schema": inputs_schema,
+        "output_schema": outputs_schema,
+    }
     return {
         "id":          f"{td.get('template_id', '')}@{td.get('version', '')}",
         "name":        td.get("name", ""),
         "description": td.get("description", ""),
         "tags":        list(td.get("tags") or []),
-        # A2A doesn't have a "category" field per se; tags are the closest.
-        # We mirror category as a tag prefix so it's discoverable.
-        "category":    td.get("category", "general"),
-        "input_schema":  inputs_schema,
-        "output_schema": outputs_schema,
-        # NTH DAO-specific extension: keep the publisher_did so an A2A
-        # client can choose to trust based on did:key identity.
-        "x-nth-dao": {
-            "publisher_did":  td.get("publisher_did", ""),
-            "template_type":  td.get("template_type", "agent_task"),
-            "version":        td.get("version", ""),
-            "suggested_reward": td.get("suggested_reward", 0.0),
-        },
+        "examples": [],
+        "inputModes": ["application/json"],
+        "outputModes": ["application/json"],
+        "x-nth-dao": nth_extension,
     }
 
 
@@ -121,6 +121,7 @@ def agent_card_from(
     endpoint_url: str = "",
     version: str = "1.0.0",
     metadata: Optional[Dict[str, Any]] = None,
+    protocol_version: str = "0.3.0",
 ) -> Dict[str, Any]:
     """Assemble an A2A AgentCard suitable for `/.well-known/agent.json`.
 
@@ -137,17 +138,32 @@ def agent_card_from(
     """
     skills = [template_to_a2a_skill(t) for t in (templates or [])]
     return {
-        "id":           agent_did,
-        "name":         name,
-        "description":  description,
-        "version":      version,
-        "endpoint":     endpoint_url,
-        "capabilities": list(capabilities or []),
-        "skills":       skills,
-        "metadata":     dict(metadata or {}),
-        # Make the file recognizable as A2A-shaped without a content-type negotiation
-        "schema":       "https://a2a-protocol.org/schemas/agent-card-v1.json",
-        "x-nth-dao":    {"version": version, "wire_format": "nth-dao-agent-card-v1"},
+        "protocolVersion": protocol_version,
+        "name": name,
+        "description": description,
+        "url": endpoint_url,
+        "preferredTransport": "JSONRPC",
+        "version": version,
+        "capabilities": {
+            "streaming": False,
+            "pushNotifications": False,
+            "stateTransitionHistory": True,
+            "extensions": [
+                {"uri": "https://github.com/AlexNthLab/nth-dao/a2a"},
+            ],
+        },
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "skills": skills,
+        "securitySchemes": {},
+        "security": [],
+        "metadata": dict(metadata or {}),
+        "x-nth-dao": {
+            "agent_did": agent_did,
+            "capabilities": list(capabilities or []),
+            "version": version,
+            "wire_format": "nth-dao-a2a-agent-card-v1",
+        },
     }
 
 
@@ -167,15 +183,16 @@ def a2a_task_from_mission(mission) -> Dict[str, Any]:
     else:
         raise TypeError(f"mission must be Mission or dict; got {type(mission)}")
 
-    # A2A states are submitted / in_progress / completed / failed / cancelled.
+    # A2A states are submitted / working / completed / failed / canceled.
     # Map NTH DAO state machine:
     NTH_TO_A2A = {
         "planning":  "submitted",
-        "active":    "in_progress",
+        "active":    "working",
         "paused":    "submitted",
         "completed": "completed",
         "failed":    "failed",
-        "cancelled": "cancelled",
+        "cancelled": "canceled",
+        "canceled": "canceled",
     }
     nth_status = md.get("status", "planning")
     a2a_status = NTH_TO_A2A.get(nth_status, "submitted")
@@ -201,17 +218,24 @@ def a2a_task_from_mission(mission) -> Dict[str, Any]:
     ]
 
     return {
-        "id":           md.get("id", ""),
-        "status":       a2a_status,
-        "title":        md.get("title", ""),
-        "description":  md.get("goal", ""),
-        "input":        aggregated_inputs,
-        "output":       aggregated_outputs,
-        "created_at":   md.get("created_at", ""),
-        "updated_at":   md.get("updated_at", ""),
-        "completed_at": md.get("completed_at"),
-        "history":      history,
-        "x-nth-dao": {
+        "id": md.get("id", ""),
+        "contextId": md.get("context_id") or md.get("id", ""),
+        "status": {
+            "state": a2a_status,
+            "timestamp": md.get("updated_at", ""),
+        },
+        "artifacts": [
+            {
+                "artifactId": "nth-dao-output",
+                "name": "NTH DAO mission output",
+                "parts": [{"kind": "data", "data": aggregated_outputs}],
+            }
+        ] if aggregated_outputs else [],
+        "history": history,
+        "metadata": {
+            "title": md.get("title", ""),
+            "description": md.get("goal", ""),
+            "input": aggregated_inputs,
             "owner":            md.get("owner", ""),
             "template_id":      md.get("template_id"),
             "template_version": md.get("template_version"),
@@ -255,7 +279,19 @@ def mission_inputs_from_a2a_message(
         raise ValueError("A2A message must be a JSON object")
     if "params" in a2a_message and isinstance(a2a_message["params"], dict):
         params = a2a_message["params"]
-        inputs = params.get("input") if isinstance(params.get("input"), dict) else {}
+        if isinstance(params.get("input"), dict):
+            inputs = params["input"]
+        else:
+            message = params.get("message")
+            inputs = {}
+            if isinstance(message, dict):
+                for part in message.get("parts", []) or []:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("kind") == "data" and isinstance(part.get("data"), dict):
+                        inputs.update(part["data"])
+                    elif part.get("type") == "data" and isinstance(part.get("data"), dict):
+                        inputs.update(part["data"])
     elif "input" in a2a_message:
         inputs = a2a_message["input"] if isinstance(a2a_message["input"], dict) else {}
     else:

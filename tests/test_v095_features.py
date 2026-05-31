@@ -1,4 +1,4 @@
-"""v0.9.5 — AgentLedger + Guardian recovery + A2A translation tests."""
+﻿"""v0.9.5 鈥?AgentLedger + Guardian recovery + A2A translation tests."""
 
 import json
 
@@ -12,7 +12,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# ─────────────────── AgentLedger ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ AgentLedger 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def test_agent_ledger_appends_and_reduces(tmp_path):
@@ -46,7 +46,7 @@ def test_agent_ledger_appends_and_reduces(tmp_path):
 
 
 def test_agent_ledger_scopes_by_pubkey_fingerprint(tmp_path):
-    """Same pubkey, different agent_id strings → same ledger file."""
+    """Same pubkey, different agent_id strings 鈫?same ledger file."""
     from nth_dao.agent_ledger import AgentLedger
     ident = AgentIdentity.generate(label="alice")
     al1 = AgentLedger(tmp_path, identity=ident)
@@ -86,6 +86,40 @@ def test_agent_ledger_events_are_signed_when_identity_can_sign(tmp_path):
     al = AgentLedger(tmp_path, identity=ident)
     e = al.record_step_complete("m1", "s1")
     assert e.sig  # non-empty
+    assert e.event_hash
+    assert e.prev_hash == "0" * 64
+    ok, reason = al.verify_chain()
+    assert ok, reason
+
+
+def test_agent_ledger_detects_tampered_event(tmp_path):
+    from nth_dao.agent_ledger import AgentLedger
+    ident = AgentIdentity.generate(label="alice")
+    al = AgentLedger(tmp_path, identity=ident)
+    al.record_step_complete("m1", "s1", token_cost=1)
+    raw = al.ledger_path.read_text(encoding="utf-8")
+    al.ledger_path.write_text(
+        raw.replace('"token_cost": 1', '"token_cost": 999'),
+        encoding="utf-8",
+    )
+    ok, reason = al.verify_chain()
+    assert not ok
+    assert "event_hash" in reason or "signature" in reason
+
+
+def test_agent_ledger_stats_cache_uses_ledger_hash(tmp_path):
+    from nth_dao.agent_ledger import AgentLedger
+    ident = AgentIdentity.generate(label="alice")
+    al = AgentLedger(tmp_path, identity=ident)
+    al.record_step_complete("m1", "s1", token_cost=1)
+    first = al.stats()
+    raw = al.ledger_path.read_text(encoding="utf-8")
+    al.ledger_path.write_text(
+        raw.replace('"token_cost": 1', '"token_cost": 2'),
+        encoding="utf-8",
+    )
+    second = al.stats()
+    assert second["ledger_hash"] != first["ledger_hash"]
 
 
 def test_agent_ledger_works_without_identity(tmp_path):
@@ -100,7 +134,7 @@ def test_agent_ledger_works_without_identity(tmp_path):
     assert e.sig == ""
 
 
-# ─────────────────── Guardian recovery ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Guardian recovery 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def test_guardian_set_round_trip_and_signature(tmp_path):
@@ -179,7 +213,7 @@ def test_replacement_below_threshold_rejected(tmp_path):
     gs = publish_guardian_set(alice, [g1.pubkey_hex, g2.pubkey_hex], threshold=2)
     proof = begin_key_replacement(gs, new_alice.pubkey_hex)
     proof.signatures.append(sign_replacement(g1, proof))
-    # only 1 of 2 — below threshold
+    # only 1 of 2 鈥?below threshold
     valid, reason = verify_replacement(proof, gs)
     assert not valid
     assert "signatures" in reason
@@ -245,6 +279,56 @@ def test_replacement_tampered_proof_rejected(tmp_path):
     assert not valid
 
 
+def test_forged_guardian_set_cannot_bind_victim_fingerprint(tmp_path):
+    from nth_dao.guardian import (
+        GuardianSet,
+        GuardianStore,
+        publish_guardian_set,
+    )
+    victim = AgentIdentity.generate(label="victim")
+    attacker = AgentIdentity.generate(label="attacker")
+    g1 = AgentIdentity.generate(label="g1")
+    g2 = AgentIdentity.generate(label="g2")
+    legitimate = publish_guardian_set(
+        attacker, [g1.pubkey_hex, g2.pubkey_hex], threshold=2,
+    )
+    forged = GuardianSet.from_dict(legitimate.to_dict())
+    forged.protected_fingerprint = victim.fingerprint()
+    assert not forged.is_well_formed()
+    assert not forged.verify_signature()
+    store = GuardianStore(tmp_path)
+    with pytest.raises(ValueError, match="malformed"):
+        store.save_guardian_set(forged)
+
+
+def test_guardian_store_rejects_replay_and_pubkey_reuse(tmp_path):
+    from nth_dao.guardian import (
+        GuardianStore,
+        begin_key_replacement,
+        publish_guardian_set,
+        sign_replacement,
+    )
+    alice = AgentIdentity.generate(label="alice")
+    bob = AgentIdentity.generate(label="bob")
+    g1 = AgentIdentity.generate(label="g1")
+    g2 = AgentIdentity.generate(label="g2")
+    new_key = AgentIdentity.generate(label="new")
+    gs1 = publish_guardian_set(alice, [g1.pubkey_hex, g2.pubkey_hex], threshold=2)
+    gs2 = publish_guardian_set(bob, [g1.pubkey_hex, g2.pubkey_hex], threshold=2)
+    store = GuardianStore(tmp_path)
+    store.save_guardian_set(gs1)
+    store.save_guardian_set(gs2)
+    proof1 = begin_key_replacement(gs1, new_key.pubkey_hex)
+    proof1.signatures.append(sign_replacement(g1, proof1))
+    proof1.signatures.append(sign_replacement(g2, proof1))
+    assert store.commit_replacement(proof1)
+    assert not store.commit_replacement(proof1)
+    proof2 = begin_key_replacement(gs2, new_key.pubkey_hex)
+    proof2.signatures.append(sign_replacement(g1, proof2))
+    proof2.signatures.append(sign_replacement(g2, proof2))
+    assert not store.commit_replacement(proof2)
+
+
 def test_guardian_store_commit_persists_active_replacement(tmp_path):
     from nth_dao.guardian import (
         GuardianStore,
@@ -286,7 +370,7 @@ def test_guardian_store_commit_below_threshold_returns_false(tmp_path):
     assert store.resolve_current_pubkey(alice.fingerprint()) is None
 
 
-# ─────────────────── A2A translation ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ A2A translation 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def test_template_to_a2a_skill_includes_input_schema(tmp_path):
@@ -309,12 +393,14 @@ def test_template_to_a2a_skill_includes_input_schema(tmp_path):
     )
     skill = template_to_a2a_skill(t)
     assert skill["id"] == "code-review@1.0.0"
-    assert skill["category"] == "code_review"
-    assert skill["input_schema"]["type"] == "object"
-    assert skill["input_schema"]["properties"]["diff_url"]["type"] == "string"
-    assert "diff_url" in skill["input_schema"]["required"]
-    assert skill["input_schema"]["properties"]["severity"]["enum"] == ["low", "med", "high"]
-    assert skill["output_schema"]["properties"]["score"]["type"] == "number"
+    assert skill["inputModes"] == ["application/json"]
+    assert skill["outputModes"] == ["application/json"]
+    assert skill["x-nth-dao"]["category"] == "code_review"
+    assert skill["x-nth-dao"]["input_schema"]["type"] == "object"
+    assert skill["x-nth-dao"]["input_schema"]["properties"]["diff_url"]["type"] == "string"
+    assert "diff_url" in skill["x-nth-dao"]["input_schema"]["required"]
+    assert skill["x-nth-dao"]["input_schema"]["properties"]["severity"]["enum"] == ["low", "med", "high"]
+    assert skill["x-nth-dao"]["output_schema"]["properties"]["score"]["type"] == "number"
 
 
 def test_agent_card_from_assembles_well_formed_card(tmp_path):
@@ -333,11 +419,14 @@ def test_agent_card_from_assembles_well_formed_card(tmp_path):
         capabilities=["code_review"],
         endpoint_url="https://alice.example/a2a",
     )
-    assert card["id"].startswith("did:key:z")
+    assert card["x-nth-dao"]["agent_did"].startswith("did:key:z")
     assert card["name"] == "Alice's Agent"
+    assert card["url"] == "https://alice.example/a2a"
+    assert card["preferredTransport"] == "JSONRPC"
+    assert isinstance(card["capabilities"], dict)
+    assert card["defaultInputModes"] == ["application/json"]
     assert len(card["skills"]) == 1
     assert card["skills"][0]["id"] == "t@1.0.0"
-    assert card["endpoint"] == "https://alice.example/a2a"
 
 
 def test_a2a_task_from_mission_maps_status(tmp_path):
@@ -347,11 +436,11 @@ def test_a2a_task_from_mission_maps_status(tmp_path):
                     steps=[{"id": "s", "description": "x"}])
     task = a2a_task_from_mission(m)
     assert task["id"] == m.id
-    assert task["status"] == "submitted"  # planning → submitted
+    assert task["status"]["state"] == "submitted"
     # Push to completed
     m.status = "completed"
     task2 = a2a_task_from_mission(m)
-    assert task2["status"] == "completed"
+    assert task2["status"]["state"] == "completed"
 
 
 def test_mission_inputs_from_a2a_message_with_jsonrpc_params(tmp_path):
@@ -385,7 +474,7 @@ def test_mission_inputs_from_a2a_message_missing_required_field(tmp_path):
         mission_inputs_from_a2a_message({"input": {}}, t)
 
 
-# ─────────────────── facade ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ facade 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def test_facade_exports_v095():

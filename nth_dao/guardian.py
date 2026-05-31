@@ -49,6 +49,7 @@ to UX layers per the iron rule (TS for UI, Python for protocol).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -58,9 +59,23 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .identity import AgentIdentity, _NACL_AVAILABLE, _VerifyKey, canonical_json
-from .util import atomic_write_json, safe_id, safe_load_json
+from .util import InterProcessLock, atomic_write_json, safe_id, safe_load_json
 
 logger = logging.getLogger("nth_dao.guardian")
+
+
+def _pubkey_fingerprint(pubkey_hex: str) -> str:
+    return hashlib.sha256(pubkey_hex.encode("utf-8")).hexdigest()[:16]
+
+
+def _is_pubkey_hex(value: str) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        bytes.fromhex(value)
+        return True
+    except ValueError:
+        return False
 
 
 # ─────────────────── data types ───────────────────
@@ -115,9 +130,17 @@ class GuardianSet:
             return False
 
     def is_well_formed(self) -> bool:
+        if not _is_pubkey_hex(self.protected_pubkey):
+            return False
+        if self.protected_fingerprint != _pubkey_fingerprint(self.protected_pubkey):
+            return False
         if not self.guardian_pubkeys:
             return False
         if self.threshold < 1 or self.threshold > len(self.guardian_pubkeys):
+            return False
+        if self.protected_pubkey in self.guardian_pubkeys:
+            return False
+        if any(not _is_pubkey_hex(pk) for pk in self.guardian_pubkeys):
             return False
         # No duplicates
         if len(set(self.guardian_pubkeys)) != len(self.guardian_pubkeys):
@@ -208,6 +231,8 @@ def publish_guardian_set(
     """
     if not getattr(owner, "can_sign", False):
         raise ValueError("publish_guardian_set requires a signing-capable identity")
+    if not _is_pubkey_hex(owner.pubkey_hex):
+        raise ValueError("owner pubkey must be a 32-byte Ed25519 public key")
     if not guardian_pubkeys:
         raise ValueError("at least one guardian pubkey is required")
     if threshold < 1 or threshold > len(guardian_pubkeys):
@@ -216,6 +241,8 @@ def publish_guardian_set(
         )
     if len(set(guardian_pubkeys)) != len(guardian_pubkeys):
         raise ValueError("guardian_pubkeys must be unique")
+    if any(not _is_pubkey_hex(pk) for pk in guardian_pubkeys):
+        raise ValueError("guardian_pubkeys must be 32-byte Ed25519 public keys")
     if owner.pubkey_hex in guardian_pubkeys:
         raise ValueError(
             "the protected agent's own pubkey must not appear in the guardian set"
@@ -242,6 +269,12 @@ def begin_key_replacement(
     """
     if not guardian_set.is_well_formed():
         raise ValueError("guardian_set is malformed")
+    if not guardian_set.verify_signature():
+        raise ValueError("guardian_set signature invalid")
+    if not _is_pubkey_hex(new_pubkey_hex):
+        raise ValueError("new_pubkey_hex must be a 32-byte Ed25519 public key")
+    if new_pubkey_hex == guardian_set.protected_pubkey:
+        raise ValueError("new_pubkey_hex must differ from the protected pubkey")
     return KeyReplacementProof(
         proof_id=uuid.uuid4().hex[:12],
         old_fingerprint=guardian_set.protected_fingerprint,
@@ -289,6 +322,10 @@ def verify_replacement(
         return False, "proof refers to a different guardian set"
     if proof.old_fingerprint != guardian_set.protected_fingerprint:
         return False, "proof refers to a different agent"
+    if not _is_pubkey_hex(proof.new_pubkey):
+        return False, "proof new_pubkey malformed"
+    if proof.new_pubkey == guardian_set.protected_pubkey:
+        return False, "proof does not replace the protected pubkey"
     if not (_NACL_AVAILABLE and _VerifyKey):
         return False, "crypto unavailable"
 
@@ -345,10 +382,13 @@ class GuardianStore:
         self.active_path = self.base / self.ACTIVE_NAME
 
     def save_guardian_set(self, gs: GuardianSet) -> Path:
+        if not gs.is_well_formed():
+            raise ValueError("refuse to save malformed GuardianSet")
         if not gs.verify_signature():
             raise ValueError("refuse to save GuardianSet with invalid signature")
         path = self.gs_dir / f"{safe_id(gs.set_id)}.json"
-        atomic_write_json(path, gs.to_dict())
+        with InterProcessLock(path):
+            atomic_write_json(path, gs.to_dict())
         return path
 
     def load_guardian_set(self, set_id: str) -> Optional[GuardianSet]:
@@ -363,8 +403,21 @@ class GuardianStore:
 
     def save_replacement(self, proof: KeyReplacementProof) -> Path:
         path = self.rep_dir / f"{safe_id(proof.proof_id)}.json"
-        atomic_write_json(path, proof.to_dict())
+        with InterProcessLock(path):
+            atomic_write_json(path, proof.to_dict())
         return path
+
+    def _iter_replacements(self) -> List[KeyReplacementProof]:
+        out: List[KeyReplacementProof] = []
+        for path in self.rep_dir.glob("*.json"):
+            data = safe_load_json(path, fallback=None)
+            if data is None:
+                continue
+            try:
+                out.append(KeyReplacementProof.from_dict(data))
+            except Exception:
+                continue
+        return out
 
     def load_replacement(self, proof_id: str) -> Optional[KeyReplacementProof]:
         path = self.rep_dir / f"{safe_id(proof_id)}.json"
@@ -381,26 +434,41 @@ class GuardianStore:
 
         Returns True on success. False if verification fails (no state changes).
         """
-        gs = self.load_guardian_set(proof.set_id)
-        if gs is None:
-            return False
-        valid, reason = verify_replacement(proof, gs)
-        if not valid:
-            logger.warning("commit_replacement refused: %s", reason)
-            return False
-        # Persist the proof
-        self.save_replacement(proof)
-        # Update the active replacements map
-        active = safe_load_json(self.active_path, fallback={}) or {}
-        if not isinstance(active, dict):
-            active = {}
-        active[proof.old_fingerprint] = {
-            "new_pubkey": proof.new_pubkey,
-            "proof_id":   proof.proof_id,
-            "effective_at": proof.effective_at,
-        }
-        atomic_write_json(self.active_path, active)
-        return True
+        with InterProcessLock(self.active_path):
+            gs = self.load_guardian_set(proof.set_id)
+            if gs is None:
+                return False
+            valid, reason = verify_replacement(proof, gs)
+            if not valid:
+                logger.warning("commit_replacement refused: %s", reason)
+                return False
+
+            active = safe_load_json(self.active_path, fallback={}) or {}
+            if not isinstance(active, dict):
+                active = {}
+            if proof.old_fingerprint in active:
+                logger.warning("commit_replacement refused: old fingerprint already replaced")
+                return False
+            for entry in active.values():
+                if isinstance(entry, dict) and entry.get("new_pubkey") == proof.new_pubkey:
+                    logger.warning("commit_replacement refused: new pubkey already active")
+                    return False
+            for previous in self._iter_replacements():
+                if previous.proof_id == proof.proof_id:
+                    logger.warning("commit_replacement refused: proof_id replay")
+                    return False
+                if previous.new_pubkey == proof.new_pubkey:
+                    logger.warning("commit_replacement refused: new pubkey already used")
+                    return False
+
+            self.save_replacement(proof)
+            active[proof.old_fingerprint] = {
+                "new_pubkey": proof.new_pubkey,
+                "proof_id":   proof.proof_id,
+                "effective_at": proof.effective_at,
+            }
+            atomic_write_json(self.active_path, active)
+            return True
 
     def active_replacements(self) -> Dict[str, Any]:
         return safe_load_json(self.active_path, fallback={}) or {}

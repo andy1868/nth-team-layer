@@ -66,16 +66,17 @@ signed AchievementCredential — currently out of scope but the data is here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .identity import AgentIdentity, canonical_json
-from .util import atomic_write_json, safe_id, safe_load_json
+from .util import InterProcessLock, atomic_write_json, safe_id, safe_load_json
 
 logger = logging.getLogger("nth_dao.agent_ledger")
 
@@ -92,6 +93,8 @@ EVENT_ENDORSEMENT_GIVEN    = "endorsement_given"
 EVENT_ENDORSEMENT_RECEIVED = "endorsement_received"
 EVENT_MISSION_OWNED        = "mission_owned"
 
+ZERO_HASH = "0" * 64
+
 
 @dataclass
 class LedgerEvent:
@@ -107,6 +110,10 @@ class LedgerEvent:
     agent_id: str
     timestamp: str
     data: Dict[str, Any] = field(default_factory=dict)
+    pubkey: str = ""
+    seq: int = 0
+    prev_hash: str = ZERO_HASH
+    event_hash: str = ""
     sig: str = ""
 
     def to_dict(self) -> dict:
@@ -115,7 +122,11 @@ class LedgerEvent:
     def signable_dict(self) -> dict:
         d = self.to_dict()
         d.pop("sig", None)
+        d.pop("event_hash", None)
         return d
+
+    def compute_hash(self) -> str:
+        return hashlib.sha256(canonical_json(self.signable_dict())).hexdigest()
 
     @classmethod
     def from_dict(cls, data: dict) -> "LedgerEvent":
@@ -126,6 +137,10 @@ class LedgerEvent:
             agent_id=data.get("agent_id", ""),
             timestamp=data.get("timestamp", ""),
             data=dict(data.get("data", {})),
+            pubkey=data.get("pubkey", ""),
+            seq=int(data.get("seq", 0)),
+            prev_hash=data.get("prev_hash", ZERO_HASH),
+            event_hash=data.get("event_hash", ""),
             sig=data.get("sig", ""),
         )
 
@@ -212,23 +227,28 @@ class AgentLedger:
     # ─── append events ───
 
     def _append(self, event_type: str, data: Optional[Dict[str, Any]] = None) -> LedgerEvent:
-        event = LedgerEvent(
-            event_id=uuid.uuid4().hex[:12],
-            type=event_type,
-            agent_fingerprint=self.fingerprint,
-            agent_id=self.agent_id,
-            timestamp=datetime.now().isoformat(),
-            data=dict(data or {}),
-        )
-        # Sign if we have a crypto identity (best-effort; verifier may verify)
-        if self.identity and getattr(self.identity, "can_sign", False):
-            try:
-                event.sig = self.identity.sign_json(event.signable_dict())
-            except Exception as e:
-                logger.debug("ledger event sign failed: %s", e)
-        # Append
-        with open(self.ledger_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+        with InterProcessLock(self.ledger_path):
+            previous = self._read_events_unlocked(strict=False)
+            prev_hash = previous[-1].event_hash if previous else ZERO_HASH
+            event = LedgerEvent(
+                event_id=uuid.uuid4().hex[:12],
+                type=event_type,
+                agent_fingerprint=self.fingerprint,
+                agent_id=self.agent_id,
+                timestamp=datetime.now().isoformat(),
+                data=dict(data or {}),
+                pubkey=self.identity.pubkey_hex if self.identity else "",
+                seq=len(previous) + 1,
+                prev_hash=prev_hash,
+            )
+            event.event_hash = event.compute_hash()
+            if self.identity and getattr(self.identity, "can_sign", False):
+                try:
+                    event.sig = self.identity.sign_json(event.signable_dict())
+                except Exception as e:
+                    logger.debug("ledger event sign failed: %s", e)
+            with open(self.ledger_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
         return event
 
     def record_step_claim(
@@ -355,23 +375,83 @@ class AgentLedger:
 
     # ─── query ───
 
-    def all_events(self) -> List[LedgerEvent]:
+    def _read_events_unlocked(self, *, strict: bool) -> List[LedgerEvent]:
         if not self.ledger_path.exists():
             return []
         out: List[LedgerEvent] = []
         try:
             lines = self.ledger_path.read_text(encoding="utf-8").splitlines()
-        except OSError:
+        except OSError as e:
+            if strict:
+                raise
+            logger.warning("failed to read ledger %s: %s", self.ledger_path, e)
             return []
-        for line in lines:
+        for line_no, line in enumerate(lines, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 out.append(LedgerEvent.from_dict(json.loads(line)))
-            except (json.JSONDecodeError, KeyError):
-                continue
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+                if strict:
+                    raise ValueError(f"corrupt ledger line {line_no}: {e}") from e
+                logger.warning("skipping corrupt ledger line %s in %s: %s", line_no, self.ledger_path, e)
         return out
+
+    def all_events(self) -> List[LedgerEvent]:
+        with InterProcessLock(self.ledger_path):
+            return self._read_events_unlocked(strict=False)
+
+    def ledger_hash(self) -> str:
+        """Hash the current ledger file bytes for cache invalidation/audit."""
+        if not self.ledger_path.exists():
+            return ZERO_HASH
+        try:
+            return hashlib.sha256(self.ledger_path.read_bytes()).hexdigest()
+        except OSError:
+            return ZERO_HASH
+
+    def verify_event(self, event: LedgerEvent, previous_hash: str, expected_seq: int) -> Tuple[bool, str]:
+        if event.seq != expected_seq:
+            return False, f"seq mismatch at {event.event_id}: expected {expected_seq}, got {event.seq}"
+        if event.prev_hash != previous_hash:
+            return False, f"prev_hash mismatch at {event.event_id}"
+        actual_hash = event.compute_hash()
+        if event.event_hash != actual_hash:
+            return False, f"event_hash mismatch at {event.event_id}"
+        expected_fingerprint = (
+            hashlib.sha256(event.pubkey.encode("utf-8")).hexdigest()[:16]
+            if event.pubkey else
+            hashlib.sha256(event.agent_id.encode("utf-8")).hexdigest()[:16]
+        )
+        if event.agent_fingerprint != expected_fingerprint:
+            return False, f"fingerprint mismatch at {event.event_id}"
+        if event.pubkey and event.sig:
+            try:
+                from nacl.signing import VerifyKey
+                VerifyKey(bytes.fromhex(event.pubkey)).verify(
+                    canonical_json(event.signable_dict()),
+                    bytes.fromhex(event.sig),
+                )
+            except Exception as e:
+                return False, f"signature invalid at {event.event_id}: {e}"
+        elif event.pubkey and not event.sig:
+            return False, f"missing signature at {event.event_id}"
+        return True, "ok"
+
+    def verify_chain(self) -> Tuple[bool, str]:
+        with InterProcessLock(self.ledger_path):
+            try:
+                events = self._read_events_unlocked(strict=True)
+            except Exception as e:
+                return False, str(e)
+        prev_hash = ZERO_HASH
+        for expected_seq, event in enumerate(events, start=1):
+            ok, reason = self.verify_event(event, prev_hash, expected_seq)
+            if not ok:
+                return False, reason
+            prev_hash = event.event_hash
+        return True, "ok"
 
     def events_by_type(self, *types: str) -> List[LedgerEvent]:
         if not types:
@@ -412,6 +492,7 @@ class AgentLedger:
                 "categories": {},
                 "total_token_cost": 0,
                 "last_active_at": "",
+                "ledger_hash": self.ledger_hash(),
             }
 
         stats: Dict[str, Any] = {
@@ -433,6 +514,7 @@ class AgentLedger:
             "categories": {},
             "total_token_cost": 0,
             "last_active_at": events[-1].timestamp,
+            "ledger_hash": self.ledger_hash(),
         }
         templates: Dict[str, int] = {}
         categories: Dict[str, int] = {}
@@ -480,7 +562,8 @@ class AgentLedger:
     def stats(self) -> Dict[str, Any]:
         """Return cached stats; recompute + persist if missing or stale."""
         cached = safe_load_json(self.stats_path, fallback=None)
-        if cached and cached.get("event_count") == len(self.all_events()):
+        current_hash = self.ledger_hash()
+        if cached and cached.get("ledger_hash") == current_hash:
             return cached
         fresh = self.compute_stats()
         atomic_write_json(self.stats_path, fresh)
