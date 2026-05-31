@@ -117,6 +117,23 @@ class Mission:
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # ── template linkage (v0.9.3) ──
+    # When set, this mission was instantiated from a template; template_lock
+    # captures publisher_sig at instantiation time so the mission stays
+    # reproducible even if the template is later modified or deprecated.
+    template_id: Optional[str] = None
+    template_version: Optional[str] = None
+    template_lock: Dict[str, Any] = field(default_factory=dict)
+
+    # ── reserved fields (v0.9.3, not yet implemented) ──
+    # Filled in by future versions; default values are inert. Keeping the
+    # field names stable now lets a later release populate them without
+    # breaking on-disk format.
+    owner_did: str = ""
+    legal_jurisdiction: str = ""
+    governing_arbiter: str = ""
+    credentials_required: List[str] = field(default_factory=list)
+
     #
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())

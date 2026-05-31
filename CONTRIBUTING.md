@@ -60,6 +60,46 @@ import nth_dao as nth
 These rules came out of an independent code review that found six critical
 and thirteen high-severity issues in v0.9.0. Don't recreate them.
 
+### Language choice — IRON RULE
+
+This rule is a long-term-maintenance decision and cannot be overridden by a
+single PR. Every contribution must respect it.
+
+**TypeScript / JavaScript MUST be used for:**
+
+- User-facing UI (web dashboards, control panels, settings screens)
+- Browser extensions and browser-side widgets
+- Any management console served to end users
+- Visualization widgets (kanban boards, trust graphs, mission timelines)
+- Anything that runs inside a browser tab
+
+**Python MUST be used for:**
+
+- The core nth_dao protocol layer (everything in `nth_dao/`)
+- All wire-protocol implementations (gossip, LAN discovery, identity, …)
+- All agent backends and adapters (`team_layer/backends/`)
+- Server-side HTTP / WebSocket endpoints (FastAPI under `nth_dao/web/`)
+- CLI tools (CLI commands stay short — they shell out to Python modules)
+- Tests for any of the above
+- All examples / demos
+- All data-handling scripts (ledger reducers, archive jobs, etc.)
+
+**Why this rule:**
+
+- The protocol layer is local-first and stdlib-only. Adding a TypeScript
+  runtime dependency (Node / Bun) to the core would break that promise.
+- UI velocity, ecosystem (React, Tailwind, …), and browser deployment are
+  TypeScript's home turf. Python web frontends age badly.
+- Two languages with crisp boundaries (HTTP/JSON between them) keep the
+  blast radius small and the contributor pool wide.
+- Long-term maintenance: the protocol layer changes slowly (years); UI
+  changes weekly. Different cadences want different toolchains.
+
+If a feature naturally straddles the line — e.g., an interactive CLI that
+also exposes a web UI — split it: Python implements the data + transport,
+TypeScript implements the visual surface, they talk JSON over HTTP. Never
+embed React-in-Python or write the protocol in TS to share types.
+
 ### File I/O
 
 - **All JSON writes go through `nth_dao.util.atomic_write_json()`.** Never

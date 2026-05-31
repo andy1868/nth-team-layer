@@ -18,7 +18,75 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-102%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-138%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.9.3 — Mission Template registry
+
+This release lifts `MissionStore` from a one-shot quest board into a
+reusable, signed, rateable template registry — the "decentralized App
+Store" layer in the project vision.
+
+```python
+# Alice publishes a signed reusable template
+template = nth.mint_template(
+    alice_identity,
+    template_id="code-review", version="1.0.0",
+    name="Code Review",
+    category="code_review", tags=["python", "security"],
+    required_capabilities=["code_review"],
+    inputs={"diff_url": nth.IOField(type="string", required=True,
+                                     description="PR diff URL")},
+    steps=[nth.StepSkeleton(id="review", description="...",
+                             inputs_from={"diff_url": "input:diff_url"})],
+    suggested_reward=5.0,
+)
+store.publish_template(template)
+
+# Bob browses and instantiates the latest version
+results = store.browse_templates(sort_by="rating")
+mission = store.instantiate("code-review",
+                            owner="bob",
+                            inputs={"diff_url": "https://..."})
+
+# Carol reviews Bob's completed mission; stats roll up automatically
+store.review_mission(mission.id, reviewer=carol_identity, score=4.5,
+                     feedback="caught 3 edge cases")
+
+# Personal contribution view, walks archived missions too
+for m in store.my_history("bob"):
+    print(m.template_id, m.status)
+```
+
+Highlights:
+
+- **`MissionTemplate`** — semver-versioned, publisher-signed, F-Droid-style
+  one-file-per-version layout. Tampering invalidates signature; deprecation
+  is publisher-only.
+- **`MissionReview`** — signed, append-only `reviews/*.jsonl` ledger per
+  template version. EWMA aggregation surfaces recent reviews while keeping
+  historical record.
+- **`template_lock`** — Nix-flake-lock-style snapshot of `publisher_sig` at
+  instantiation time. A running mission stays reproducible even if the
+  publisher republishes or deprecates.
+- **`browse_templates`** — F-Droid-style discovery: filter by `category`,
+  `tags`, `min_average_rating`; sort by `rating` / `recent` / `popularity`.
+- **`archive_completed(older_than_days=30)`** — atomic move of terminal
+  missions to `archive/YYYY-MM/`, keeps the active query path fast.
+- **`my_history(agent_id)`** — walks active + archive; first step toward
+  the AgentLedger / Achievement layer (v0.9.4+).
+- **5 reserved fields** (`owner_did`, `legal_jurisdiction`, `governing_arbiter`,
+  `credentials_required`, …) ready for the Layer-3 social-collaboration
+  story without on-disk format breaks.
+- **Aligned with industry standards** (no new runtime dependencies): the
+  schema and on-disk layout track **cargo-crev** (Proof model), **F-Droid**
+  (one-file + signed index), **TUF** (monotonic version + `meta` field +
+  `delegations` placeholder), **Argo WorkflowTemplate** (5-value
+  `template_type`), **GitHub Actions** (`inputs`/`outputs` field naming),
+  **Nix `flake.lock`** (`template_lock`), and **W3C `did:key`**
+  (`publisher_did`).
+
+Full wire-format spec in [`docs/PROTOCOLS.md §9`](docs/PROTOCOLS.md);
+bootstrap taxonomy in [`docs/CATEGORIES.md`](docs/CATEGORIES.md).
 
 ## What's New in 0.9.2 — Revocation, invitations, private LAN
 

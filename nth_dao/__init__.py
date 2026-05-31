@@ -36,9 +36,9 @@ try:
     try:
         __version__ = _pkg_version("nth-dao")
     except PackageNotFoundError:
-        __version__ = "0.9.2+source"
+        __version__ = "0.9.3+source"
 except ImportError:
-    __version__ = "0.9.2+source"
+    __version__ = "0.9.3+source"
 
 #
 # Facade — re-export all team_layer public APIs.
@@ -108,7 +108,23 @@ from .discovery import (
     LANDiscovery,
     LANPeer,
 )
-from .orchestration import Mission, MissionStep, MissionStore, MissionRunner, MissionStatus
+from .orchestration import (
+    Mission,
+    MissionStep,
+    MissionStore,
+    MissionRunner,
+    MissionStatus,
+    # v0.9.3 additions
+    MissionTemplate,
+    TemplateType,
+    IOField,
+    StepSkeleton,
+    mint_template,
+    MissionReview,
+    TemplateStats,
+    mint_review,
+    TemplatePublishError,
+)
 from .membership import (
     JoinPolicy,
     RequestStatus,
@@ -208,6 +224,16 @@ __all__ = [
     "MissionStatus",
     "MissionStore",
     "MissionRunner",
+    # v0.9.3 — Mission templates + reviews
+    "MissionTemplate",
+    "TemplateType",
+    "IOField",
+    "StepSkeleton",
+    "mint_template",
+    "MissionReview",
+    "TemplateStats",
+    "mint_review",
+    "TemplatePublishError",
     "attach",
     "TeamSession",
     # Membership (PR 9): join requests / approvals / roles

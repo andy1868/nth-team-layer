@@ -421,4 +421,258 @@ Credit transactions logged append-only at
 
 ---
 
-*Last updated for nth-dao v0.9.1.*
+## 9. Mission Template + Review (v0.9.3)
+
+### 9.1 Why this layer
+
+A `Mission` instance is one-shot — once claimed, completed, archived, it stops
+existing as a workable unit. A `MissionTemplate` is the reusable *recipe* a
+mission is built from: the same template can be instantiated by many agents,
+in many teams, over many years, and each instantiation produces a fresh,
+locked Mission.
+
+This is the "decentralized App Store" layer in the project vision (cf.
+`README.md`'s 3-layer mission story).
+
+### 9.2 Alignment with industry standards
+
+| Standard | We align with |
+|----------|--------------|
+| **cargo-crev** Proof model | Templates and reviews are append-only, signed-by-author payloads. |
+| **F-Droid** metadata layout | One file per template version + a signed index. |
+| **TUF** wire format | `_template_index.json.version` is monotonic; `meta` field name preserved; `delegations` placeholder reserved. |
+| **Argo WorkflowTemplate** | 5-value `template_type` enum. |
+| **GitHub Actions** `action.yml` | `inputs` / `outputs` field naming (description / type / required / default / values). |
+| **Nix `flake.lock`** | `Mission.template_lock` snapshots `publisher_sig` at instantiation. |
+| **W3C did:key** | `publisher_did` field (simplified `did:key:<pubkey>` form). |
+
+No third-party dependency is introduced. These alignments are about
+**vocabulary and on-disk layout**, not runtime. Future adapters that
+translate to or from these ecosystems should be small (≤ 100 LOC each).
+
+### 9.3 On-disk layout
+
+```
+missions/
+├── templates/
+│   ├── <template_id>-v<version>.json    # one file per (template_id, version)
+│   └── ...
+├── reviews/
+│   ├── <template_id>-v<version>.jsonl   # signed reviews, append-only
+│   └── ...
+├── _template_index.json                 # signed/derived index, F-Droid + TUF style
+├── _review_index.json                   # aggregated stats per (template, version)
+├── <mission_instance_id>.json           # active missions (Layer 1)
+└── archive/
+    └── YYYY-MM/
+        └── <mission_instance_id>.json   # terminal missions older than N days
+```
+
+### 9.4 MissionTemplate
+
+```json
+{
+    "template_id":            "code-review",
+    "version":                "1.0.0",
+    "publisher_pubkey":       "<hex Ed25519>",
+    "publisher_did":          "did:key:<short>",
+    "name":                   "Code Review",
+    "description":            "...",
+    "template_type":          "agent_task | agent_chain | agent_dag | agent_review | human_in_loop",
+    "category":               "code_review",
+    "tags":                   ["python", "security"],
+    "required_capabilities":  ["code_review"],
+    "inputs": {
+        "diff_url": {
+            "description":  "PR diff URL",
+            "type":         "string | int | float | bool | enum | json",
+            "required":     true,
+            "default":      "",
+            "values":       ["low", "med", "high"]    // only for type=enum
+        }
+    },
+    "outputs": { /* same shape as inputs */ },
+    "steps": [
+        {
+            "id":                     "review",
+            "description":            "...",
+            "required_capabilities":  ["code_review"],
+            "depends_on":             [],
+            "inputs_from": {
+                "diff_url": "input:diff_url"   // simple sourcing: input:NAME
+            }
+        }
+    ],
+    "suggested_reward":           5.0,
+    "suggested_deadline_hours":   24,
+    "created_at":                 "<ISO>",
+    "deprecated":                 false,
+    "deprecated_reason":          "",
+    "supersedes":                 ["code-review-v0.9.0"],
+    "delegations":                [],                  // TUF placeholder, unused in v0.9.3
+    "credentials_required":       [],                  // W3C VC placeholder, unused
+    "legal_jurisdiction":         "",                  // Layer 3 placeholder, unused
+    "publisher_sig":              "<hex sig over canonical_json(template - publisher_sig)>"
+}
+```
+
+**Validation rules**:
+- `version` MUST be valid semver (`MAJOR.MINOR.PATCH[-prerelease][+meta]`).
+- Re-publishing the same `(template_id, version)` without `allow_overwrite=True` fails.
+- `publisher_sig` MUST verify under `publisher_pubkey` before persistence.
+- `deprecated=true` blocks `instantiate()`; only the original publisher can
+  flip the flag (verified via pubkey equality, then re-sign).
+
+### 9.5 Index file (`_template_index.json`)
+
+TUF-style derived state, rebuilt on every publish. Never authored by hand.
+
+```json
+{
+    "version":      42,                    // monotonic; bumped each rebuild
+    "generated_at": "<ISO>",
+    "meta": {
+        "code-review-v1.0.0.json": {
+            "template_id":      "code-review",
+            "version":          "1.0.0",
+            "publisher_pubkey": "<hex>",
+            "deprecated":       false,
+            "category":         "code_review"
+        }
+    },
+    "by_category":    { "code_review": ["code-review@1.0.0", ...] },
+    "by_publisher":   { "<pubkey_prefix>": ["code-review@1.0.0", ...] },
+    "by_capability":  { "code_review":   ["code-review@1.0.0", ...] }
+}
+```
+
+### 9.6 Mission instance with template lock
+
+```json
+{
+    "id":                "abc123",
+    "title":             "...",
+    "goal":              "...",
+    "status":            "active",
+    "owner":             "bob",
+    "scope":             "shared",
+    "steps":             [ ... ],
+    "template_id":       "code-review",
+    "template_version":  "1.0.0",
+    "template_lock": {
+        "publisher_pubkey":  "<hex>",
+        "publisher_sig":     "<hex>",        // snapshot at instantiation
+        "template_type":     "agent_task",
+        "category":          "code_review",
+        "instantiated_at":   "<ISO>"
+    },
+    "owner_did":             "",            // Layer 3 placeholder, unused
+    "legal_jurisdiction":    "",
+    "governing_arbiter":     "",
+    "credentials_required":  []
+}
+```
+
+The lock prevents "supply-chain swaps": if Alice publishes v1.0.0, Bob
+instantiates it, then Alice republishes a different v1.0.0 (illegal under
+our rules but theoretically possible after a hand-edit), Bob's mission
+still verifies against the snapshot.
+
+### 9.7 MissionReview
+
+```json
+{
+    "review_id":          "<hex>",
+    "reviewer_pubkey":    "<hex>",
+    "reviewer_agent_id":  "carol",
+    "template_id":        "code-review",
+    "template_version":   "1.0.0",
+    "mission_id":         "abc123",
+    "score":              4.5,
+    "feedback":           "...",
+    "metadata":           { },
+    "created_at":         "<ISO>",
+    "reviewer_sig":       "<hex sig over canonical_json(review - reviewer_sig)>"
+}
+```
+
+**Persistence**: one line per review in `reviews/<template_id>-v<version>.jsonl`.
+Append-only; never deleted. Bad-signature entries are dropped silently at read
+time with a `logger.warning`.
+
+**Dedupe at read**: when `only_latest_per_reviewer=True`, the per-
+`(reviewer_pubkey, mission_id)` tuple keeps only the highest `created_at`.
+The raw ledger preserves every submission for audit.
+
+**Self-review rejection**: the mission's `owner` MAY NOT review their own
+mission (`ValueError`). This is enforced at the `review_mission` API, not at
+the data layer.
+
+### 9.8 Aggregation (`_review_index.json`)
+
+Derived; rebuilt on every `append`. Field names:
+
+```json
+{
+    "code-review@1.0.0": {
+        "template_id":       "code-review",
+        "version":           "1.0.0",
+        "install_count":     12,
+        "review_count":      14,
+        "average_rating":    4.21,
+        "weighted_average":  4.45,      // EWMA, recent reviews weighted (alpha=0.3)
+        "unique_reviewers":  9,
+        "min_rating":        1.0,
+        "max_rating":        5.0,
+        "last_review_at":    "<ISO>"
+    }
+}
+```
+
+### 9.9 Browse semantics
+
+`browse_templates(category=..., tags=..., min_average_rating=..., sort_by=...)`:
+
+- Templates with **zero reviews** are returned regardless of `min_average_rating`
+  so that newcomers are still discoverable. Once they have ≥ 1 review,
+  `min_average_rating` applies.
+- `sort_by="rating"` is `(has_reviews, weighted_average, review_count)` desc.
+- `sort_by="recent"` is `created_at` desc.
+- `sort_by="popularity"` is `(install_count, review_count)` desc.
+- `include_deprecated=False` by default; deprecated templates are hidden.
+
+### 9.10 Archive + history
+
+`archive_completed(older_than_days=30)`:
+- Moves missions whose `status ∈ {completed, failed, cancelled}` and whose
+  `completed_at / updated_at / created_at` is older than the cutoff into
+  `archive/YYYY-MM/`.
+- Atomic per file (`InterProcessLock` then write-dst-then-unlink-src).
+- Default 30-day window; callers can pass `older_than_days=0` to archive all
+  terminal missions immediately.
+
+`my_history(agent_id, since=, include_archive=True, limit=)`:
+- Returns missions where `agent_id` matches `owner`, any current `assignee`,
+  or appears in any step's `previous_assignees`.
+- Walks `archive/` by default.
+- Sorted by `completed_at` desc; still-active missions bubble to the front.
+
+### 9.11 Future-compatibility reserved fields
+
+These fields appear in v0.9.3 on-disk format with empty defaults; no
+behavior is attached to them yet. Stable now means a v0.9.4+ release can
+populate them without breaking on-disk format.
+
+| Field | Future use |
+|------|-----------|
+| `MissionTemplate.delegations`        | TUF-style key delegation chains |
+| `MissionTemplate.credentials_required` | W3C VC types the claimant must hold |
+| `MissionTemplate.legal_jurisdiction` | Layer 3 arbitration |
+| `Mission.owner_did`                  | DID-key owner ID |
+| `Mission.legal_jurisdiction`         | Layer 3 arbitration |
+| `Mission.governing_arbiter`          | Layer 3 third-party judge |
+| `Mission.credentials_required`       | per-mission VC gating |
+
+---
+
+*Last updated for nth-dao v0.9.3.*

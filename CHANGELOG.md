@@ -5,6 +5,106 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.3] — 2026-05-31 — Mission templates: "decentralized App Store" layer
+
+This release lifts MissionStore from a one-shot quest board into a reusable,
+signed, rateable template registry. Aligned with cargo-crev / F-Droid / TUF /
+Argo / GitHub Actions / Nix flake.lock — zero new runtime dependencies.
+
+### Added — MissionTemplate (Layer 2)
+
+- **`nth_dao/orchestration/template.py`** — `MissionTemplate` dataclass,
+  `TemplateStore`, `mint_template()` helper, `TemplateType` enum (5 kinds:
+  `agent_task`, `agent_chain`, `agent_dag`, `agent_review`, `human_in_loop`).
+- **`IOField`** dataclass — `inputs` / `outputs` schema aligned with GitHub
+  Actions `action.yml` field naming (description / type / required / default /
+  values). Five primitive types: `string`, `int`, `float`, `bool`, `enum`.
+- **`StepSkeleton`** — step blueprint with `inputs_from` sourcing
+  (`"input:NAME"` simple form for v0.9.3).
+- **Semver-validated `version`** — re-publishing same `(template_id, version)`
+  errors unless `allow_overwrite=True`.
+- **Publisher signature mandatory** — `TemplatePublishError` on bad sig
+  before persistence.
+- **Deprecation** — `templates.deprecate(publisher, id, version, reason)`;
+  only the original publisher can deprecate; subsequent `instantiate()` of
+  a deprecated template raises `ValueError`.
+- **F-Droid style signed index** — `_template_index.json` rebuilt on every
+  publish with TUF-style `version` monotonic counter, `meta` map, and three
+  inverted indexes (`by_category` / `by_publisher` / `by_capability`).
+
+### Added — MissionReview
+
+- **`nth_dao/orchestration/review.py`** — `MissionReview` dataclass,
+  `ReviewStore`, `mint_review()` helper, `TemplateStats` aggregator.
+- **Signed reviews** — append-only `reviews/<template_id>-v<version>.jsonl`,
+  one signed line per review (cargo-crev Proof model).
+- **Score range** 0.0–5.0 validated at mint.
+- **Self-review rejected** — the mission owner cannot review their own work.
+- **Dedup at read** — `only_latest_per_reviewer=True` keeps only the most
+  recent rating per `(reviewer_pubkey, mission_id)`; the raw JSONL preserves
+  every submission for audit.
+- **EWMA aggregation** — `TemplateStats.weighted_average` uses
+  α=0.3 EWMA so recent reviews count more without entirely overriding history.
+
+### Added — Mission instance linkage
+
+- `Mission.template_id`, `Mission.template_version` — link an instance to
+  its template.
+- `Mission.template_lock` — Nix-flake-lock-style snapshot of the publisher
+  signature at instantiation time. A later re-publish (or in-place template
+  tamper) cannot retroactively change the contract a running mission was
+  built under.
+- 5 reserved fields with empty defaults for Layer 3 (`owner_did`,
+  `legal_jurisdiction`, `governing_arbiter`, `credentials_required`).
+  Behavior is still empty; field names are now stable for future use.
+
+### Added — MissionStore APIs
+
+- `publish_template(template, allow_overwrite=False)`
+- `list_templates(category=, publisher_pubkey=, required_capabilities=, include_deprecated=)`
+- `browse_templates(category=, tags=, min_average_rating=, sort_by="rating"|"recent"|"popularity", limit=, include_deprecated=)`
+- `instantiate(template_id, version=None, *, owner, inputs={}, scope, priority, title, goal)` — version omitted picks latest
+- `review_mission(mission_id, reviewer, score, feedback)`
+- `template_stats(template_id, version=None)`
+- `archive_completed(older_than_days=30)` — atomic move of terminal missions to `archive/YYYY-MM/`
+- `list_archive(year_month=None)` — read archived missions
+- `my_history(agent_id, since=, include_archive=True, limit=)` — personal contribution view
+
+### Added — language iron rule
+
+`CONTRIBUTING.md` Hard Rules now includes a non-negotiable language-choice
+rule: **TypeScript for UI / dashboards / browser extensions; Python for the
+core protocol layer and everything else**. Different cadences want different
+toolchains. UI changes weekly, protocol changes yearly.
+
+### Added — docs
+
+- **`docs/PROTOCOLS.md §9`** — full wire-format spec for MissionTemplate,
+  MissionReview, signed index, mission template lock, archive layout, and
+  the 5 Layer-3 reserved fields. Documents alignment with 7 industry
+  standards.
+- **`docs/CATEGORIES.md`** — recommended bootstrap taxonomy (Tier 1: 10
+  well-known categories; Tier 2: emerging; Tier 3: discouraged).
+
+### Tests
+
+- 30 new tests in `tests/test_p7_template_review.py` covering mint /
+  publish round-trip / tamper / semver / deprecation / instantiation /
+  template_lock / latest-version selection / review signing / dedup /
+  EWMA aggregation / browse sort orders / archive + history.
+- Total test count now: **138 + 1 skipped** (was 102).
+- `examples/template_demo.py` end-to-end walk-through.
+
+### Aligned with (not depended on)
+
+- cargo-crev — Proof model (sign-by-author, append-only, P2P)
+- F-Droid metadata — one file per template + signed index
+- TUF — `version` monotonic, `meta` field name, `delegations` placeholder
+- Argo WorkflowTemplate — 5-value `template_type`
+- GitHub Actions `action.yml` — input/output schema field naming
+- Nix `flake.lock` — `template_lock` snapshot on instantiation
+- W3C `did:key` — `publisher_did` field (simplified placeholder)
+
 ## [0.9.2] — 2026-05-31 — Revocation, invitations, LAN privacy, protocol spec
 
 ### Added — P6 follow-on roadmap items
@@ -241,6 +341,7 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 
+[0.9.3]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.3
 [0.9.2]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.2
 [0.9.1]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.1
 [0.9.0]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.0
