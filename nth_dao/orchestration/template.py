@@ -1,4 +1,4 @@
-"""MissionTemplate — reusable, signed task definitions ("App Store listings").
+"""MissionTemplate —reusable, signed task definitions ("App Store listings").
 
 A MissionTemplate is to a Mission what a recipe is to a meal. The same
 template can be instantiated many times, by different agents, on different
@@ -6,7 +6,7 @@ days; each instantiation produces a fresh Mission whose `template_lock`
 field permanently records which template (and which version) it was made
 from.
 
-Design aligned with industry standards (see docs/PROTOCOLS.md §9):
+Design aligned with industry standards (see docs/PROTOCOLS.md 搂9):
 
     - cargo-crev "Proof" model:  signed by publisher, append-only, P2P
     - F-Droid metadata layout:   one file per template, derived index
@@ -17,17 +17,17 @@ Design aligned with industry standards (see docs/PROTOCOLS.md §9):
 
 Storage layout:
     missions/
-    ├── templates/
-    │   ├── <template_id>-v<version>.json   # one file per (template, version)
-    │   └── ...
-    ├── _template_index.json                # derived index (F-Droid/TUF style)
-    └── ...
+    鈹溾攢鈹€ templates/
+    鈹?  鈹溾攢鈹€ <template_id>-v<version>.json   # one file per (template, version)
+    鈹?  鈹斺攢鈹€ ...
+    鈹溾攢鈹€ _template_index.json                # derived index (F-Droid/TUF style)
+    鈹斺攢鈹€ ...
 
 Each template file is signed by its publisher; the index file is signed
 by whoever rebuilt it (typically the same publisher, or a team admin).
 
 We do not implement TUF's full 4-role (root/snapshot/targets/timestamp)
-hierarchy in v0.9.3 — that's a later step. But we name fields so that a
+hierarchy in v0.9.3 —that's a later step. But we name fields so that a
 future TUF adapter is a 50-LOC translation, not a rewrite.
 """
 
@@ -48,7 +48,7 @@ from ..util import InterProcessLock, atomic_write_json, safe_load_json, safe_id
 logger = logging.getLogger("nth_dao.orchestration.template")
 
 
-# ─────────────────── template type taxonomy ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ template type taxonomy 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 class TemplateType(str, Enum):
@@ -68,7 +68,7 @@ class TemplateType(str, Enum):
     HUMAN_IN_LOOP = "human_in_loop"
 
 
-# ─────────────────── input/output schema (GitHub Actions style) ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ input/output schema (GitHub Actions style) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 @dataclass
@@ -123,7 +123,7 @@ class IOField:
         return None
 
 
-# ─────────────────── step skeleton ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ step skeleton 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 @dataclass
@@ -150,7 +150,7 @@ class StepSkeleton:
         )
 
 
-# ─────────────────── MissionTemplate ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ MissionTemplate 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 _SEMVER_RE = re.compile(
@@ -188,45 +188,45 @@ def _semver_key(version: str):
 class MissionTemplate:
     """A signed, reusable task definition.
 
-    Immutable after publication (well — re-publishing same id+version errors).
+    Immutable after publication (well —re-publishing same id+version errors).
     Mutable counterparts (rating, install_count) live in separate review files
     so the publisher's signature stays valid.
     """
 
-    # ── identity (immutable) ──
+    # 鈹€鈹€ identity (immutable) 鈹€鈹€
     template_id: str                  # short id, e.g. "code-review"
     version: str                      # semver, e.g. "1.0.0"
     publisher_pubkey: str             # Ed25519 hex; "" when unsigned (legacy)
     publisher_did: str = ""           # did:key:z6Mk... (future-compatible)
 
-    # ── content (immutable) ──
+    # 鈹€鈹€ content (immutable) 鈹€鈹€
     name: str = ""
     description: str = ""
     template_type: TemplateType = TemplateType.AGENT_TASK
     category: str = "general"
     tags: List[str] = field(default_factory=list)
     required_capabilities: List[str] = field(default_factory=list)
-    inputs: Dict[str, IOField] = field(default_factory=dict)   # name → IOField
+    inputs: Dict[str, IOField] = field(default_factory=dict)   # name 鈫?IOField
     outputs: Dict[str, IOField] = field(default_factory=dict)
     steps: List[StepSkeleton] = field(default_factory=list)
     suggested_reward: float = 0.0
     suggested_deadline_hours: float = 0.0
 
-    # ── lifecycle (immutable) ──
+    # 鈹€鈹€ lifecycle (immutable) 鈹€鈹€
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     deprecated: bool = False
     deprecated_reason: str = ""
     supersedes: List[str] = field(default_factory=list)   # previous template versions this replaces
 
-    # ── future-compatibility (reserved, not used in v0.9.3) ──
+    # 鈹€鈹€ future-compatibility (reserved, not used in v0.9.3) 鈹€鈹€
     delegations: List[Dict[str, Any]] = field(default_factory=list)  # TUF-style delegation slots
     credentials_required: List[str] = field(default_factory=list)    # W3C VC types
     legal_jurisdiction: str = ""
 
-    # ── signature (over signable_dict) ──
+    # 鈹€鈹€ signature (over signable_dict) 鈹€鈹€
     publisher_sig: str = ""
 
-    # ── runtime helpers ──
+    # 鈹€鈹€ runtime helpers 鈹€鈹€
 
     def to_dict(self) -> dict:
         return {
@@ -256,7 +256,7 @@ class MissionTemplate:
         }
 
     def signable_dict(self) -> dict:
-        """The dict that gets signed — everything except publisher_sig itself."""
+        """The dict that gets signed —everything except publisher_sig itself."""
         d = self.to_dict()
         d.pop("publisher_sig", None)
         return d
@@ -327,7 +327,7 @@ class MissionTemplate:
         return None
 
 
-# ─────────────────── mint / publish helpers ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ mint / publish helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 def mint_template(
@@ -389,11 +389,12 @@ def mint_template(
                 raise TypeError("step must be StepSkeleton or dict")
         return out
 
+    # v0.9.5: emit a full W3C did:key (was a simplified placeholder in v0.9.3-0.9.4)
     template = MissionTemplate(
         template_id=template_id,
         version=version,
         publisher_pubkey=publisher.pubkey_hex,
-        publisher_did=f"did:key:{publisher.pubkey_hex[:32]}",  # simplified did:key placeholder
+        publisher_did=publisher.as_did(),  # W3C did:key:z<base58btc(0xed01||pubkey)>
         name=name,
         description=description,
         template_type=template_type,
@@ -412,7 +413,7 @@ def mint_template(
     return template
 
 
-# ─────────────────── persistence ───────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ persistence 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
 class TemplatePublishError(Exception):
@@ -435,7 +436,7 @@ class TemplateStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.index_path = self.root / self.INDEX_NAME
 
-    # ── publish / load ──
+    # 鈹€鈹€ publish / load 鈹€鈹€
 
     def publish(
         self,

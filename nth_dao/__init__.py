@@ -36,9 +36,9 @@ try:
     try:
         __version__ = _pkg_version("nth-dao")
     except PackageNotFoundError:
-        __version__ = "0.9.4+source"
+        __version__ = "0.9.5+source"
 except ImportError:
-    __version__ = "0.9.4+source"
+    __version__ = "0.9.5+source"
 
 #
 # Facade — re-export all team_layer public APIs.
@@ -160,6 +160,16 @@ from .identity import (
     default_identity_path,
     load_or_generate,
 )
+# v0.9.5: W3C did:key standard alignment
+from .did_key import (
+    DIDKeyError,
+    encode_ed25519_did_key,
+    encode_ed25519_did_key_hex,
+    decode_ed25519_did_key,
+    decode_ed25519_did_key_hex,
+    is_did_key,
+    parse_did,
+)
 # A2A modules (originally proposed by @andy1868 in PR #3#6, cherry-picked
 # against current main; identity.py kept as the existing membership-gated
 # version, these 4 new modules use the same AgentIdentity API and add zero
@@ -184,6 +194,21 @@ from .key_recovery import (
     export_recovery_kit,
     import_recovery_kit,
 )
+# v0.9.5: AgentLedger persistence
+from .agent_ledger import AgentLedger, LedgerEvent
+# v0.9.5: Guardian-based social recovery (N-of-M peers re-bind agent_id → new pubkey)
+from .guardian import (
+    GuardianSet,
+    GuardianSignature,
+    GuardianStore,
+    KeyReplacementProof,
+    begin_key_replacement,
+    publish_guardian_set,
+    sign_replacement,
+    verify_replacement,
+)
+# v0.9.5: A2A boundary translation primitives (server lives in a separate package)
+from . import a2a as a2a_adapter  # noqa: F401
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -294,4 +319,24 @@ __all__ = [
     "KeyRecoveryError",
     "export_recovery_kit",
     "import_recovery_kit",
+    # W3C did:key (v0.9.5)
+    "DIDKeyError",
+    "encode_ed25519_did_key",
+    "encode_ed25519_did_key_hex",
+    "decode_ed25519_did_key",
+    "decode_ed25519_did_key_hex",
+    "is_did_key",
+    "parse_did",
+    # AgentLedger (v0.9.5)
+    "AgentLedger",
+    "LedgerEvent",
+    # Guardian recovery (v0.9.5)
+    "GuardianSet",
+    "GuardianSignature",
+    "GuardianStore",
+    "KeyReplacementProof",
+    "begin_key_replacement",
+    "publish_guardian_set",
+    "sign_replacement",
+    "verify_replacement",
 ]

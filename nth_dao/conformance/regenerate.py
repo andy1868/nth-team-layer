@@ -243,6 +243,154 @@ def gen_template_canonical_payload() -> list:
     return [case]
 
 
+def gen_channel_message_canonical() -> list:
+    """ChannelMessage canonical payload bytes for the sign-over-payload step."""
+    alice = _seed_keypair(ALICE_SEED_HEX)
+    # We re-create the payload exactly as TeamChannel.send() does:
+    # {msg_id, channel, from_agent, content, content_type, reply_to,
+    #  mentions, timestamp, metadata}
+    case = {
+        "id": "chmsg-001",
+        "description": "Plain text ChannelMessage signable payload (no mentions / no reply)",
+        "input": {
+            "msg_id":       "abcd1234567890ef",
+            "channel":      "team",
+            "from_agent":   "alice",
+            "content":      "Hello DAO",
+            "content_type": "text",
+            "reply_to":     "",
+            "mentions":     [],
+            "timestamp":    "2026-04-01T12:00:00",
+            "metadata":     {},
+        },
+    }
+    from ..identity import canonical_json
+    case["expected_canonical_hex"] = canonical_json(case["input"]).hex()
+    case2 = {
+        "id": "chmsg-002",
+        "description": "ChannelMessage with reply_to and mentions",
+        "input": {
+            "msg_id":       "1234567890abcdef",
+            "channel":      "group:backend",
+            "from_agent":   "bob",
+            "content":      "ack @alice",
+            "content_type": "text",
+            "reply_to":     "abcd1234567890ef",
+            "mentions":     ["alice"],
+            "timestamp":    "2026-04-01T12:00:30",
+            "metadata":     {"thread": "code-review"},
+        },
+    }
+    case2["expected_canonical_hex"] = canonical_json(case2["input"]).hex()
+    return [case, case2]
+
+
+def gen_invitation_canonical() -> list:
+    """Invitation.signable_dict() canonical bytes."""
+    alice = _seed_keypair(ALICE_SEED_HEX)
+    case = {
+        "id": "invite-001",
+        "description": "Invitation minimal example",
+        "input": {
+            "team_id":      "t1",
+            "team_name":    "Test Team",
+            "owner_pubkey": alice["pubkey_hex"],
+            "issuer":       "alice",
+            "issued_at":    "2026-01-01T00:00:00",
+            "expires_at":   "2026-01-08T00:00:00",
+            "join_token":   "secret",
+            "ws_url":       "ws://192.168.1.5:9876",
+            "psk":          "lan-secret",
+            "sig":          "",
+        },
+    }
+    from ..invitation import Invitation
+    inv = Invitation.from_dict(case["input"])
+    case["expected_canonical_hex"] = canonical_json(inv.signable_dict()).hex()
+    return [case]
+
+
+def gen_team_config_canonical() -> list:
+    """TeamConfig.signable_dict() canonical bytes for owner-signed configs."""
+    alice = _seed_keypair(ALICE_SEED_HEX)
+    case = {
+        "id": "team-001",
+        "description": "Signed TeamConfig minimal example",
+        "input": {
+            "team_id":        "abc12345",
+            "team_name":      "Test Team",
+            "join_policy":    "approval",
+            "join_token":     "",
+            "admin_ids":      ["alice"],
+            "member_ids":     ["alice"],
+            "roles":          {"alice": "owner"},
+            "created_at":     "2026-01-01T00:00:00",
+            "metadata":       {},
+            "owner_pubkey":   alice["pubkey_hex"],
+            "owner_sig":      "",
+            "sig_updated_at": "2026-01-01T00:00:00",
+        },
+    }
+    from ..membership import TeamConfig
+    cfg = TeamConfig.from_dict(case["input"])
+    case["expected_canonical_hex"] = canonical_json(cfg.signable_dict()).hex()
+    return [case]
+
+
+def gen_did_key_encoding() -> list:
+    """did:key encoding/decoding of Ed25519 pubkeys.
+
+    Lets a non-Python implementation verify their base58btc + multicodec
+    handling against deterministic test pubkeys.
+    """
+    from ..did_key import encode_ed25519_did_key_hex
+    cases = []
+    for label, hex_pk in (
+        ("did-001", "00" * 32),
+        ("did-002", "01" * 32),
+        ("did-003", "".join(f"{i:02x}" for i in range(32))),
+    ):
+        cases.append({
+            "id": label,
+            "description": f"Encode pubkey {hex_pk[:8]}... as did:key",
+            "input": {"pubkey_hex": hex_pk},
+            "expected_did": encode_ed25519_did_key_hex(hex_pk),
+        })
+    return cases
+
+
+def gen_lan_psk_tag() -> list:
+    """LAN discovery psk_tag = HMAC-SHA256(psk, canonical_json(message - psk_tag)).
+
+    Lock the construction so a Go/Rust port produces byte-identical tags.
+    """
+    import hashlib
+    import hmac as _hmac
+    import json as _json
+    cases = []
+    for cid, psk, msg in (
+        ("psk-001", "team-secret", {"type": "nth-dao-query", "v": 1,
+                                     "from": "alice", "wants": [],
+                                     "nonce": "deadbeef"}),
+        ("psk-002", "team-secret", {"type": "nth-dao-hello", "v": 1,
+                                     "agent_id": "alice",
+                                     "nonce": "feedface"}),
+    ):
+        canon = _json.dumps(
+            {k: v for k, v in msg.items() if k != "psk_tag"},
+            sort_keys=True, separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        tag = _hmac.new(psk.encode("utf-8"), canon, hashlib.sha256).hexdigest()
+        cases.append({
+            "id": cid,
+            "description": f"HMAC-SHA256 psk_tag over canonical {msg.get('type')}",
+            "input": {"psk": psk, "message": msg},
+            "expected_psk_tag": tag,
+        })
+    return cases
+
+
 def gen_replay_window() -> list:
     """Replay window boundaries.
 
@@ -298,6 +446,11 @@ def regenerate(path: Path = VECTORS_PATH) -> None:
             "signature_verify":            gen_signature_verify(),
             "endorsement_canonical_payload": gen_endorsement_canonical_payload(),
             "template_canonical_payload":  gen_template_canonical_payload(),
+            "channel_message_canonical":   gen_channel_message_canonical(),
+            "invitation_canonical":        gen_invitation_canonical(),
+            "team_config_canonical":       gen_team_config_canonical(),
+            "did_key_encoding":            gen_did_key_encoding(),
+            "lan_psk_tag":                 gen_lan_psk_tag(),
             "replay_window":               gen_replay_window(),
         },
     }

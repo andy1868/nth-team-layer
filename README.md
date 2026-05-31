@@ -18,7 +18,60 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-169%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-217%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.9.5 — DID:key, AgentLedger, Guardian recovery, A2A boundary
+
+Five additive deliverables, zero breaking changes:
+
+- **W3C did:key alignment** — `AgentIdentity.as_did()` emits real
+  `did:key:z…` strings (base58btc + multicodec 0xed 0x01). Pure stdlib
+  encode/decode. `MissionTemplate.publisher_did` is now a usable DID.
+- **`AgentLedger`** — per-pubkey-fingerprint append-only event ledger
+  under `sidechain/agents/<fp>/`. Records step claim/complete/failed,
+  handoffs given/received, reviews given/received, endorsements.
+  Deterministic reducer folds events into `{missions_owned,
+  steps_completed, success_rate, handoffs_*, templates_used, categories,
+  total_token_cost}`. Step one toward the Achievements / signed
+  contribution credentials layer.
+- **Guardian-based social recovery** — N-of-M peers can collectively
+  sign a `KeyReplacementProof` that re-binds an `agent_id` to a fresh
+  pubkey. Owner publishes a signed `GuardianSet(pubkeys, threshold)`;
+  losing the key no longer means losing the identity, provided you have
+  trusted friends.
+- **A2A boundary translation** — `nth_dao/a2a/translate.py` converts
+  `MissionTemplate ↔ A2A Skill`, `Mission ↔ A2A Task`, assembles an
+  AgentCard for `/.well-known/agent.json`. Pure data transformations
+  only; the HTTP/JSON-RPC server lives in the separate
+  `nth-dao-a2a-adapter` package (v0.10.0+).
+- **Conformance vectors expanded** — 22 → 31 vectors / 6 → 11 categories.
+  Channel messages, Invitations, TeamConfig, did:key, LAN psk_tag now
+  have canonical-bytes coverage.
+
+```python
+# DID
+print(alice.as_did())              # → "did:key:z6Mk..."
+restored = nth.AgentIdentity.from_did("did:key:z6Mk...")  # verify-only
+
+# AgentLedger
+al = nth.AgentLedger(workspace, identity=alice)
+al.record_step_complete("m1", "s1", template_id="code-review",
+                        category="code_review", token_cost=4000)
+print(al.compute_stats())          # {"success_rate": 1.0, ...}
+
+# Guardian recovery
+gs = nth.publish_guardian_set(alice, [g1.pubkey, g2.pubkey, g3.pubkey], threshold=2)
+proof = nth.begin_key_replacement(gs, new_alice.pubkey_hex, reason="laptop lost")
+proof.signatures.append(nth.sign_replacement(g1, proof))
+proof.signatures.append(nth.sign_replacement(g2, proof))
+valid, reason = nth.verify_replacement(proof, gs)   # → (True, "ok")
+
+# A2A boundary
+from nth_dao.a2a import agent_card_from, a2a_task_from_mission
+card = agent_card_from(agent_did=alice.as_did(), name="Alice",
+                       templates=[t], endpoint_url="https://alice.example/a2a")
+task = a2a_task_from_mission(mission)  # ready to ship over JSON-RPC
+```
 
 ## What's New in 0.9.4 — Sustainability sprint
 

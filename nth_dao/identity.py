@@ -126,6 +126,48 @@ class AgentIdentity:
             metadata=metadata or {},
         )
 
+    # ─── v0.9.5: W3C did:key standard alignment ───
+
+    def as_did(self) -> str:
+        """Return the W3C did:key string for this identity's pubkey.
+
+        Spec: https://w3c-ccg.github.io/did-key-spec/
+
+        For cryptographic identities, this is `did:key:z<base58btc(0xed01 || pubkey)>`.
+        For plain identities (no pubkey), raises ValueError — plain agent_ids
+        do not have a did:key representation.
+        """
+        if not self.pubkey_hex:
+            raise ValueError(
+                "as_did() requires a cryptographic identity; "
+                "plain agent_ids have no did:key form"
+            )
+        from .did_key import encode_ed25519_did_key_hex
+        return encode_ed25519_did_key_hex(self.pubkey_hex)
+
+    @classmethod
+    def from_did(
+        cls,
+        did: str,
+        label: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "AgentIdentity":
+        """Construct a verify-only AgentIdentity from a W3C did:key string.
+
+        The resulting identity has `can_sign=False` — you can verify signatures
+        made by this DID but not sign new ones. Use `AgentIdentity.generate()`
+        for a signing-capable identity.
+        """
+        from .did_key import decode_ed25519_did_key
+        pubkey_bytes = decode_ed25519_did_key(did)
+        return cls(
+            agent_id=AgentID.from_pubkey(pubkey_bytes.hex()),
+            label=label,
+            metadata=metadata or {},
+            _signing_key=None,
+            _verify_key=pubkey_bytes,
+        )
+
     @classmethod
     def generate(
         cls,

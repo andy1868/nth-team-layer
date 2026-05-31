@@ -5,6 +5,98 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.5] — 2026-05-31 — DID:key, AgentLedger, Guardian recovery, A2A boundary
+
+Five additive deliverables, no breaking changes. v0.9.4 artifacts load
+byte-identically.
+
+### Added — W3C did:key standard alignment
+
+- `nth_dao/did_key.py` — pure-stdlib base58btc + multicodec (0xed 0x01)
+  encode/decode of Ed25519 pubkeys per W3C did:key spec.
+- `AgentIdentity.as_did()` — emits a full `did:key:z…` string. Replaces
+  the v0.9.3 simplified placeholder.
+- `AgentIdentity.from_did(did)` — rebuilds a verify-only identity from
+  a DID. Useful for trusting a peer by their DID without their private key.
+- `MissionTemplate.publisher_did` is now a real did:key (previously
+  a truncated-hex placeholder).
+
+### Added — AgentLedger persistence
+
+- `nth_dao/agent_ledger.py` — per-pubkey-fingerprint append-only event
+  ledger. Stored at `sidechain/agents/<fp>/{profile.json, ledger.jsonl,
+  stats.json}`. Same anti-Sybil pattern as reputation credits: one
+  pubkey = one ledger regardless of how many agent_ids it uses.
+- Event types: step claim / complete / failed, handoff (given +
+  received), review given / received, endorsement given / received,
+  mission owned.
+- Deterministic reducer (`compute_stats`) folds events into
+  `{missions_owned, steps_completed, success_rate, handoffs_*,
+  templates_used, categories, total_token_cost, last_active_at}`.
+  A Rust/Go port walking the same JSONL produces the same dict.
+- Events are signed when a crypto identity is available; unsigned
+  events still count (best-effort signing per Sec model).
+
+### Added — Guardian-based social recovery
+
+- `nth_dao/guardian.py` — N-of-M threshold recovery. The agent publishes
+  a signed `GuardianSet(guardian_pubkeys, threshold)`. To replace a key,
+  the agent assembles a `KeyReplacementProof` and collects M guardian
+  signatures over its canonical payload.
+- `verify_replacement(proof, guardian_set)` validates:
+  - guardian_set itself signed by the protected pubkey,
+  - proof references the right set_id + fingerprint,
+  - ≥ threshold distinct valid signatures from guardian pubkeys.
+- `GuardianStore` persists sets + proofs under `team_recovery/` and
+  maintains `active_replacements.json` for `resolve_current_pubkey(fp)`
+  queries. Other components can use that to follow key rotations.
+- The protected pubkey MUST NOT appear in its own guardian set;
+  duplicate signatures de-duplicated; mallory's signature ignored
+  when she isn't in the set.
+
+### Added — A2A boundary translation primitives
+
+- `nth_dao/a2a/translate.py` — pure data transformations between our
+  types and Google Agent2Agent (A2A) shapes.
+- `template_to_a2a_skill(template)` — render a MissionTemplate as an
+  A2A Skill (with JSON-Schema input/output specs derived from IOField).
+- `agent_card_from(...)` — assemble an A2A AgentCard JSON dict
+  suitable for `/.well-known/agent.json`.
+- `a2a_task_from_mission(mission)` — render a Mission as an A2A Task
+  (status mapped: planning → submitted, active → in_progress, …).
+- `mission_inputs_from_a2a_message(message, template)` — extract +
+  validate structured inputs from an A2A SendMessage payload.
+- **No HTTP / no JSON-RPC**: those land in a separate package
+  (`nth-dao-a2a-adapter`, v0.10.0). The protocol core stays stdlib-only.
+
+### Added — wire-format conformance vectors expanded
+
+- `nth_dao/conformance/vectors.json` grew from 22 vectors / 6 categories
+  to **31 vectors / 11 categories**.
+- New categories: `channel_message_canonical` (2),
+  `invitation_canonical` (1), `team_config_canonical` (1),
+  `did_key_encoding` (3), `lan_psk_tag` (2).
+- A non-Python implementation passing all 31 vectors is now wire-compatible
+  for the full Layer 1-2 protocol surface (modulo replay-window timing).
+
+### Tests
+
+- 217 passing + 5 skipped (was 169 + 1). +48 new tests:
+  - `tests/test_did_key.py` — 16 (round-trip, error paths, AgentIdentity
+    integration, template.publisher_did upgrade).
+  - `tests/test_v095_features.py` — 25 (AgentLedger fold, scoping,
+    handoff counters, Guardian set / replacement valid + below-threshold
+    + non-guardian + duplicate + tampered, GuardianStore commit /
+    resolve, A2A skill / card / task / inputs).
+  - Conformance vectors: 5 → 5 (test count unchanged but covers 31 vectors).
+- All 169 v0.9.4 tests still pass; no behavior regression.
+
+### No protocol changes on disk
+
+`Mission`, `MissionTemplate`, `TeamConfig`, `Endorsement`, `Invitation`,
+gossip envelope — all unchanged. The `publisher_did` field that already
+existed since v0.9.3 just contains a more useful value now.
+
 ## [0.9.4] — 2026-05-31 — Sustainability sprint
 
 This release does NOT add new protocol surface. It fills six holes the
@@ -443,6 +535,7 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 
+[0.9.5]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.5
 [0.9.4]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.4
 [0.9.3]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.3
 [0.9.2]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.2
