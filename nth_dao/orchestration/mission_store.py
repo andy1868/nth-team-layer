@@ -1,34 +1,53 @@
 """
-MissionStore  Mission
+MissionStore — file-backed persistence for Mission objects.
 
-
--  Mission  JSON missions/<mission_id>.json
--  .tmp  rename
--  Git  PR 5 git_sync  Mission
--
+Design:
+    - Each mission lives in missions/<mission_id>.json
+    - Writes use a tmp + rename atomic dance (see util.atomic_write_json)
+    - Multi-process safety: try_claim() and update_step() acquire an
+      InterProcessLock + thread-local RLock before reading + writing
+    - Mission state is what gets Git-synced (via PR 5 git_sync) — that's how
+      missions follow you across terminals
 """
 
 from __future__ import annotations
 
-import json
-import os
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from .mission import Mission, MissionStatus, MissionStep, StepStatus
+from ..util import (
+    atomic_write_json,
+    safe_load_json,
+    safe_id as _safe_id,
+    InterProcessLock,
+)
 
 
-#  Mission
+# 进程内 RLock 加 fast path（避免对同一 mission 多个 thread 都去抢文件锁）
 _LOCKS: Dict[str, threading.RLock] = {}
 _LOCK_GUARD = threading.Lock()
 
 
-def _lock_for(path: str) -> threading.RLock:
+def _thread_lock_for(path: str) -> threading.RLock:
     with _LOCK_GUARD:
         if path not in _LOCKS:
             _LOCKS[path] = threading.RLock()
         return _LOCKS[path]
+
+
+class ClaimConflict(Exception):
+    """Step 已被别的 agent claim 或已超出可 claim 状态。"""
+
+
+class MissionNotFound(Exception):
+    pass
+
+
+class StepNotFound(Exception):
+    pass
 
 
 class MissionStore:
@@ -47,17 +66,14 @@ class MissionStore:
     #
 
     def save(self, mission: Mission) -> Path:
-        """ .tmp  rename"""
+        """原子写。注意：本方法 *不* 取跨进程锁，避免和 update_step/try_claim
+        的外层锁重入死锁（msvcrt.locking 非递归）。
+        多进程并发请用 try_claim/update_step 入口（它们各自取锁）。
+        """
         path = self._path_for(mission.id)
-        lock = _lock_for(str(path))
-        with lock:
-            mission.updated_at = mission.updated_at  # noqa (touch)
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(
-                json.dumps(mission.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            os.replace(str(tmp), str(path))
+        mission.updated_at = datetime.now().isoformat()
+        with _thread_lock_for(str(path)):
+            atomic_write_json(path, mission.to_dict())
         return path
 
     def create(self, mission: Mission) -> Path:
@@ -71,28 +87,30 @@ class MissionStore:
         path = self._path_for(mission_id)
         if not path.exists():
             return False
-        with _lock_for(str(path)):
-            path.unlink()
+        with _thread_lock_for(str(path)), InterProcessLock(path):
+            if path.exists():
+                path.unlink()
         return True
 
     #
 
     def get(self, mission_id: str) -> Optional[Mission]:
         path = self._path_for(mission_id)
-        if not path.exists():
+        data = safe_load_json(path, fallback=None)
+        if data is None:
             return None
-        with _lock_for(str(path)):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                return Mission.from_dict(data)
-            except Exception:
-                return None
+        try:
+            return Mission.from_dict(data)
+        except Exception:
+            return None
 
     def list_all(self) -> List[Mission]:
         results = []
         for f in sorted(self.root.glob("*.json")):
+            data = safe_load_json(f, fallback=None)
+            if data is None:
+                continue
             try:
-                data = json.loads(f.read_text(encoding="utf-8"))
                 results.append(Mission.from_dict(data))
             except Exception:
                 continue
@@ -143,10 +161,23 @@ class MissionStore:
         output: Optional[dict] = None,
         note: Optional[str] = None,
         note_author: str = "system",
+        expect_status: Optional[str] = None,
+        expect_assignee_in: Optional[List[str]] = None,
     ) -> Optional[MissionStep]:
-        """ step + """
+        """更新 step + 检查 mission 终态。
+
+        新增 compare-and-swap 前置条件参数：
+            expect_status: 调用方期待 step 当前状态在此列表里（单值或 None=不检查）
+            expect_assignee_in: 期待 step.assignee 在此列表里（"" 字符串代表"未占用"）
+        前置不满足 → 抛 ClaimConflict（NOT silent overwrite）。
+
+        Mission 状态机：
+            - 所有 step DONE                  → COMPLETED
+            - 至少一个 step FAILED 且无 actionable → FAILED
+            - PLANNING 中有任意 step 离开 TODO → ACTIVE
+        """
         path = self._path_for(mission_id)
-        with _lock_for(str(path)):
+        with _thread_lock_for(str(path)), InterProcessLock(path):
             mission = self.get(mission_id)
             if mission is None:
                 return None
@@ -154,28 +185,48 @@ class MissionStore:
             if step is None:
                 return None
 
+            # ── compare-and-swap 前置 ──
+            if expect_status is not None and step.status != expect_status:
+                raise ClaimConflict(
+                    f"step {step_id} expected status={expect_status} "
+                    f"but is {step.status}"
+                )
+            if expect_assignee_in is not None:
+                # "" 在列表里 = 允许未分配；其它字符串 = 允许这个 agent
+                if (step.assignee or "") not in expect_assignee_in:
+                    raise ClaimConflict(
+                        f"step {step_id} expected assignee in {expect_assignee_in} "
+                        f"but is '{step.assignee}'"
+                    )
+
+            # ── apply 状态变更 ──
+            # 关键修复：previous_assignees 在同一次调用里只 push 一次
+            old_assignee = step.assignee
+            new_assignee = assignee if assignee is not None else old_assignee
+            if old_assignee and new_assignee and old_assignee != new_assignee:
+                step.previous_assignees.append(old_assignee)
+
             if status is not None:
-                #
-                if assignee is not None and step.assignee and step.assignee != assignee:
-                    step.previous_assignees.append(step.assignee)
                 step.status = status
                 if status == StepStatus.DONE.value:
-                    from datetime import datetime
                     step.completed_at = datetime.now().isoformat()
             if assignee is not None:
-                if step.assignee and step.assignee != assignee:
-                    step.previous_assignees.append(step.assignee)
                 step.assignee = assignee
             if output is not None:
                 step.output = output
             if note:
                 step.add_note(note, note_author)
 
-            # Mission
+            # ── Mission 终态机 ──
+            now_iso = datetime.now().isoformat()
             if mission.is_finished():
                 mission.status = MissionStatus.COMPLETED.value
-                from datetime import datetime
-                mission.completed_at = datetime.now().isoformat()
+                mission.completed_at = now_iso
+            elif _mission_is_dead(mission):
+                # 有 FAILED step 且没有 actionable step → mission FAILED
+                mission.status = MissionStatus.FAILED.value
+                if not mission.completed_at:
+                    mission.completed_at = now_iso
             elif mission.status == MissionStatus.PLANNING.value and any(
                 s.status != StepStatus.TODO.value for s in mission.steps
             ):
@@ -184,8 +235,84 @@ class MissionStore:
             self.save(mission)
             return step
 
+    def try_claim(
+        self,
+        mission_id: str,
+        step_id: str,
+        agent_id: str,
+        capabilities: Optional[List[str]] = None,
+    ) -> Optional[MissionStep]:
+        """专门的原子 claim 入口 —— 失败抛 ClaimConflict.
+
+        要求 step 当前在 TODO/HANDED_OFF/BLOCKED 之一，且 assignee 为空 或 == agent_id
+        （后者支持 retry 同一 agent 重新 claim）。
+        """
+        allowed_status_when_unassigned = StepStatus.TODO.value
+        # 用 update_step 的 CAS：但 update_step 一次只能 expect 一个 status；
+        # 这里手动加锁后再做更细的检查。
+        path = self._path_for(mission_id)
+        with _thread_lock_for(str(path)), InterProcessLock(path):
+            mission = self.get(mission_id)
+            if mission is None:
+                raise MissionNotFound(mission_id)
+            step = mission.get_step(step_id)
+            if step is None:
+                raise StepNotFound(step_id)
+
+            if step.status not in (
+                StepStatus.TODO.value,
+                StepStatus.HANDED_OFF.value,
+                StepStatus.BLOCKED.value,
+            ):
+                raise ClaimConflict(
+                    f"step {step_id} not claimable (status={step.status})"
+                )
+
+            if step.assignee and step.assignee != agent_id:
+                # HANDED_OFF 给特定 agent 的情况：只允许那个 agent claim
+                if step.status == StepStatus.HANDED_OFF.value:
+                    raise ClaimConflict(
+                        f"step {step_id} handed off to {step.assignee}, not {agent_id}"
+                    )
+                # 其它情况 assignee != "" 意味着已被 claim
+                raise ClaimConflict(
+                    f"step {step_id} already claimed by {step.assignee}"
+                )
+
+            # capability check
+            if step.required_capabilities and capabilities is not None:
+                if not set(step.required_capabilities).issubset(set(capabilities)):
+                    raise ClaimConflict(
+                        f"step {step_id} requires {step.required_capabilities}, "
+                        f"agent only has {capabilities}"
+                    )
+
+            # 提交 claim
+            old_assignee = step.assignee
+            if old_assignee and old_assignee != agent_id:
+                step.previous_assignees.append(old_assignee)
+            step.status = StepStatus.ACTIVE.value
+            step.assignee = agent_id
+            step.add_note(
+                f"claimed by {agent_id} (caps={capabilities or []})",
+                author=agent_id,
+            )
+
+            if mission.status == MissionStatus.PLANNING.value:
+                mission.status = MissionStatus.ACTIVE.value
+
+            self.save(mission)
+            return step
+
     #
 
     def _path_for(self, mission_id: str) -> Path:
-        safe = "".join(c if c.isalnum() or c in "_-." else "-" for c in mission_id)
-        return self.root / f"{safe}.json"
+        return self.root / f"{_safe_id(mission_id)}.json"
+
+
+def _mission_is_dead(mission: Mission) -> bool:
+    """有 FAILED step 且不再有 actionable 的 step → 整个 mission 死了。"""
+    if not any(s.status == StepStatus.FAILED.value for s in mission.steps):
+        return False
+    # 不传 capability，宽容意义上看是否还有 step 能被推进
+    return not mission.next_actionable(agent_capabilities=None)

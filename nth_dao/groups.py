@@ -8,7 +8,6 @@ can be inspected, synced with Git, and merged by higher-level tools later.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .membership import MembershipManager, TeamRole
+from .util import atomic_write_json, safe_load_json, safe_id as _safe_id_util
 
 
 DEFAULT_CHANNELS_DIR = "team_channels"
@@ -302,7 +302,8 @@ class GroupManager:
         if not path.exists():
             return None
         try:
-            return Channel.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            data = safe_load_json(path, fallback=None)
+            return Channel.from_dict(data) if data is not None else None
         except Exception:
             return None
 
@@ -401,8 +402,11 @@ class GroupManager:
             return []
         items = []
         for path in sorted(self.announcements_dir.glob("*.json")):
+            data = safe_load_json(path, fallback=None)
+            if data is None:
+                continue
             try:
-                item = Announcement.from_dict(json.loads(path.read_text(encoding="utf-8")))
+                item = Announcement.from_dict(data)
             except Exception:
                 continue
             if not channel_id or item.channel_id == channel_id:
@@ -475,10 +479,11 @@ class GroupManager:
 
     def get_task(self, task_id: str) -> Optional[Task]:
         path = self._task_path(task_id)
-        if not path.exists():
+        data = safe_load_json(path, fallback=None)
+        if data is None:
             return None
         try:
-            return Task.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            return Task.from_dict(data)
         except Exception:
             return None
 
@@ -525,10 +530,11 @@ class GroupManager:
 
     def get_trust_hint(self, agent_id: str) -> Optional[TrustHint]:
         path = self._trust_path(agent_id)
-        if not path.exists():
+        data = safe_load_json(path, fallback=None)
+        if data is None:
             return None
         try:
-            return TrustHint.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            return TrustHint.from_dict(data)
         except Exception:
             return None
 
@@ -607,10 +613,7 @@ class GroupManager:
 
     @staticmethod
     def _write_json(path: Path, data: Dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(str(tmp), str(path))
+        atomic_write_json(path, data)
 
     @staticmethod
     def _append_jsonl(path: Path, data: Dict[str, Any]) -> None:
@@ -623,20 +626,24 @@ class GroupManager:
         if not path.exists():
             return []
         items = []
-        for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        for line in lines:
             if not line.strip():
                 continue
             try:
                 items.append(json.loads(line))
-            except Exception:
+            except json.JSONDecodeError:
                 continue
         return items
 
     @staticmethod
     def _safe_id(value: str) -> str:
-        value = value.strip().lower().replace(" ", "-")
-        safe = "".join(c if c.isalnum() or c in "_-." else "-" for c in value)
-        return safe or DEFAULT_CHANNEL_ID
+        # 保留 groups 的特殊语义：小写化、空格转 -，然后走 util safe_id
+        value = (value or "").strip().lower().replace(" ", "-")
+        return _safe_id_util(value, allow_extra="_-.", fallback=DEFAULT_CHANNEL_ID)
 
 
 def _enum_or_default(enum_cls, value, default):

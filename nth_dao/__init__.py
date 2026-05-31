@@ -1,41 +1,51 @@
 """
-NTH DAO   Agent
+NTH DAO — pluggable team-collaboration layer for AI agents.
 
- Agent Hermes / Claude Code / OpenClaw / Codex / OpenHands /
- attach()
+Any agent framework (Hermes / Claude Code / OpenClaw / Codex / OpenHands /
+custom) can join the team with a single call:
 
     >>> import nth_dao as nth
     >>> team = nth.attach(agent_id="my-agent", backend="mock")
-    >>> team.discover()                      #  Agent
-    >>> team.blackboard.post("task", "...")  #
-    >>> team.start_mission("ship feature X") #
+    >>> team.discover()                       # find other live agents
+    >>> team.blackboard.post("task", "...")   # post to shared workspace
+    >>> team.start_mission("ship feature X")  # start a long-lived mission
 
- team_layer  PR 1-7
-    - 4  ProviderSOUL / User / Vector / Ledger
-    - Blackboard  Agent
-    - 5
-    - EvoLoop  backend
-    - Git-backed
-    - 6 backend
+Core capabilities (inherited from team_layer PR 1–7):
+    - 4 memory providers (SOUL / User / Vector / Ledger)
+    - Blackboard multi-agent shared workspace
+    - 5-stage context compression pipeline
+    - EvoLoop self-evolution across backends
+    - Git-backed multi-terminal sync
+    - 6 unified agent backends
 
- PR 8
-    - Agent Discovery + Git
-    - Mission Orchestration session//Agent
-    - attach()  Agent  3
+PR 8 additions:
+    - Agent Discovery: heartbeat-file based peer discovery + Git sync
+    - Mission Orchestration: long-running tasks that relay across sessions /
+      terminals / agents
+    - attach(): 3-line integration for any agent framework
 
-pyproject.toml: nth-dao
-: nth_dao
+Distribution name (pyproject.toml): nth-dao
+Import name: nth_dao
 """
 
-__version__ = "0.8.1"
 __author__ = "NTH DAO Project"
 
+# 单一版本号来源：pyproject.toml。退化到字符串字面量以便源码树独立使用时仍有值。
+try:
+    from importlib.metadata import version as _pkg_version, PackageNotFoundError
+    try:
+        __version__ = _pkg_version("nth-dao")
+    except PackageNotFoundError:
+        __version__ = "0.9.1+source"
+except ImportError:
+    __version__ = "0.9.1+source"
+
 #
-# Facade team_layer  API
-#  PR 1-7  nth_dao
+# Facade — re-export all team_layer public APIs.
+# Backward-compatible: existing PR 1–7 code keeps working under nth_dao.
 #
 
-# PR 1-2:  + 4  Provider
+# PR 1–2: core runtime + 4 memory providers
 from team_layer import TeamAgent, TeamMemoryManager
 from team_layer.memory_providers import (
     SoulProvider,
@@ -44,10 +54,10 @@ from team_layer.memory_providers import (
     LedgerProvider,
 )
 
-# PR 3:
+# PR 3: 5-stage context compression pipeline
 from team_layer.compression import CompressionPipeline, CompressionStage
 
-# PR 4: EvoLoop
+# PR 4: EvoLoop self-evolution
 from team_layer.evolution import (
     EvoLoop,
     EvoTrigger,
@@ -56,7 +66,7 @@ from team_layer.evolution import (
     EvolutionGate,
 )
 
-# PR 5:
+# PR 5: multi-terminal sync
 from team_layer.git_sync import (
     SyncConfig,
     LogCollector,
@@ -64,7 +74,7 @@ from team_layer.git_sync import (
     CentralAggregator,
 )
 
-# PR 6: Blackboard
+# PR 6: Blackboard shared workspace
 from team_layer.blackboard import (
     Blackboard,
     BlackboardEntry,
@@ -74,7 +84,7 @@ from team_layer.blackboard import (
     render_table,
 )
 
-# PR 7: AgentBackend ABC
+# PR 7: AgentBackend ABC + 6 built-in backends
 from team_layer.backends import (
     AgentBackend,
     BackendCapabilities,
@@ -88,10 +98,16 @@ from team_layer.backends import (
 )
 
 #
-# PR 8:   Discovery + Orchestration + Attach
+# PR 8: new — Discovery + Orchestration + attach()
 #
 
-from .discovery import AgentRegistry, AgentRecord, PeerFinder
+from .discovery import (
+    AgentRegistry,
+    AgentRecord,
+    PeerFinder,
+    LANDiscovery,
+    LANPeer,
+)
 from .orchestration import Mission, MissionStep, MissionStore, MissionRunner, MissionStatus
 from .membership import (
     JoinPolicy,
@@ -102,10 +118,15 @@ from .membership import (
     TeamRole,
     MembershipManager,
 )
+# 注意：与 .channel.TeamChannel/ChannelMessage 是 *两套不同语义* 的概念。
+#   - .groups.Channel: GroupManager 维护的"话题频道"，可私有、有 member_ids
+#   - .channel.TeamChannel: 跨节点 A2A 消息广播器，append-only jsonl
+# 在 __init__ 里把 .groups.Channel re-export 为 Channel，把 .groups.Message 为
+# Message；A2A 那边的类全名是 TeamChannel/ChannelMessage，不重名。
 from .groups import (
     Announcement,
     AuditEvent,
-    Channel,
+    Channel,                  # GroupChannel 语义
     GroupManager,
     Message,
     MessageKind,
@@ -113,6 +134,8 @@ from .groups import (
     TaskStatus,
     TrustHint,
 )
+# 显式别名，让需要消歧义的代码读起来不困惑
+from .groups import Channel as GroupChannel  # noqa: F401
 from .identity import (
     AgentID,
     AgentIdentity,
@@ -128,10 +151,12 @@ from .channel import ChannelMessage, TeamChannel
 from .reputation import ReputationEntry, ReputationScore, ReputationManager
 from .gossip import PeerInfo, GossipNode
 from .marketplace import OrderStatus, TaskOrder, TaskMarketplace
+# Web-of-Trust: endorsement-based multi-hop trust propagation
+from .web_of_trust import Endorsement, TrustGraph, issue_endorsement
 from .attach import attach, TeamSession
 
 __all__ = [
-    # FacadePR 1-7
+    # Facade re-exports (team_layer PR 1–7)
     "TeamAgent",
     "TeamMemoryManager",
     "SoulProvider",
@@ -164,10 +189,12 @@ __all__ = [
     "TokenUsage",
     "TurnResponse",
     "default_registry",
-    # PR 8
+    # PR 8 — Discovery + Orchestration + attach()
     "AgentRegistry",
     "AgentRecord",
     "PeerFinder",
+    "LANDiscovery",
+    "LANPeer",
     "Mission",
     "MissionStep",
     "MissionStatus",
@@ -175,7 +202,7 @@ __all__ = [
     "MissionRunner",
     "attach",
     "TeamSession",
-    # MembershipPR 9: /
+    # Membership (PR 9): join requests / approvals / roles
     "JoinPolicy",
     "RequestStatus",
     "JoinRequest",
@@ -187,6 +214,7 @@ __all__ = [
     "Announcement",
     "AuditEvent",
     "Channel",
+    "GroupChannel",  # alias of groups.Channel for disambiguation
     "GroupManager",
     "Message",
     "MessageKind",
@@ -210,4 +238,8 @@ __all__ = [
     "OrderStatus",      # PR #6 task marketplace
     "TaskOrder",
     "TaskMarketplace",
+    # Web-of-Trust (P4): endorsement-based multi-hop trust
+    "Endorsement",
+    "TrustGraph",
+    "issue_endorsement",
 ]

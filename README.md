@@ -18,6 +18,65 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-83%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.9.1 — Hardened release
+
+Independent code review surfaced six critical security/correctness bugs.
+0.9.1 fixes all of them, plus 13 high-severity issues, and adds two new
+discovery layers. See [`CHANGELOG.md`](CHANGELOG.md) for the full list.
+
+**Security (P0/P1/P3)**
+
+- **Gossip signature verification fixed** — messages are now verified
+  against the *author's* trusted pubkey (not the relay peer's), with a
+  10-min replay window and `require_signature=True` as the safe default.
+- **WebSocket challenge-response handshake** — peers must prove they hold
+  the private key for the pubkey they claim before being added.
+- **Atomic mission claim** — cross-process file locks (`fcntl` on POSIX,
+  `msvcrt` on Windows) + compare-and-swap; a 6-process race test proves
+  exactly-once semantics (`tests/test_concurrent_claim.py`).
+- **Signed team config** — `MembershipManager(owner_identity=...)` makes
+  every `team.json` save Ed25519-signed; tampered configs pushed via
+  `git_sync` are rejected on load.
+- **Constant-time token comparison** (`hmac.compare_digest`).
+- **Windows ACL hardening** for private key files (`icacls /grant +
+  /inheritance:r` with read self-check).
+- **Identity tamper detection** — `AgentIdentity.load()` verifies the
+  stored pubkey is actually derivable from the private key.
+
+**New capabilities (P4 + P5)**
+
+- **Web-of-Trust** — `nth_dao.TrustGraph` + signed `Endorsement`s let
+  trust propagate transitively (Alice trusts Bob, Bob trusts Carol →
+  Alice can accept Carol's signed gossip), bounded by per-endorsement
+  `depth_allowed` caps. `GossipNode(trust_graph=, wot_max_depth=2)`.
+- **People nearby (LAN discovery)** — pure-stdlib UDP broadcast based
+  agent discovery. `LANDiscovery(...).discover(timeout=3.0)` returns
+  every nth-dao agent on your subnet, with `ws_url` ready for
+  `GossipNode.connect()` and `pubkey_hex` ready for `TrustGraph`.
+- **Fuzzy `PeerFinder.search(query)`** — substring / prefix / exact
+  scoring across `agent_id`, `label`, `capabilities`, `groups`.
+- **Anti-Sybil reputation credits** — `ReputationManager.rate()` spends
+  1 credit per new entry; credits are scoped by pubkey fingerprint so
+  spawning 1000 `agent_id`s doesn't multiply your budget.
+
+**Quality**
+
+- New `nth_dao/util/io.py` centralises `atomic_write_json`,
+  `safe_load_json`, `safe_id`, and an `InterProcessLock`. Six modules
+  previously copy-pasted these.
+- Tests grew from 23 → **83 passing**.
+- Project version is now sourced from `pyproject.toml` via
+  `importlib.metadata` so `nth_dao.__version__` no longer drifts.
+
+```python
+# Find nearby agents and bootstrap trust in 4 lines:
+peers = nth.LANDiscovery(agent_id="me").discover(timeout=3.0)
+trust = nth.TrustGraph(workspace)
+for p in peers:
+    trust.add_root(p.agent_id, p.pubkey_hex)
+```
 
 ## What Is NTH DAO?
 

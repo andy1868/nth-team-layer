@@ -26,6 +26,9 @@ if sys.platform == "win32":
         pass
 
 REPO = Path(__file__).resolve().parent.parent  # examples/ -> repo root
+# Make sibling team_layer/nth_dao packages importable when run directly
+# (`python examples/integration_demo.py` from the repo root).
+sys.path.insert(0, str(REPO))
 
 
 def section(title: str):
