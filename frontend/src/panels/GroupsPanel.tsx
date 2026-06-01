@@ -63,7 +63,7 @@ export function GroupsPanel({ actorId, actorPubkeyHex, sign, onSelect }: Props) 
       });
       const record = { ...prep.unsigned_record };
       // The client must populate group_id and sig before publishing.
-      record.group_id = crypto.randomUUID().replaceAll("-", "").slice(0, 12);
+      record.group_id = crypto.randomUUID().replace(/-/g, "").slice(0, 12);
       record.sig = await sign(record);
       await publishGroup(record);
       setForm({ display_name: "", description: "", policy: "open" });

@@ -9,6 +9,7 @@ import {
   postMessage,
   updateTaskStatus
 } from "./api";
+import { ContactShell } from "./panels";
 import type { DaoState, Summary, TaskStatus } from "./types";
 
 const defaultAgent = window.localStorage.getItem("nth-dao-agent-id") || "admin";
@@ -344,6 +345,14 @@ function App() {
                 </article>
               ))}
             </div>
+          </section>
+
+          <section className="panel contacts-panel-host">
+            <div className="panel-heading">
+              <h2>Contacts / Groups</h2>
+              <span>DAO</span>
+            </div>
+            <ContactShell actorId={agentId} />
           </section>
         </aside>
       </section>

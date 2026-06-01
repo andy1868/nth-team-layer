@@ -76,6 +76,37 @@ def test_group_registry_search_fuzzy(tmp_path):
     assert "dao-builders" not in ids
 
 
+def test_group_registry_rejects_update_by_newly_claimed_admin(tmp_path):
+    from nth_dao.group_registry import GroupRegistry, GroupRecord, GroupRegistryError, create_group
+    alice = AgentIdentity.generate(label="alice")
+    bob = AgentIdentity.generate(label="bob")
+    reg = GroupRegistry(tmp_path)
+    original = create_group(alice, display_name="Governance Team")
+    reg.publish(original)
+
+    malicious = GroupRecord.from_dict(original.to_dict())
+    malicious.member_pubkeys = [alice.pubkey_hex, bob.pubkey_hex]
+    malicious.admin_pubkeys = [alice.pubkey_hex, bob.pubkey_hex]
+    malicious.signer_pubkey = bob.pubkey_hex
+    malicious.sig = bob.sign_json(malicious.signable_dict())
+
+    with pytest.raises(GroupRegistryError, match="current group admins"):
+        reg.publish(malicious)
+
+
+def test_group_registry_rejects_signer_outside_admin_set(tmp_path):
+    from nth_dao.group_registry import GroupRegistry, GroupRecord, GroupRegistryError, create_group
+    alice = AgentIdentity.generate(label="alice")
+    bob = AgentIdentity.generate(label="bob")
+    reg = GroupRegistry(tmp_path)
+    record = GroupRecord.from_dict(create_group(alice, display_name="Signer Team").to_dict())
+    record.signer_pubkey = bob.pubkey_hex
+    record.sig = bob.sign_json(record.signable_dict())
+
+    with pytest.raises(GroupRegistryError, match="malformed"):
+        reg.publish(record)
+
+
 # ─────────────────── governance / voting ───────────────────
 
 
@@ -274,6 +305,110 @@ def test_web_group_publish_rejects_invalid_signature(tmp_path):
     resp = client.post("/api/groups/registry/publish",
                        json={"record": bad_record.to_dict()})
     assert resp.status_code == 409  # GroupRegistryError → 409 per route impl
+
+
+def test_web_group_publish_requires_client_signed_group_id(tmp_path):
+    from nth_dao.group_registry import GroupRecord
+    client = _client(tmp_path)
+    alice = AgentIdentity.generate(label="alice")
+    resp = client.post("/api/groups/registry", json={
+        "actor_id": "admin",
+        "actor_pubkey_hex": alice.pubkey_hex,
+        "display_name": "Unsigned Id Group",
+        "policy": "open",
+    })
+    assert resp.status_code == 200
+    record = GroupRecord.from_dict(resp.json()["unsigned_record"])
+    record.sig = alice.sign_json(record.signable_dict())
+    publish = client.post("/api/groups/registry/publish", json={"record": record.to_dict()})
+    assert publish.status_code == 400
+    assert "group_id" in publish.text
+
+
+def test_web_add_did_derives_agent_id_like_identity_layer(tmp_path):
+    from nth_dao.did_key import encode_ed25519_did_key_hex
+    from nth_dao.identity import AgentID
+    client = _client(tmp_path)
+    alice = AgentIdentity.generate(label="alice")
+    did = encode_ed25519_did_key_hex(alice.pubkey_hex)
+    resp = client.post("/api/agents/add", json={
+        "actor_id": "admin",
+        "target_did": did,
+    })
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["agent_id"] == str(AgentID.from_pubkey(alice.pubkey_hex))
+
+
+def test_web_vote_endpoint_returns_unsigned_vote_without_persisting(tmp_path):
+    from nth_dao.group_registry import GroupRegistry, create_group, propose_policy_change
+    client = _client(tmp_path)
+    alice = AgentIdentity.generate(label="alice")
+    bob = AgentIdentity.generate(label="bob")
+    group = create_group(alice, display_name="Vote Prep Team", initial_admin_pubkeys=[bob.pubkey_hex])
+    reg = GroupRegistry(tmp_path)
+    reg.publish(group)
+    proposal = propose_policy_change(alice, group, new_policy="closed")
+    reg.save_proposal(proposal)
+
+    resp = client.post(
+        f"/api/groups/registry/{group.group_id}/proposals/{proposal.proposal_id}/vote",
+        json={"voter_pubkey_hex": bob.pubkey_hex, "proposal_id": proposal.proposal_id, "choice": "yes"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["unsigned_vote"]["sig"] == ""
+    stored = reg.load_proposal(proposal.proposal_id)
+    assert stored is not None
+    assert stored.votes == []
+
+
+def test_web_signed_vote_rejects_bad_signature_and_accepts_valid_vote(tmp_path):
+    from nth_dao.group_registry import GroupRegistry, cast_vote, create_group, propose_policy_change
+    client = _client(tmp_path)
+    alice = AgentIdentity.generate(label="alice")
+    bob = AgentIdentity.generate(label="bob")
+    group = create_group(alice, display_name="Signed Vote Team", initial_admin_pubkeys=[bob.pubkey_hex])
+    reg = GroupRegistry(tmp_path)
+    reg.publish(group)
+    proposal = propose_policy_change(alice, group, new_policy="closed")
+    reg.save_proposal(proposal)
+
+    bad_vote = cast_vote(bob, proposal, choice="yes")
+    bad_vote["sig"] = "00" * 64
+    bad = client.post(
+        f"/api/groups/registry/{group.group_id}/proposals/{proposal.proposal_id}/sign_vote",
+        json={"vote": bad_vote},
+    )
+    assert bad.status_code == 400
+
+    good_vote = cast_vote(bob, proposal, choice="yes")
+    good = client.post(
+        f"/api/groups/registry/{group.group_id}/proposals/{proposal.proposal_id}/sign_vote",
+        json={"vote": good_vote},
+    )
+    assert good.status_code == 200, good.text
+    stored = reg.load_proposal(proposal.proposal_id)
+    assert stored is not None
+    assert stored.votes == [good_vote]
+
+
+def test_web_signed_vote_rejects_non_member(tmp_path):
+    from nth_dao.group_registry import GroupRegistry, cast_vote, create_group, propose_policy_change
+    client = _client(tmp_path)
+    alice = AgentIdentity.generate(label="alice")
+    mallory = AgentIdentity.generate(label="mallory")
+    group = create_group(alice, display_name="Member Vote Team")
+    reg = GroupRegistry(tmp_path)
+    reg.publish(group)
+    proposal = propose_policy_change(alice, group, new_policy="closed")
+    reg.save_proposal(proposal)
+
+    vote = cast_vote(mallory, proposal, choice="yes")
+    resp = client.post(
+        f"/api/groups/registry/{group.group_id}/proposals/{proposal.proposal_id}/sign_vote",
+        json={"vote": vote},
+    )
+    assert resp.status_code == 400
+    assert "current member" in resp.text
 
 
 def test_web_lan_discover_runs_without_error(tmp_path):

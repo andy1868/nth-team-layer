@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .identity import AgentIdentity, _NACL_AVAILABLE, _VerifyKey, canonical_json
-from .util import atomic_write_json, safe_id, safe_load_json
+from .util import InterProcessLock, atomic_write_json, safe_id, safe_load_json
 
 logger = logging.getLogger("nth_dao.group_registry")
 
@@ -167,6 +167,28 @@ class GroupRecord:
         except Exception:
             return False
 
+    def is_well_formed(self) -> bool:
+        if not self.group_id or not self.slug:
+            return False
+        if normalize_group_name(self.slug) != self.slug:
+            return False
+        if not self.founder_pubkey or self.founder_pubkey not in self.member_pubkeys:
+            return False
+        if self.founder_pubkey not in self.admin_pubkeys:
+            return False
+        if self.signer_pubkey not in self.admin_pubkeys:
+            return False
+        if len(set(self.member_pubkeys)) != len(self.member_pubkeys):
+            return False
+        if len(set(self.admin_pubkeys)) != len(self.admin_pubkeys):
+            return False
+        if any(pk not in self.member_pubkeys for pk in self.admin_pubkeys):
+            return False
+        for pk in [self.founder_pubkey, self.signer_pubkey, *self.member_pubkeys, *self.admin_pubkeys]:
+            if not _is_pubkey_hex(pk):
+                return False
+        return True
+
 
 @dataclass
 class PolicyChangeProposal:
@@ -269,6 +291,27 @@ class PolicyChangeProposal:
                 continue
         return len(seen)
 
+    def validate_vote(self, vote: Dict[str, Any], eligible_member_pubkeys: List[str]) -> Tuple[bool, str]:
+        if vote.get("choice") not in ("yes", "no", "abstain"):
+            return False, "choice must be yes/no/abstain"
+        voter = vote.get("voter_pubkey", "")
+        if voter not in set(eligible_member_pubkeys):
+            return False, "voter is not a current member"
+        if not (_NACL_AVAILABLE and _VerifyKey):
+            return False, "crypto unavailable"
+        try:
+            _VerifyKey(bytes.fromhex(voter)).verify(
+                canonical_json({
+                    "proposal_id": self.proposal_id,
+                    "choice": vote.get("choice", ""),
+                    "voted_at": vote.get("voted_at", ""),
+                }),
+                bytes.fromhex(vote.get("sig", "")),
+            )
+        except Exception:
+            return False, "vote signature invalid"
+        return True, "ok"
+
 
 # ─────────────────── helpers ───────────────────
 
@@ -306,6 +349,16 @@ def create_group(
     )
     record.sig = founder.sign_json(record.signable_dict())
     return record
+
+
+def _is_pubkey_hex(value: str) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        bytes.fromhex(value)
+        return True
+    except ValueError:
+        return False
 
 
 def propose_policy_change(
@@ -474,18 +527,29 @@ class GroupRegistry:
           - Existing slug, SAME group_id: overwrite (treated as update).
           - Existing slug, DIFFERENT group_id: GroupRegistryError.
         """
+        if not record.is_well_formed():
+            raise GroupRegistryError("refuse to publish: group record malformed")
         if not record.verify_signature():
             raise GroupRegistryError("refuse to publish: signature invalid")
         path = self._path_for_slug(record.slug)
-        existing = safe_load_json(path, fallback=None)
-        if existing and isinstance(existing, dict):
-            if existing.get("group_id") != record.group_id:
+        with InterProcessLock(path):
+            existing = safe_load_json(path, fallback=None)
+            if existing and isinstance(existing, dict) and existing.get("group_id") != record.group_id:
                 raise GroupRegistryError(
                     f"slug {record.slug!r} already taken by another group "
                     f"(group_id={existing.get('group_id')})"
                 )
-        atomic_write_json(path, record.to_dict())
-        self._refresh_index()
+            if existing and isinstance(existing, dict) and existing.get("group_id") == record.group_id:
+                prior = GroupRecord.from_dict(existing)
+                if record.signer_pubkey not in prior.admin_pubkeys:
+                    raise GroupRegistryError("only current group admins may update a group")
+                if record.founder_pubkey != prior.founder_pubkey:
+                    raise GroupRegistryError("founder_pubkey cannot change")
+                if record.slug != prior.slug:
+                    raise GroupRegistryError("group slug cannot change")
+            atomic_write_json(path, record.to_dict())
+        with InterProcessLock(self.index_path):
+            self._refresh_index()
         return path
 
     def load_by_slug(self, slug_or_name: str) -> Optional[GroupRecord]:
@@ -560,7 +624,8 @@ class GroupRegistry:
 
     def save_proposal(self, proposal: PolicyChangeProposal) -> Path:
         path = self.votes_dir / f"{safe_id(proposal.proposal_id)}.json"
-        atomic_write_json(path, proposal.to_dict())
+        with InterProcessLock(path):
+            atomic_write_json(path, proposal.to_dict())
         return path
 
     def load_proposal(self, proposal_id: str) -> Optional[PolicyChangeProposal]:

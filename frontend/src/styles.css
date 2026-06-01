@@ -288,6 +288,19 @@ time {
   overflow-wrap: anywhere;
 }
 
+.contacts-panel-host {
+  padding: 0;
+  overflow: hidden;
+}
+
+.contacts-panel-host > .panel-heading {
+  padding: 12px 12px 0;
+}
+
+.contacts-panel-host .qq-shell {
+  padding: 0 12px 12px;
+}
+
 .empty {
   color: #6e665d;
   padding: 14px;

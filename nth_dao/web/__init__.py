@@ -26,6 +26,7 @@ from nth_dao.group_registry import (
     cast_vote as gr_cast_vote,
     resolve_proposal,
 )
+from nth_dao.identity import AgentID
 from nth_dao.membership import MembershipManager, TeamConfig, TeamRole
 from nth_dao.orchestration import MissionStore
 from team_layer.blackboard import Blackboard
@@ -268,7 +269,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return task.to_dict()
 
-    # ─── v0.9.6: agent search + LAN discovery + add-friend ───
+    # v0.9.6: agent search + LAN discovery + add-friend
 
     @app.get("/api/agents/search")
     def search_agents(q: str = "", limit: int = 10) -> dict[str, Any]:
@@ -300,7 +301,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/agents/lan_discover")
     def lan_discover(payload: LANDiscoverPayload) -> dict[str, Any]:
-        """Active "people nearby" — UDP broadcast on the LAN.
+        """Active "people nearby" via UDP broadcast on the LAN.
 
         This is server-side initiated: the FastAPI process sends the query
         and collects responses. The TS frontend just consumes the JSON list.
@@ -346,7 +347,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             if not is_did_key(payload.target_did):
                 raise HTTPException(status_code=400, detail="invalid did:key")
             pubkey_hex = decode_ed25519_did_key_hex(payload.target_did)
-            target_id = target_id or f"did-{pubkey_hex[:12]}"
+            target_id = target_id or str(AgentID.from_pubkey(pubkey_hex))
         if not target_id:
             raise HTTPException(status_code=400, detail="target_agent_id or target_did required")
         try:
@@ -362,7 +363,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             "label": payload.label,
         }
 
-    # ─── v0.9.6: group registry CRUD + search ───
+    # v0.9.6: group registry CRUD + search
 
     @app.post("/api/groups/registry")
     def create_unique_group(payload: GroupCreatePayload) -> dict[str, Any]:
@@ -417,8 +418,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"invalid record: {exc}") from exc
         if not record.group_id:
-            import uuid as _uuid
-            record.group_id = _uuid.uuid4().hex[:12]
+            raise HTTPException(status_code=400, detail="group_id must be signed by the client")
         try:
             state.group_registry.publish(record)
         except GroupRegistryError as exc:
@@ -444,7 +444,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         results = state.group_registry.search(payload.query, limit=payload.limit, policy=policy)
         return {"query": payload.query, "results": [r.to_dict() for r in results]}
 
-    # ─── v0.9.6: group governance via signed votes ───
+    # v0.9.6: group governance via signed votes
 
     @app.post("/api/groups/registry/{group_id}/proposals")
     def create_proposal(group_id: str, payload: PolicyProposalPayload) -> dict[str, Any]:
@@ -454,7 +454,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="group not found")
         if payload.actor_pubkey_hex not in group.member_pubkeys:
             raise HTTPException(status_code=403, detail="only members can propose")
-        # Build an unsigned skeleton — TS signs and posts via /publish below.
+        # Build an unsigned skeleton. TS signs and posts via /publish below.
         from nth_dao.group_registry import PolicyChangeProposal, GroupPolicy
         from datetime import timedelta
         import uuid as _uuid
@@ -488,6 +488,11 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=f"invalid proposal: {exc}") from exc
         if proposal.group_id != group_id:
             raise HTTPException(status_code=400, detail="proposal/group_id mismatch")
+        group = state.group_registry.load_by_id(group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        if proposal.proposer_pubkey not in group.member_pubkeys:
+            raise HTTPException(status_code=403, detail="only members can propose")
         if not proposal.verify_proposer_signature():
             raise HTTPException(status_code=400, detail="proposer signature invalid")
         state.group_registry.save_proposal(proposal)
@@ -508,41 +513,49 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/groups/registry/{group_id}/proposals/{proposal_id}/vote")
     def add_vote(group_id: str, proposal_id: str, payload: VoteCastPayload) -> dict[str, Any]:
-        """Append a pre-signed vote to a proposal.
-
-        The vote sig is over `canonical_json({"proposal_id", "choice", "voted_at"})`
-        — TS must pre-sign and pass the full payload.
-        """
+        """Build an unsigned vote payload for the client to sign."""
         proposal = state.group_registry.load_proposal(proposal_id)
         if proposal is None or proposal.group_id != group_id:
             raise HTTPException(status_code=404, detail="proposal not found")
+        group = state.group_registry.load_by_id(group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        if payload.voter_pubkey_hex not in group.member_pubkeys:
+            raise HTTPException(status_code=403, detail="only members can vote")
         if payload.choice not in ("yes", "no", "abstain"):
             raise HTTPException(status_code=400, detail="choice must be yes/no/abstain")
-        # The caller passes voter_pubkey_hex + the sig field implicitly via
-        # a fully-formed vote dict in `proposal.votes` would normally be cleaner;
-        # but we accept just the choice here and require the proposer/voter
-        # to call /publish for full-flow control. This endpoint is a convenience
-        # that records WHO claims to have voted; verification still happens at
-        # resolve time.
         voted_at = datetime.now().isoformat()
-        proposal.votes.append({
+        unsigned_vote = {
             "voter_pubkey": payload.voter_pubkey_hex,
             "choice": payload.choice,
             "voted_at": voted_at,
-            "sig": "",  # will be filled by /publish once UI gets a sig
-        })
-        state.group_registry.save_proposal(proposal)
-        return {"recorded": True, "proposal": proposal.to_dict()}
+            "sig": "",
+        }
+        return {
+            "unsigned_vote": unsigned_vote,
+            "to_sign": {
+                "proposal_id": proposal.proposal_id,
+                "choice": payload.choice,
+                "voted_at": voted_at,
+            },
+        }
 
     @app.post("/api/groups/registry/{group_id}/proposals/{proposal_id}/sign_vote")
     def add_signed_vote(group_id: str, proposal_id: str, payload: SignedVotePayload) -> dict[str, Any]:
         proposal = state.group_registry.load_proposal(proposal_id)
         if proposal is None or proposal.group_id != group_id:
             raise HTTPException(status_code=404, detail="proposal not found")
+        group = state.group_registry.load_by_id(group_id)
+        if group is None:
+            raise HTTPException(status_code=404, detail="group not found")
+        ok, reason = proposal.validate_vote(payload.vote, group.member_pubkeys)
+        if not ok:
+            raise HTTPException(status_code=400, detail=reason)
+        voter = payload.vote.get("voter_pubkey", "")
+        proposal.votes = [vote for vote in proposal.votes if vote.get("voter_pubkey") != voter]
         proposal.votes.append(payload.vote)
         state.group_registry.save_proposal(proposal)
-        group = state.group_registry.load_by_id(group_id)
-        passed, reason = resolve_proposal(proposal, group) if group else (False, "no group")
+        passed, reason = resolve_proposal(proposal, group)
         return {
             "proposal": proposal.to_dict(),
             "resolved": {"passed": passed, "reason": reason},
