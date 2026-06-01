@@ -1,0 +1,263 @@
+/* QQ / WeChat-inspired panels for v0.9.6 contacts + nearby + groups + governance.
+ *
+ * Standalone — imported by App.tsx so it doesn't perturb existing styles.css.
+ * Color palette echoes classic QQ (teal accent, neutral grays).
+ */
+
+:root {
+  --qq-accent: #00a0e9;
+  --qq-accent-dark: #007cb2;
+  --qq-bg: #f7f8fa;
+  --qq-surface: #ffffff;
+  --qq-border: #e1e4ea;
+  --qq-text: #1d2129;
+  --qq-text-muted: #76838f;
+  --qq-status-idle: #15c46b;
+  --qq-status-busy: #f5a623;
+  --qq-status-offline: #b3b8c0;
+  --qq-status-blocked: #ed4014;
+  --qq-flash-bg: #fff7e6;
+  --qq-error: #d4380d;
+}
+
+.qq-panel {
+  background: var(--qq-surface);
+  border: 1px solid var(--qq-border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  color: var(--qq-text);
+}
+
+.qq-panel h2 {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--qq-border);
+  padding-bottom: 8px;
+}
+
+.qq-panel h3 {
+  margin: 16px 0 8px;
+  font-size: 14px;
+  color: var(--qq-text-muted);
+}
+
+.qq-search-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.qq-search-bar input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--qq-border);
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.qq-search-bar button,
+.qq-form button,
+.qq-vote-buttons button,
+.qq-direct-add button,
+.qq-nearby-controls button {
+  background: var(--qq-accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.qq-search-bar button:hover,
+.qq-form button:hover,
+.qq-vote-buttons button:hover {
+  background: var(--qq-accent-dark);
+}
+
+.qq-search-bar button:disabled,
+.qq-form button:disabled {
+  background: var(--qq-status-offline);
+  cursor: not-allowed;
+}
+
+.qq-result-list,
+.qq-group-list,
+.qq-proposal-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.qq-result,
+.qq-group,
+.qq-proposal {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--qq-border);
+}
+
+.qq-result:last-child,
+.qq-group:last-child,
+.qq-proposal:last-child {
+  border-bottom: none;
+}
+
+.qq-group {
+  display: block;
+  cursor: pointer;
+}
+
+.qq-group:hover {
+  background: var(--qq-bg);
+}
+
+.qq-status {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-size: 11px;
+  color: white;
+}
+
+.qq-status-idle { background: var(--qq-status-idle); }
+.qq-status-busy { background: var(--qq-status-busy); }
+.qq-status-offline { background: var(--qq-status-offline); }
+.qq-status-blocked { background: var(--qq-status-blocked); }
+
+.qq-flash {
+  background: var(--qq-flash-bg);
+  border-left: 3px solid var(--qq-accent);
+  padding: 8px 12px;
+  margin: 8px 0;
+  font-size: 13px;
+  border-radius: 0 4px 4px 0;
+}
+
+.qq-flash.qq-error {
+  border-left-color: var(--qq-error);
+  color: var(--qq-error);
+}
+
+.qq-direct-add,
+.qq-create-group,
+.qq-nearby-controls,
+.qq-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.qq-direct-add input,
+.qq-form input,
+.qq-form select,
+.qq-nearby-controls input {
+  flex: 1 1 200px;
+  padding: 6px 10px;
+  border: 1px solid var(--qq-border);
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+.qq-nearby-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--qq-text-muted);
+  flex: 1 1 200px;
+}
+
+.qq-empty {
+  color: var(--qq-text-muted);
+  font-size: 13px;
+  padding: 12px;
+  text-align: center;
+}
+
+.qq-caps,
+.qq-did,
+.qq-slug {
+  color: var(--qq-text-muted);
+  font-size: 12px;
+}
+
+.qq-did {
+  font-family: monospace;
+  background: var(--qq-bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.qq-policy-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  background: var(--qq-bg);
+  border: 1px solid var(--qq-border);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--qq-text-muted);
+}
+
+.qq-policy-open      { border-left: 3px solid var(--qq-status-idle); }
+.qq-policy-approval  { border-left: 3px solid var(--qq-status-busy); }
+.qq-policy-closed    { border-left: 3px solid var(--qq-status-blocked); }
+.qq-policy-voted     { border-left: 3px solid var(--qq-accent); }
+
+.qq-group-meta {
+  font-size: 12px;
+  color: var(--qq-text-muted);
+  margin-top: 4px;
+}
+
+.qq-policy-current {
+  background: var(--qq-bg);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.qq-rationale {
+  color: var(--qq-text-muted);
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.qq-vote-tally {
+  font-size: 12px;
+  color: var(--qq-text-muted);
+}
+
+.qq-vote-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.qq-tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--qq-border);
+  margin-bottom: 16px;
+}
+
+.qq-tab {
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--qq-text-muted);
+  border-bottom: 2px solid transparent;
+}
+
+.qq-tab.active {
+  color: var(--qq-accent);
+  border-bottom-color: var(--qq-accent);
+}

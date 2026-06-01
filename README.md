@@ -18,7 +18,58 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-217%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-238%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.9.6 — Unique group names, governance votes, QQ-style UI
+
+Three Python additions for the protocol layer, plus four TS panels for the
+QQ/WeChat-style user experience the project has been missing.
+
+**Protocol additions (Python):**
+
+- **`GroupRegistry` with workspace-unique slugs** — names normalize
+  (`Frontend Team!` → `frontend-team`); two groups can't share a slug
+  within a workspace. Records are signed by the founder.
+- **Policy-vote governance** — `PolicyChangeProposal` signed by a
+  member; other members append signed yes/no/abstain votes; passes when
+  > 50% of distinct member pubkeys vote yes. `apply_proposal` rebuilds
+  the GroupRecord re-signed by an admin.
+- **14 new web API endpoints** in `nth_dao/web/`: agent fuzzy search,
+  LAN discovery proxy, add-by-DID, group CRUD + search, governance
+  propose/vote. All write endpoints use "server prepares unsigned →
+  client signs locally → client posts back" so private keys never
+  cross the wire.
+
+**UI additions (TS, per the iron rule):**
+
+`frontend/src/panels/` — drop into your React app:
+
+- `ContactsPanel` — search agents by name / capability; add by exact
+  agent_id or did:key.
+- `NearbyPanel`   — UDP LAN "people nearby", with optional pre-shared key.
+- `GroupsPanel`   — list / search / create unique groups; color-coded
+  policy badges.
+- `GovernancePanel` — propose policy changes; vote yes/no/abstain.
+- `ContactShell`  — top tab bar that hosts all four.
+- `qq-style.css`  — standalone styles, leaves existing styles untouched.
+
+```tsx
+import { ContactShell } from "./panels";
+
+function App() {
+  const { actorId, actorPubkeyHex, sign } = useWallet();
+  return (
+    <ContactShell
+      actorId={actorId}
+      actorPubkeyHex={actorPubkeyHex}
+      sign={sign}
+    />
+  );
+}
+```
+
+The host app supplies a `sign(payload)` helper from whatever wallet
+infrastructure it has. Browse-only mode renders without signing.
 
 ## What's New in 0.9.5 — DID:key, AgentLedger, Guardian recovery, A2A boundary
 

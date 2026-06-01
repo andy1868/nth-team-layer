@@ -5,6 +5,94 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.6] — 2026-06-02 — Unique group names, governance votes, QQ-style UI
+
+User-facing layer: workspace-unique groups with policy votes, plus the
+TS panels for QQ/WeChat-style "find / add / nearby / group" UX. No
+breaking changes to existing protocol artifacts.
+
+### Added — GroupRegistry (Python, protocol)
+
+- `nth_dao/group_registry.py` — workspace-unique groups.
+  - `normalize_group_name(name)` produces a stable slug
+    (`Frontend Team!` → `frontend-team`).
+  - `GroupRecord` is signed by the founder; subsequent updates re-sign.
+  - `GroupPolicy` enum: `open` / `approval` / `closed` / `voted`.
+  - `GroupRegistry.publish()` enforces slug uniqueness — same group_id
+    re-publish updates; different group_id reusing the slug raises
+    `GroupRegistryError`.
+  - `search()` is fuzzy-match across slug / display_name / description.
+- **Governance voting** — `PolicyChangeProposal`, signed by a member.
+  Members append signed `Vote` records; `resolve_proposal` returns
+  passed/reason. Threshold: `> 50%` of current member pubkeys, deduped.
+  `apply_proposal` builds a new GroupRecord re-signed by an admin.
+- Anti-DoS: non-member proposer rejected; duplicate yes-votes from same
+  pubkey deduped; tampered proposer signatures rejected.
+
+### Added — Web API (Python, FastAPI)
+
+In `nth_dao/web/`, 14 new endpoints:
+
+- `GET  /api/agents/search?q=` — QQ-style fuzzy search over
+  `PeerFinder` (matches agent_id, label from registry metadata,
+  capabilities, groups; ranked).
+- `POST /api/agents/lan_discover` — server-initiated UDP LAN scan,
+  returns LANPeers with `ws_url` and `pubkey_hex`.
+- `POST /api/agents/add` — add an agent by `target_agent_id` OR
+  `target_did` (W3C did:key resolved server-side).
+- `POST /api/groups/registry` — prepare unsigned group skeleton.
+- `POST /api/groups/registry/publish` — persist a signed GroupRecord.
+- `GET  /api/groups/registry` — list all.
+- `POST /api/groups/registry/search` — fuzzy search.
+- `POST /api/groups/registry/{group_id}/proposals` — prepare unsigned
+  proposal skeleton.
+- `POST /api/groups/registry/{group_id}/proposals/publish` — submit a
+  signed proposal.
+- `GET  /api/groups/registry/{group_id}/proposals` — list proposals
+  with resolution status.
+- `POST /api/groups/registry/{group_id}/proposals/{proposal_id}/sign_vote`
+  — append a signed vote and re-resolve.
+
+All write endpoints follow the same "server prepares unsigned skeleton →
+client signs locally → client posts back" pattern so private keys never
+touch the wire.
+
+### Added — TS panels (frontend/src/panels/, per the iron rule)
+
+Four QQ/WeChat-inspired React panels + a shell that ties them together:
+
+- `ContactsPanel` — search by name/label/capability, "+ Add" buttons,
+  fallback "exact agent_id / DID" form.
+- `NearbyPanel` — "people nearby" LAN discovery, with optional PSK.
+- `GroupsPanel` — list / search / create unique groups. Shows policy
+  color band per group; the "create" form lets the user pick the
+  initial policy.
+- `GovernancePanel` — propose a policy change with rationale; vote
+  yes/no/abstain on open proposals.
+- `ContactShell` — top tab bar with the four panels, browse-only mode
+  when no wallet is connected.
+- `qq-style.css` — standalone styles so existing `styles.css` is
+  untouched.
+
+The host app supplies `actorPubkeyHex` and `sign(payload)` (browser
+wallet of any flavor). When omitted, the panels render but signing-
+required actions are disabled and labeled.
+
+### Tests
+
+- 238 passing + 5 skipped (was 217 + 5).
+- 21 new tests in `tests/test_v096_group_registry_and_web.py`:
+  slug normalization, slug-collision rejection, search ranking,
+  proposal pass/fail with majority/below-threshold, non-member
+  proposer rejection, double-yes dedup, tampered proposer sig
+  rejection; plus a FastAPI TestClient pass over each new endpoint.
+
+### No protocol changes on disk
+
+`Mission`, `MissionTemplate`, `TeamConfig`, `GuardianSet`, `Endorsement`,
+`Invitation`, gossip envelope — all unchanged. GroupRecord is a brand-new
+artifact stored under `team_groups/` next to existing files.
+
 ## [0.9.5] — 2026-05-31 — DID:key, AgentLedger, Guardian recovery, A2A boundary
 
 Five additive deliverables, no breaking changes. v0.9.4 artifacts load
@@ -535,6 +623,7 @@ where it was developed in-tree as `team_layer/` + `nth_dao/`.
 - New integrations should use `import nth_dao as nth`; the former
   `nth_team_layer` public package is intentionally removed.
 
+[0.9.6]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.6
 [0.9.5]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.5
 [0.9.4]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.4
 [0.9.3]: https://github.com/AlexNthLab/nth-dao/releases/tag/v0.9.3

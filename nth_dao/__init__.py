@@ -36,9 +36,9 @@ try:
     try:
         __version__ = _pkg_version("nth-dao")
     except PackageNotFoundError:
-        __version__ = "0.9.5+source"
+        __version__ = "0.9.6+source"
 except ImportError:
-    __version__ = "0.9.5+source"
+    __version__ = "0.9.6+source"
 
 #
 # Facade — re-export all team_layer public APIs.
@@ -209,6 +209,21 @@ from .guardian import (
 )
 # v0.9.5: A2A boundary translation primitives (server lives in a separate package)
 from . import a2a as a2a_adapter  # noqa: F401
+# v0.9.6: workspace-unique group names + governance votes
+from . import group_registry  # noqa: F401
+from .group_registry import (
+    GroupPolicy,
+    GroupRecord,
+    GroupRegistry,
+    GroupRegistryError,
+    PolicyChangeProposal,
+    cast_vote as group_cast_vote,
+    create_group,
+    propose_policy_change,
+    resolve_proposal,
+    apply_proposal,
+    normalize_group_name,
+)
 from .attach import attach, TeamSession
 
 __all__ = [
@@ -339,4 +354,16 @@ __all__ = [
     "publish_guardian_set",
     "sign_replacement",
     "verify_replacement",
+    # GroupRegistry (v0.9.6) — workspace-unique group names + governance
+    "GroupPolicy",
+    "GroupRecord",
+    "GroupRegistry",
+    "GroupRegistryError",
+    "PolicyChangeProposal",
+    "create_group",
+    "propose_policy_change",
+    "resolve_proposal",
+    "apply_proposal",
+    "normalize_group_name",
+    "group_cast_vote",
 ]
