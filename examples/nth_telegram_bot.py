@@ -1,29 +1,35 @@
-"""
-NTH DAO Telegram Bot   NTH DAO  Telegram
+"""NTH DAO Telegram Bot — expose the NTH DAO runtime through Telegram.
 
-
+Run:
     python nth_telegram_bot.py
 
- ~/.hermes/.env :
+Requires in ``~/.hermes/.env``:
     TELEGRAM_BOT_TOKEN=...
-    TELEGRAM_ALLOWED_USERS=<comma-separated user IDs>
+    TELEGRAM_ALLOWED_USERS=<comma-separated Telegram user IDs>
     DEEPSEEK_API_KEY=...
 
-
-    /start            +
-    /team             agent (Discovery)
-    /kanban          Blackboard kanban
+Commands:
+    /start              register the user + greet
+    /team               list discoverable agents on the workspace
+    /kanban             render Blackboard as a kanban summary
     /mission_new <title> | <step1> ; <step2>
-                      mission ( |  ; )
-    /mission_list     active mission
-    /evolve           EvoLoop.run_once()
-    /ledger          ledger  ( 10 )
-              DeepSeek  +  ledger
+                        create a Mission (title | semicolon-separated steps)
+    /mission_list       list active missions
+    /evolve             trigger EvoLoop.run_once()
+    /ledger             tail the last ~10 ledger entries
+    <free text>         routed to DeepSeek with the agent's ledger context
 
+Notes:
+- Workspace is the repo root; the bot attaches via ``nth_dao.attach()``
+  as agent_id ``telegram-bot`` and writes to the standard NTH DAO paths.
+- DeepSeek is reached via the openai SDK with a custom base_url.
+- Module import is side-effect-free: env validation and LLM/runtime
+  initialisation are *lazy*. `_validate_env()` is called from `main()`
+  before the bot starts; `get_llm()` and `get_runtime()` are called by
+  individual handlers on first use. This makes the module safe to
+  `import` from tests / linters without env vars set.
 
--  workspace ~/Desktop/hermes-team-agent  nth
--  attach()  'telegram-bot' agent Mission/Blackboard
-- LLM  openai SDK + DeepSeek hermes
+Original lazy-init pattern contributed by @andy1868 in PR #7.
 """
 
 import asyncio
@@ -54,15 +60,31 @@ def _load_dotenv(path: Path):
 
 _load_dotenv(Path.home() / ".hermes" / ".env")
 
-# 2.
+# 2. Read env into module-level constants; do NOT exit on missing values —
+#    that breaks pytest collection and any tooling that just imports this
+#    module. Validation is deferred to `_validate_env()` (called by main).
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED = {u.strip() for u in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",") if u.strip()}
 DEEPSEEK_KEY = os.environ.get("DEEPSEEK_API_KEY")
 
-if not TOKEN:
-    print("ERROR: TELEGRAM_BOT_TOKEN missing in ~/.hermes/.env"); sys.exit(1)
-if not DEEPSEEK_KEY:
-    print("ERROR: DEEPSEEK_API_KEY missing in ~/.hermes/.env"); sys.exit(1)
+
+def _validate_env() -> None:
+    """Raise RuntimeError if required env vars are missing.
+
+    Called from `main()`; safe to skip during `import` so tests and
+    static analysis don't need the secrets present.
+    """
+    missing = []
+    if not os.environ.get("TELEGRAM_BOT_TOKEN"):
+        missing.append("TELEGRAM_BOT_TOKEN")
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        missing.append("DEEPSEEK_API_KEY")
+    if missing:
+        raise RuntimeError(
+            f"Missing required env vars: {', '.join(missing)}. "
+            "Set them in ~/.hermes/.env (see this module's docstring)."
+        )
+
 
 # 3.  nth_dao
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -70,7 +92,8 @@ import nth_dao as nth
 from nth_dao import render_kanban           # facade re-export
 from nth_dao.orchestration import StepStatus
 
-# 4. openai SDK for DeepSeek
+# 4. openai SDK for DeepSeek (lazy-imported below to keep import-time
+#    side effects minimal; helpful for partial installs).
 from openai import OpenAI
 
 # 5. telegram
@@ -97,21 +120,53 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 #
 
 REPO = Path(__file__).resolve().parent.parent
-TEAM = nth.attach(
-    agent_id="telegram-bot",
-    backend=None,                                  #  DeepSeek
-    capabilities=["chat", "telegram", "qa"],
-    groups=["bots"],
-    workspace=REPO,
-    start_heartbeat=True,                          #  agent
-)
-logger.info(f"NTH DAO attached: {TEAM.agent_id} on {TEAM.workspace}")
 
-# DeepSeek client
-LLM = OpenAI(
-    api_key=DEEPSEEK_KEY,
-    base_url="https://api.deepseek.com/v1",
-)
+# Lazy runtime + LLM singletons. We do NOT touch network / file-system on
+# import — handlers call get_runtime() / get_llm() on first use.
+_TEAM = None
+_LLM = None
+
+
+def get_runtime():
+    """Attach to NTH DAO on first call; return the cached session."""
+    global _TEAM
+    if _TEAM is None:
+        _TEAM = nth.attach(
+            agent_id="telegram-bot",
+            backend=None,                          # routed to DeepSeek below
+            capabilities=["chat", "telegram", "qa"],
+            groups=["bots"],
+            workspace=REPO,
+            start_heartbeat=True,
+        )
+        logger.info("NTH DAO attached: %s on %s", _TEAM.agent_id, _TEAM.workspace)
+    return _TEAM
+
+
+def get_llm() -> OpenAI:
+    """Return the shared DeepSeek client, initialising it lazily."""
+    global _LLM
+    if _LLM is None:
+        key = os.environ.get("DEEPSEEK_API_KEY")
+        if not key:
+            raise RuntimeError(
+                "DEEPSEEK_API_KEY is not set; cannot reach DeepSeek. "
+                "Add it to ~/.hermes/.env."
+            )
+        _LLM = OpenAI(api_key=key, base_url="https://api.deepseek.com/v1")
+    return _LLM
+
+
+# Legacy name kept for backwards compatibility with the rest of this file
+# (TEAM was referenced unconditionally before the lazy refactor). Modules
+# that import this script directly should prefer get_runtime() / get_llm().
+class _RuntimeProxy:
+    """Tiny proxy so `TEAM.foo` lazily forwards to the real runtime."""
+    def __getattr__(self, name):
+        return getattr(get_runtime(), name)
+
+
+TEAM = _RuntimeProxy()
 
 #
 #
@@ -609,7 +664,7 @@ async def on_text(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     tokens = 0
     try:
         resp = await asyncio.to_thread(
-            LLM.chat.completions.create,
+            get_llm().chat.completions.create,
             model="deepseek-chat",
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -674,7 +729,8 @@ async def post_init(application):
 
 
 def main():
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    _validate_env()
+    app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).post_init(post_init).build()
 
     #  7
     app.add_handler(CommandHandler("start", cmd_start))
