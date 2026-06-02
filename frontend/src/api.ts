@@ -1,4 +1,4 @@
-import type { DaoState, DaoTask, Message, Summary, TaskStatus } from "./types";
+import type { DaoState, DaoSummary, DaoTask, Message, Summary, TaskStatus } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -30,6 +30,18 @@ export function getState(agentId: string, channelId: string): Promise<DaoState> 
   return request<DaoState>(`/api/state?${params.toString()}`);
 }
 
+// v0.9.7 — multi-DAO endpoints (sidebar list + per-DAO scoped state)
+export function getDaos(actorId: string, actorPubkeyHex: string): Promise<{ daos: DaoSummary[] }> {
+  const params = new URLSearchParams({ actor_id: actorId, actor_pubkey_hex: actorPubkeyHex });
+  return request<{ daos: DaoSummary[] }>(`/api/daos?${params.toString()}`);
+}
+
+export function getDaoState(slug: string, agentId: string, channelId: string): Promise<DaoState> {
+  const params = new URLSearchParams({ agent_id: agentId });
+  if (channelId) params.set("channel_id", channelId);
+  return request<DaoState>(`/api/daos/${encodeURIComponent(slug)}/state?${params.toString()}`);
+}
+
 export function join(agentId: string): Promise<{ ok: boolean; agent_id: string; reason: string }> {
   return request("/api/join", {
     method: "POST",
@@ -42,6 +54,7 @@ export function createChannel(input: {
   name: string;
   topic: string;
   isPrivate: boolean;
+  channelId?: string;
 }): Promise<unknown> {
   return request("/api/channels", {
     method: "POST",
@@ -49,7 +62,8 @@ export function createChannel(input: {
       actor_id: input.actorId,
       name: input.name,
       topic: input.topic,
-      is_private: input.isPrivate
+      is_private: input.isPrivate,
+      channel_id: input.channelId ?? ""
     })
   });
 }

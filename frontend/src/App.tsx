@@ -2,7 +2,8 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import {
   createChannel,
   createTask,
-  getState,
+  getDaoState,
+  getDaos,
   getSummary,
   join,
   postAnnouncement,
@@ -11,14 +12,27 @@ import {
 } from "./api";
 import { ContactShell } from "./panels";
 import { type BrowserWallet, loadOrCreateWallet } from "./crypto";
-import type { DaoState, Summary, TaskStatus } from "./types";
+import type { DaoState, DaoSummary, Summary, TaskStatus } from "./types";
 
 const defaultAgent = window.localStorage.getItem("nth-dao-agent-id") || "admin";
+const defaultDao = window.localStorage.getItem("nth-dao-active-slug") || "home";
 const taskStatuses: TaskStatus[] = ["open", "accepted", "running", "blocked", "completed", "cancelled"];
+
+// DAO-scoped channel IDs carry a `dao-<slug>-` prefix server-side. When
+// creating a channel from inside a group DAO, the UI prepends the slug
+// so the channel lands in the right scope.
+function scopedChannelId(slug: string, bare: string): string {
+  if (!bare) return bare;
+  if (!slug || slug === "home") return bare;
+  const prefix = `dao-${slug}-`;
+  return bare.startsWith(prefix) ? bare : prefix + bare;
+}
 
 function App() {
   const [agentId, setAgentId] = useState(defaultAgent);
-  const [selectedChannel, setSelectedChannel] = useState("general");
+  const [activeDao, setActiveDao] = useState<string>(defaultDao);
+  const [daos, setDaos] = useState<DaoSummary[]>([]);
+  const [selectedChannel, setSelectedChannel] = useState<string>("");
   const [summary, setSummary] = useState<Summary | null>(null);
   const [state, setState] = useState<DaoState | null>(null);
   const [messageBody, setMessageBody] = useState("");
@@ -49,24 +63,50 @@ function App() {
     [selectedChannel, state?.channels]
   );
 
-  async function refresh(nextAgent = agentId, nextChannel = selectedChannel) {
+  async function refresh(
+    nextAgent: string = agentId,
+    nextChannel: string = selectedChannel,
+    nextDao: string = activeDao,
+  ) {
     const cleanAgent = nextAgent.trim() || "admin";
     const [summaryData, stateData] = await Promise.all([
       getSummary(),
-      getState(cleanAgent, nextChannel)
+      getDaoState(nextDao, cleanAgent, nextChannel),
     ]);
     setSummary(summaryData);
     setState(stateData);
+    if (!nextChannel && stateData.active_channel_id) {
+      setSelectedChannel(stateData.active_channel_id);
+    }
     setNotice("Ready");
+  }
+
+  async function refreshDaos(pubkeyHex: string) {
+    try {
+      const list = await getDaos(agentId, pubkeyHex);
+      setDaos(list.daos);
+    } catch (e) {
+      // Sidebar failures shouldn't break the main view; surface as notice.
+      setNotice((e as Error).message);
+    }
   }
 
   useEffect(() => {
     refresh().catch((error: Error) => setNotice(error.message));
+    refreshDaos(wallet?.pubkeyHex ?? "");
     const id = window.setInterval(() => {
       refresh().catch((error: Error) => setNotice(error.message));
     }, 5000);
     return () => window.clearInterval(id);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDao, wallet?.pubkeyHex]);
+
+  function switchDao(slug: string) {
+    if (slug === activeDao) return;
+    setActiveDao(slug);
+    setSelectedChannel("");      // let backend pick default channel for this DAO
+    window.localStorage.setItem("nth-dao-active-slug", slug);
+  }
 
   async function run(action: () => Promise<void>, done = "Updated") {
     setBusy(true);
@@ -96,12 +136,14 @@ function App() {
 
   async function onCreateChannel(event: FormEvent) {
     event.preventDefault();
+    const scopedId = scopedChannelId(activeDao, channelName.trim());
     await run(async () => {
       await createChannel({
         actorId: agentId,
         name: channelName,
         topic: channelTopic,
-        isPrivate: false
+        isPrivate: false,
+        channelId: scopedId,
       });
       setChannelName("");
       setChannelTopic("");
@@ -184,6 +226,42 @@ function App() {
             <p className="hint">Current membership policy: {summary?.team.join_policy ?? "loading"}</p>
           </form>
 
+          {/* QQ-style "My DAOs" list — one agent ↔ many DAOs. Click to switch. */}
+          <section className="panel">
+            <div className="panel-heading">
+              <h2>My DAOs</h2>
+              <span>{daos.length}</span>
+            </div>
+            <div className="stack dao-list">
+              {daos.length === 0 && (
+                <p className="empty-inline">Loading DAOs…</p>
+              )}
+              {daos.map((dao) => {
+                const isActive = dao.slug === activeDao;
+                const avatar = (dao.display_name || dao.slug).slice(0, 2).toUpperCase();
+                return (
+                  <button
+                    key={dao.slug}
+                    type="button"
+                    className={`dao-item ${isActive ? "active" : ""} dao-kind-${dao.kind}`}
+                    onClick={() => switchDao(dao.slug)}
+                    title={dao.description || dao.display_name}
+                  >
+                    <span className="dao-avatar">{dao.kind === "home" ? "🏠" : avatar}</span>
+                    <span className="dao-meta">
+                      <span className="dao-name">{dao.display_name}</span>
+                      <small>
+                        {dao.kind === "home" ? "home" : `@${dao.slug}`}
+                        {" · "}{dao.member_count} member{dao.member_count === 1 ? "" : "s"}
+                        {dao.joined ? "" : " · not joined"}
+                      </small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
           <section className="panel">
             <div className="panel-heading">
               <h2>Channels</h2>
@@ -228,8 +306,17 @@ function App() {
         <section className="conversation">
           <div className="conversation-head">
             <div>
-              <p className="eyebrow">Channel</p>
-              <h2>#{activeChannel?.name ?? selectedChannel}</h2>
+              <p className="eyebrow">
+                {state?.dao?.display_name ?? "Channel"}
+                {state?.dao?.kind === "group" && <span className="dao-tag">@{state.dao.slug}</span>}
+              </p>
+              <h2>#{activeChannel?.name ?? (selectedChannel || "general")}</h2>
+              {state?.dao?.kind === "group" && state?.channels.length === 0 && (
+                <p className="hint">
+                  This DAO has no channels yet. Use “New channel” on the left to
+                  create one — it will be scoped to <code>@{state.dao.slug}</code>.
+                </p>
+              )}
             </div>
             <span className="notice">{notice}</span>
           </div>

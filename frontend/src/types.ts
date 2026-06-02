@@ -93,4 +93,34 @@ export type DaoState = {
   announcements: Announcement[];
   tasks: DaoTask[];
   audit: AuditEvent[];
+  dao?: DaoMeta;
+  active_channel_id?: string;
+};
+
+// v0.9.7 — one agent ↔ many DAOs. Each DAO is either the local "home"
+// workspace or a registered Group from the cross-workspace GroupRegistry.
+export type DaoKind = "home" | "group";
+
+export type DaoSummary = {
+  slug: string;
+  display_name: string;
+  kind: DaoKind;
+  group_id: string;
+  description: string;
+  policy: string;
+  joined: boolean;
+  member_count: number;
+  admin_count?: number;
+};
+
+export type DaoMeta = {
+  slug: string;
+  kind: DaoKind;
+  display_name: string;
+  group_id: string;
+  description: string;
+  policy: string;
+  member_count: number;
+  admin_count?: number;
+  founder_pubkey?: string;
 };
