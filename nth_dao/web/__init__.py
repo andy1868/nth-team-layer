@@ -193,6 +193,88 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             "audit": [e.to_dict() for e in state.groups.list_audit_events(limit=50)],
         }
 
+    # v0.9.7: multi-DAO sidebar — one agent can hold many DAOs (home + groups).
+    @app.get("/api/daos")
+    def list_my_daos(actor_pubkey_hex: str = "", actor_id: str = DEFAULT_ADMIN_ID) -> dict[str, Any]:
+        return {"daos": _list_my_daos(state, actor_pubkey_hex, actor_id)}
+
+    @app.post("/api/daos/{slug}/channels")
+    def dao_create_channel(slug: str, payload: ChannelPayload) -> dict[str, Any]:
+        """Create a channel scoped to a DAO; channel_id auto-prefixed for groups."""
+        kind, _ = _resolve_dao(state, slug)
+        _require_admin(state, payload.actor_id)
+        prefix = _dao_channel_prefix(slug if kind == "group" else "")
+        bare_id = payload.channel_id or payload.name or DEFAULT_CHANNEL_ID
+        scoped_id = bare_id if bare_id.startswith(prefix) else f"{prefix}{bare_id}"
+        channel = state.groups.create_channel(
+            payload.name,
+            created_by=payload.actor_id,
+            topic=payload.topic,
+            channel_id=scoped_id,
+            is_private=payload.is_private,
+            member_ids=payload.member_ids,
+        )
+        return channel.to_dict()
+
+    @app.post("/api/daos/{slug}/messages")
+    def dao_post_message(slug: str, payload: MessagePayload) -> dict[str, Any]:
+        kind, _ = _resolve_dao(state, slug)
+        _require_member(state, payload.agent_id)
+        prefix = _dao_channel_prefix(slug if kind == "group" else "")
+        channel_id = payload.channel_id or (prefix + "general" if prefix else DEFAULT_CHANNEL_ID)
+        if prefix and not channel_id.startswith(prefix):
+            raise HTTPException(status_code=400, detail=f"channel_id must start with '{prefix}' for DAO '{slug}'")
+        msg = state.groups.post_message(channel_id, sender_id=payload.agent_id, body=payload.body)
+        return msg.to_dict()
+
+    @app.get("/api/daos/{slug}/state")
+    def dao_scoped_state(
+        slug: str,
+        agent_id: str = DEFAULT_ADMIN_ID,
+        channel_id: str = "",
+    ) -> dict[str, Any]:
+        kind, record = _resolve_dao(state, slug)
+        # Default channel per DAO: legacy `general` for home, `dao-<slug>-general` for groups.
+        prefix = _dao_channel_prefix(slug if kind == "group" else "")
+        effective_channel = channel_id or (prefix + "general" if prefix else DEFAULT_CHANNEL_ID)
+
+        _require_member_or_joinable(state, agent_id)
+        config = state.membership.load_config()
+        all_channels = state.groups.list_channels(actor_id=agent_id)
+        scoped_channels = [
+            c for c in all_channels if _dao_owns_channel(slug if kind == "group" else "", c.channel_id)
+        ]
+        scoped_announcements = [
+            a for a in state.groups.list_announcements()
+            if _dao_owns_channel(slug if kind == "group" else "", a.channel_id)
+        ]
+        scoped_tasks = [
+            t for t in state.groups.list_tasks()
+            if _dao_owns_channel(slug if kind == "group" else "", t.channel_id)
+        ]
+        # Members: home → workspace membership; group → pubkey set from GroupRecord.
+        if kind == "home":
+            members = _members(state, config)
+        else:
+            members = _members_from_group(record)  # type: ignore[arg-type]
+        dao_meta = _dao_meta_dict(slug, kind, record, member_count=len(members))
+        return {
+            "team": _team_dict(config),
+            "actor": {"agent_id": agent_id, "role": config.role_for(agent_id).value},
+            "dao": dao_meta,
+            "members": members,
+            "channels": [c.to_dict() for c in scoped_channels],
+            "messages": [
+                m.to_dict() for m in state.groups.list_messages(
+                    effective_channel, actor_id=agent_id, limit=100,
+                )
+            ] if scoped_channels or kind == "home" else [],
+            "announcements": [a.to_dict() for a in scoped_announcements],
+            "tasks": [t.to_dict() for t in scoped_tasks],
+            "audit": [e.to_dict() for e in state.groups.list_audit_events(limit=50)],
+            "active_channel_id": effective_channel,
+        }
+
     @app.post("/api/join")
     def join(payload: JoinPayload) -> dict[str, Any]:
         ok, reason = state.membership.ensure_member(payload.agent_id, token=payload.token)
@@ -651,6 +733,132 @@ def _members(state: WebState, config: TeamConfig) -> list[dict[str, Any]]:
         }
         for agent_id in sorted(config.member_ids)
     ]
+
+
+# ─── v0.9.7: multi-DAO helpers ────────────────────────────────────────────
+#
+# An agent participates in one or more DAOs:
+#   - "home" — the local workspace team (single global membership). slug="home".
+#   - "group" — any GroupRecord from the cross-workspace GroupRegistry where
+#     the agent's pubkey is in admin_pubkeys or member_pubkeys.
+#
+# DAO-scoped channels carry a `dao-<slug>-` prefix on channel_id. The home
+# DAO owns everything WITHOUT that prefix (so existing single-DAO installs
+# keep working unchanged).
+
+HOME_DAO_SLUG = "home"
+
+
+def _dao_channel_prefix(slug: str) -> str:
+    """`""` for the home DAO; `dao-<slug>-` for registered groups."""
+    if not slug or slug == HOME_DAO_SLUG:
+        return ""
+    return f"dao-{slug}-"
+
+
+def _dao_owns_channel(slug: str, channel_id: str) -> bool:
+    """True if the given channel_id belongs to the slug-scoped DAO.
+
+    Home DAO owns everything that does NOT start with `dao-`. Group DAOs own
+    only ids starting with their own `dao-<slug>-` prefix.
+    """
+    if not slug or slug == HOME_DAO_SLUG:
+        return not channel_id.startswith("dao-")
+    return channel_id.startswith(_dao_channel_prefix(slug))
+
+
+def _list_my_daos(state: WebState, actor_pubkey_hex: str, actor_id: str) -> list[dict[str, Any]]:
+    """Return [home, *joined_groups, *browsable_groups] for the sidebar.
+
+    When `actor_pubkey_hex` is empty (e.g. wallet still loading), we list
+    every group as "joinable" so the sidebar isn't empty — but `joined`
+    flags reflect actual membership.
+    """
+    config = state.membership.load_config()
+    daos: list[dict[str, Any]] = []
+    home_member_count = len(config.member_ids)
+    daos.append({
+        "slug": HOME_DAO_SLUG,
+        "display_name": config.team_name or "Home Workspace",
+        "kind": "home",
+        "group_id": "",
+        "description": "Local workspace — the team you're directly part of.",
+        "policy": config.join_policy,
+        "joined": config.role_for(actor_id).value != "guest",
+        "member_count": home_member_count,
+    })
+    actor_pk = (actor_pubkey_hex or "").lower()
+    for record in state.group_registry.list_all():
+        all_pubkeys = {p.lower() for p in (record.admin_pubkeys + record.member_pubkeys)}
+        joined = bool(actor_pk and actor_pk in all_pubkeys)
+        daos.append({
+            "slug": record.slug,
+            "display_name": record.display_name,
+            "kind": "group",
+            "group_id": record.group_id,
+            "description": record.description,
+            "policy": record.policy.value if hasattr(record.policy, "value") else str(record.policy),
+            "joined": joined,
+            "member_count": len(record.member_pubkeys),
+            "admin_count": len(record.admin_pubkeys),
+        })
+    return daos
+
+
+def _resolve_dao(state: WebState, slug: str) -> tuple[str, Optional[Any]]:
+    """Return ("home", None) or ("group", GroupRecord), or 404."""
+    if not slug or slug == HOME_DAO_SLUG:
+        return ("home", None)
+    record = state.group_registry.load_by_slug(slug)
+    if record is None:
+        # Tolerate group_id lookups too — handy when the slug is unknown to
+        # the caller but the group_id was carried over from a search result.
+        record = state.group_registry.load_by_id(slug)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"DAO '{slug}' not found")
+    return ("group", record)
+
+
+def _members_from_group(record: Any) -> list[dict[str, Any]]:
+    """Synthesize a `members` array from a GroupRecord's pubkey set.
+
+    We can't tell online/offline from the registry alone, so `online` is
+    False everywhere — the LAN-discovery layer fills that in later.
+    """
+    admin_set = {p.lower() for p in record.admin_pubkeys}
+    out: list[dict[str, Any]] = []
+    for pk in sorted(set(record.member_pubkeys + record.admin_pubkeys)):
+        out.append({
+            "agent_id": pk[:16],   # short display id
+            "role": "admin" if pk.lower() in admin_set else "member",
+            "online": False,
+            "pubkey_hex": pk,
+        })
+    return out
+
+
+def _dao_meta_dict(slug: str, kind: str, record: Any, *, member_count: int) -> dict[str, Any]:
+    if kind == "home":
+        return {
+            "slug": HOME_DAO_SLUG,
+            "kind": "home",
+            "display_name": "Home Workspace",
+            "group_id": "",
+            "description": "Local workspace — the team you're directly part of.",
+            "policy": "",
+            "member_count": member_count,
+        }
+    return {
+        "slug": record.slug,
+        "kind": "group",
+        "display_name": record.display_name,
+        "group_id": record.group_id,
+        "description": record.description,
+        "policy": record.policy.value if hasattr(record.policy, "value") else str(record.policy),
+        "member_count": member_count,
+        "admin_count": len(record.admin_pubkeys),
+        "founder_pubkey": record.founder_pubkey if hasattr(record, "founder_pubkey") else "",
+    }
 
 
 def _frontend_missing_html() -> str:
