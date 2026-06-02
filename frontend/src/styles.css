@@ -301,6 +301,96 @@ time {
   padding: 0 12px 12px;
 }
 
+/* ---------- Collapsible right-rail panels (Members / Announcement / Tasks /
+   Audit / Contacts) — replaces always-expanded sections that crowded the
+   homepage. Uses native <details>/<summary> for accessibility + zero JS. ---- */
+
+details.collapsible {
+  display: block;            /* override .panel's grid for <details> layout */
+  padding: 0;
+  overflow: hidden;
+}
+
+details.collapsible > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 10px 12px;
+  user-select: none;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+
+details.collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.collapsible > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  margin-right: 6px;
+  color: #7a5147;
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+
+details.collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.collapsible > summary:hover {
+  background: #f4f0e4;
+}
+
+details.collapsible[open] > summary {
+  border-bottom: 1px solid #ede5d0;
+  border-radius: 8px 8px 0 0;
+}
+
+.collapsible-badge {
+  color: #6e665d;
+  font-size: 12px;
+  background: #f1ecdc;
+  border: 1px solid #ddd3b8;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.collapsible-body {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.collapsible-subform {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed #d0c6ab;
+  border-radius: 6px;
+  background: #faf6e8;
+}
+
+.collapsible-subheading {
+  color: #7a5147;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.empty-inline {
+  color: #8a8377;
+  font-size: 13px;
+  text-align: center;
+  padding: 8px 0;
+}
+
+/* contacts-panel-host as collapsible: keep ContactShell flush */
+details.collapsible.contacts-panel-host .collapsible-body {
+  padding: 0 12px 12px;
+}
+
 .empty {
   color: #6e665d;
   padding: 14px;

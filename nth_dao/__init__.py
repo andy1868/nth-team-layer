@@ -196,6 +196,15 @@ from .key_recovery import (
 )
 # v0.9.5: AgentLedger persistence
 from .agent_ledger import AgentLedger, LedgerEvent
+# v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
+from .achievement import (
+    build_credential as build_achievement_credential,
+    credential_digest as achievement_credential_digest,
+    list_periods as list_achievement_periods,
+    reduce_period as reduce_achievement_period,
+    sign_credential as sign_achievement_credential,
+    verify_credential as verify_achievement_credential,
+)
 # v0.9.5: Guardian-based social recovery (N-of-M peers re-bind agent_id → new pubkey)
 from .guardian import (
     GuardianSet,
@@ -345,6 +354,13 @@ __all__ = [
     # AgentLedger (v0.9.5)
     "AgentLedger",
     "LedgerEvent",
+    # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
+    "build_achievement_credential",
+    "achievement_credential_digest",
+    "list_achievement_periods",
+    "reduce_achievement_period",
+    "sign_achievement_credential",
+    "verify_achievement_credential",
     # Guardian recovery (v0.9.5)
     "GuardianSet",
     "GuardianSignature",

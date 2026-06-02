@@ -10,6 +10,7 @@ import {
   updateTaskStatus
 } from "./api";
 import { ContactShell } from "./panels";
+import { type BrowserWallet, loadOrCreateWallet } from "./crypto";
 import type { DaoState, Summary, TaskStatus } from "./types";
 
 const defaultAgent = window.localStorage.getItem("nth-dao-agent-id") || "admin";
@@ -30,6 +31,18 @@ function App() {
   const [channelTopic, setChannelTopic] = useState("");
   const [notice, setNotice] = useState("Loading console state...");
   const [busy, setBusy] = useState(false);
+  const [wallet, setWallet] = useState<BrowserWallet | null>(null);
+  const [walletError, setWalletError] = useState<string | null>(null);
+
+  // Load (or generate on first run) the browser-resident Ed25519 wallet.
+  // Private key stays inside IndexedDB as non-extractable CryptoKey.
+  useEffect(() => {
+    let cancelled = false;
+    loadOrCreateWallet()
+      .then((w) => { if (!cancelled) setWallet(w); })
+      .catch((e: Error) => { if (!cancelled) setWalletError(e.message); });
+    return () => { cancelled = true; };
+  }, []);
 
   const activeChannel = useMemo(
     () => state?.channels.find((channel) => channel.channel_id === selectedChannel),
@@ -254,106 +267,125 @@ function App() {
         </section>
 
         <aside className="right-rail">
-          <section className="panel">
-            <div className="panel-heading">
+          <details className="panel collapsible" open>
+            <summary className="panel-heading">
               <h2>Members</h2>
-              <span>{state?.members.length ?? 0}</span>
+              <span className="collapsible-badge">{state?.members.length ?? 0}</span>
+            </summary>
+            <div className="collapsible-body">
+              <div className="member-list">
+                {state?.members.map((member) => (
+                  <div className="member" key={member.agent_id}>
+                    <span>{member.agent_id}</span>
+                    <small>{member.role}{member.online ? " online" : ""}</small>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div className="member-list">
-              {state?.members.map((member) => (
-                <div className="member" key={member.agent_id}>
-                  <span>{member.agent_id}</span>
-                  <small>{member.role}{member.online ? " online" : ""}</small>
-                </div>
-              ))}
-            </div>
-          </section>
+          </details>
 
-          <form className="panel" onSubmit={onPostAnnouncement}>
-            <div className="panel-heading">
+          <details className="panel collapsible">
+            <summary className="panel-heading">
               <h2>Announcement</h2>
-            </div>
-            <input
-              placeholder="Title"
-              value={announcementTitle}
-              onChange={(event) => setAnnouncementTitle(event.target.value)}
-            />
-            <textarea
-              placeholder="Body"
-              value={announcementBody}
-              onChange={(event) => setAnnouncementBody(event.target.value)}
-            />
-            <button type="submit" disabled={busy || !announcementTitle.trim()}>Post</button>
-          </form>
+              <span className="collapsible-badge">post</span>
+            </summary>
+            <form className="collapsible-body" onSubmit={onPostAnnouncement}>
+              <input
+                placeholder="Title"
+                value={announcementTitle}
+                onChange={(event) => setAnnouncementTitle(event.target.value)}
+              />
+              <textarea
+                placeholder="Body"
+                value={announcementBody}
+                onChange={(event) => setAnnouncementBody(event.target.value)}
+              />
+              <button type="submit" disabled={busy || !announcementTitle.trim()}>Post</button>
+            </form>
+          </details>
 
-          <form className="panel" onSubmit={onCreateTask}>
-            <div className="panel-heading">
-              <h2>Task</h2>
-            </div>
-            <input
-              placeholder="Title"
-              value={taskTitle}
-              onChange={(event) => setTaskTitle(event.target.value)}
-            />
-            <input
-              placeholder="Assignee id"
-              value={taskAssignee}
-              onChange={(event) => setTaskAssignee(event.target.value)}
-            />
-            <textarea
-              placeholder="Description"
-              value={taskDescription}
-              onChange={(event) => setTaskDescription(event.target.value)}
-            />
-            <button type="submit" disabled={busy || !taskTitle.trim()}>Create</button>
-          </form>
-
-          <section className="panel">
-            <div className="panel-heading">
+          <details className="panel collapsible">
+            <summary className="panel-heading">
               <h2>Tasks</h2>
-              <span>{state?.tasks.length ?? 0}</span>
+              <span className="collapsible-badge">{state?.tasks.length ?? 0}</span>
+            </summary>
+            <div className="collapsible-body">
+              <form className="collapsible-subform" onSubmit={onCreateTask}>
+                <p className="collapsible-subheading">New task</p>
+                <input
+                  placeholder="Title"
+                  value={taskTitle}
+                  onChange={(event) => setTaskTitle(event.target.value)}
+                />
+                <input
+                  placeholder="Assignee id"
+                  value={taskAssignee}
+                  onChange={(event) => setTaskAssignee(event.target.value)}
+                />
+                <textarea
+                  placeholder="Description"
+                  value={taskDescription}
+                  onChange={(event) => setTaskDescription(event.target.value)}
+                />
+                <button type="submit" disabled={busy || !taskTitle.trim()}>Create</button>
+              </form>
+              <div className="stack">
+                {state?.tasks.map((task) => (
+                  <article className="task" key={task.task_id}>
+                    <strong>{task.title}</strong>
+                    <small>{task.assignee_id || "unassigned"} - {task.status}</small>
+                    <select
+                      value={task.status}
+                      onChange={(event) => onUpdateTask(task.task_id, event.target.value as TaskStatus)}
+                    >
+                      {taskStatuses.map((status) => (
+                        <option key={status} value={status}>{status}</option>
+                      ))}
+                    </select>
+                  </article>
+                ))}
+                {!state?.tasks.length && <p className="empty-inline">No tasks yet.</p>}
+              </div>
             </div>
-            <div className="stack">
-              {state?.tasks.map((task) => (
-                <article className="task" key={task.task_id}>
-                  <strong>{task.title}</strong>
-                  <small>{task.assignee_id || "unassigned"} - {task.status}</small>
-                  <select
-                    value={task.status}
-                    onChange={(event) => onUpdateTask(task.task_id, event.target.value as TaskStatus)}
-                  >
-                    {taskStatuses.map((status) => (
-                      <option key={status} value={status}>{status}</option>
-                    ))}
-                  </select>
-                </article>
-              ))}
-            </div>
-          </section>
+          </details>
 
-          <section className="panel">
-            <div className="panel-heading">
+          <details className="panel collapsible">
+            <summary className="panel-heading">
               <h2>Audit</h2>
-              <span>{state?.audit.length ?? 0}</span>
+              <span className="collapsible-badge">{state?.audit.length ?? 0}</span>
+            </summary>
+            <div className="collapsible-body">
+              <div className="audit-list">
+                {state?.audit.slice().reverse().map((event) => (
+                  <article className="audit" key={event.event_id}>
+                    <strong>{event.event_type}</strong>
+                    <span>{event.summary}</span>
+                    <small>{event.actor_id} - {shortTime(event.created_at)}</small>
+                  </article>
+                ))}
+                {!state?.audit.length && <p className="empty-inline">No audit events.</p>}
+              </div>
             </div>
-            <div className="audit-list">
-              {state?.audit.slice().reverse().map((event) => (
-                <article className="audit" key={event.event_id}>
-                  <strong>{event.event_type}</strong>
-                  <span>{event.summary}</span>
-                  <small>{event.actor_id} - {shortTime(event.created_at)}</small>
-                </article>
-              ))}
-            </div>
-          </section>
+          </details>
 
-          <section className="panel contacts-panel-host">
-            <div className="panel-heading">
+          <details className="panel collapsible contacts-panel-host">
+            <summary className="panel-heading">
               <h2>Contacts / Groups</h2>
-              <span>DAO</span>
+              <span className="collapsible-badge">
+                {wallet ? "signed" : walletError ? "no-key" : "loading"}
+              </span>
+            </summary>
+            <div className="collapsible-body">
+              {walletError && (
+                <p className="empty-inline">Wallet unavailable: {walletError}</p>
+              )}
+              <ContactShell
+                actorId={agentId}
+                actorPubkeyHex={wallet?.pubkeyHex ?? ""}
+                sign={wallet?.sign}
+              />
             </div>
-            <ContactShell actorId={agentId} />
-          </section>
+          </details>
         </aside>
       </section>
     </main>

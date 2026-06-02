@@ -20,6 +20,18 @@ from .agent_registry import AgentRecord, AgentRegistry
 from .peer_finder import MatchResult, PeerFinder
 from .lan import LANDiscovery, LANPeer
 
+# Optional mDNS backend (requires `pip install nth-dao[lan]`). We re-export
+# the names with a thin try-block so `from nth_dao.discovery import MDNSDiscovery`
+# works when zeroconf is installed without forcing it on the core install.
+try:
+    from .lan_mdns import MDNSDiscovery, is_available as mdns_available
+    _MDNS_AVAILABLE = True
+except ImportError:
+    MDNSDiscovery = None  # type: ignore[assignment]
+    def mdns_available() -> bool:  # type: ignore[misc]
+        return False
+    _MDNS_AVAILABLE = False
+
 __all__ = [
     "AgentRecord",
     "AgentRegistry",
@@ -27,4 +39,6 @@ __all__ = [
     "PeerFinder",
     "LANDiscovery",
     "LANPeer",
+    "MDNSDiscovery",
+    "mdns_available",
 ]
