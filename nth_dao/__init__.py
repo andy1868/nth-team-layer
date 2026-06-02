@@ -196,6 +196,9 @@ from .key_recovery import (
 )
 # v0.9.5: AgentLedger persistence
 from .agent_ledger import AgentLedger, LedgerEvent
+# v0.9.7: EventBus — team-level signed hash-chained event stream
+# (orthogonal to AgentLedger: per-agent vs per-team)
+from .event_bus import BusEvent, EventBus, VerificationResult as EventBusVerificationResult
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
     build_credential as build_achievement_credential,
@@ -354,6 +357,10 @@ __all__ = [
     # AgentLedger (v0.9.5)
     "AgentLedger",
     "LedgerEvent",
+    # EventBus (v0.9.7) — team-level signed hash-chained event stream
+    "BusEvent",
+    "EventBus",
+    "EventBusVerificationResult",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",
