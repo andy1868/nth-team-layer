@@ -1,4 +1,4 @@
-"""Tests for nth_dao.event_bus — team-level signed hash-chained event stream.
+"""Tests for nth_dao.event_bus - team-level signed hash-chained event stream.
 
 Original EventBus design contributed by @andy1868 in PR #7. This suite
 locks in the NTH DAO standards layered on top: hash chaining, chain
@@ -43,7 +43,7 @@ def bus(tmp_path: Path, alice) -> EventBus:
     return EventBus(tmp_path, identity=alice)
 
 
-# ─── emit + basic chain ──────────────────────────────────────────────────
+# emit + basic chain
 
 
 def test_emit_assigns_seq_1_and_zero_prev_hash(bus: EventBus):
@@ -85,7 +85,7 @@ def test_emit_with_override_identity(bus: EventBus, bob):
     assert bus.verify(event) == VerificationResult.VALID
 
 
-# ─── verify_chain ────────────────────────────────────────────────────────
+# verify_chain
 
 
 def test_verify_chain_passes_clean_stream(bus: EventBus):
@@ -134,7 +134,7 @@ def test_verify_chain_detects_chain_break(bus: EventBus):
 def test_verify_chain_detects_seq_gap(bus: EventBus):
     bus.emit("a", {})
     bus.emit("a", {})
-    # drop event 2 from the file → seq jumps 1, 3
+    # drop event 2 from the file, so the next append continues from seq 1
     lines = bus.events_path.read_text(encoding="utf-8").splitlines()
     bus.events_path.write_text(lines[0] + "\n", encoding="utf-8")
     bus.emit("a", {})        # this one will record seq=2 since tail saw last_seq=1
@@ -161,8 +161,16 @@ def test_verify_chain_detects_bad_signature(bus: EventBus):
     assert "signature invalid" in reason
 
 
-# ─── replay / get ────────────────────────────────────────────────────────
+# replay / get
 
+
+
+def test_signed_event_cannot_spoof_actor_id(bus: EventBus):
+    event = bus.emit("a", {})
+    event.actor_id = "alice"
+    event.event_hash = event.compute_hash()
+    event.sig = bus.identity.sign_json(event.signable_dict())
+    assert bus.verify(event) == VerificationResult.INVALID
 
 def test_replay_yields_in_order(bus: EventBus):
     ids = [bus.emit("a", {"i": i}).event_id for i in range(4)]
@@ -214,8 +222,15 @@ def test_get_detects_stale_index(bus: EventBus):
     assert bus.get(e1.event_id) is None    # self-check rejects mismatch
 
 
-# ─── concurrency ─────────────────────────────────────────────────────────
+# concurrency
 
+
+
+def test_get_rebuilds_missing_index(bus: EventBus):
+    event = bus.emit("a", {})
+    bus.index_path.unlink()
+    assert bus.get(event.event_id).event_id == event.event_id
+    assert bus.index_path.exists()
 
 def test_concurrent_emits_keep_chain_intact(tmp_path: Path, alice):
     """Two threads pounding emit() must produce a strictly monotonic chain."""
@@ -245,21 +260,31 @@ def test_concurrent_emits_keep_chain_intact(tmp_path: Path, alice):
 def test_partial_write_at_tail_recovers(bus: EventBus):
     bus.emit("a", {})
     bus.emit("a", {})
-    # simulate a torn write — append a half line
+    # simulate a torn write by appending a half line
     with bus.events_path.open("a", encoding="utf-8") as fh:
         fh.write('{"event_type":"a","seq":3,"prev')   # no newline, no closing
     # next emit should still chain off event 2, skipping the torn line
     e3 = bus.emit("a", {"recovered": True})
     assert e3.seq == 3
     ok, reason = bus.verify_chain()
-    # The torn line is still on disk between events 2 and 3 — verify_chain
+    # verify_chain
     # treats it as a corrupt JSON line and surfaces the problem; that's the
     # right behavior for forensics. Operations cleanup is up to ops.
     assert not ok and "corrupt JSON" in reason
 
 
-# ─── stats determinism ─────────────────────────────────────────────────
+# stats determinism
 
+
+
+def test_emit_rejects_middle_corrupt_line(bus: EventBus):
+    bus.emit("a", {})
+    bus.emit("a", {})
+    lines = bus.events_path.read_text(encoding="utf-8").splitlines()
+    lines.insert(1, '{"broken"')
+    bus.events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="corrupt event JSON before tail"):
+        bus.emit("a", {})
 
 def test_agent_stats_aggregates_per_pubkey(bus: EventBus, alice, bob):
     bus.emit("agent_ledger.step.completed", {})
@@ -278,19 +303,33 @@ def test_agent_stats_aggregates_per_pubkey(bus: EventBus, alice, bob):
 
 def test_agent_stats_respects_since(bus: EventBus, alice):
     bus.emit("agent_ledger.step.completed", {})
-    # Manually rewrite first event's timestamp to a known past value
     lines = bus.events_path.read_text(encoding="utf-8").splitlines()
     first = json.loads(lines[0])
     first["timestamp"] = "2020-01-01T00:00:00"
-    # Need to re-hash + re-sign? For agent_stats which reads raw dicts,
-    # hash/sig integrity doesn't matter — only timestamp filtering does.
     lines[0] = json.dumps(first)
     bus.events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     bus.emit("agent_ledger.step.completed", {})
     from nth_dao.event_bus import _fingerprint_of
-    recent = bus.agent_stats(_fingerprint_of(alice.pubkey_hex), since="2025-01-01")
-    assert recent["steps_completed"] == 1   # the old one is excluded
+    with pytest.raises(ValueError, match="verification failed"):
+        bus.agent_stats(_fingerprint_of(alice.pubkey_hex), since="2025-01-01")
+    recent = bus.agent_stats(
+        _fingerprint_of(alice.pubkey_hex),
+        since="2025-01-01",
+        trusted=False,
+    )
+    assert recent["steps_completed"] == 1
 
+
+def test_team_stats_rejects_tampered_stream_by_default(bus: EventBus):
+    bus.emit("group.message.posted", {})
+    lines = bus.events_path.read_text(encoding="utf-8").splitlines()
+    first = json.loads(lines[0])
+    first["payload"] = {"body": "tampered"}
+    lines[0] = json.dumps(first)
+    bus.events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="verification failed"):
+        bus.team_stats()
+    assert bus.team_stats(trusted=False)["total_events"] == 1
 
 def test_team_stats_groups_by_fingerprint(bus: EventBus, alice, bob):
     bus.emit("a", {})
@@ -313,7 +352,7 @@ def test_count_filters_by_type(bus: EventBus):
     assert bus.count("missing") == 0
 
 
-# ─── facade ──────────────────────────────────────────────────────────────
+# facade
 
 
 def test_facade_reexports_event_bus():
@@ -323,7 +362,7 @@ def test_facade_reexports_event_bus():
     assert nth_dao.EventBusVerificationResult is VerificationResult
 
 
-# ─── verify_all matrix ───────────────────────────────────────────────────
+# verify_all matrix
 
 
 def test_verify_all_buckets_results(bus: EventBus, alice):
@@ -340,3 +379,8 @@ def test_verify_all_buckets_results(bus: EventBus, alice):
     assert valid == 1
     assert invalid == 1
     assert unverifiable == 0
+
+
+def test_no_mojibake_in_event_bus_source():
+    source = Path("nth_dao/event_bus.py").read_text(encoding="utf-8")
+    assert not any(token in source for token in (chr(0x9225), chr(0x9239), chr(0x6522), chr(0x6EBE), chr(0x65BA)))

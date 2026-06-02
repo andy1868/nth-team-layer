@@ -1,44 +1,43 @@
-"""EventBus — team-level signed, hash-chained append-only event stream.
+"""EventBus - team-level signed, hash-chained append-only event stream.
 
 Where ``AgentLedger`` records *one agent's* contribution events (per-pubkey
 fingerprint), ``EventBus`` records *the team's* events across all
 participating agents in a single chain. The two are orthogonal:
 
-    AgentLedger      → "what did Alice do this month?"
-    EventBus         → "what happened in this DAO, end-to-end?"
+    AgentLedger      -> "what did Alice do this month?"
+    EventBus         -> "what happened in this DAO, end-to-end?"
 
 Storage layout::
 
     <workspace>/team_audit/
-    ├── events.jsonl        # append-only signed + hash-chained events
-    └── events.index.json   # event_id → byte offset (O(1) get)
-
+    events.jsonl        # append-only signed + hash-chained events
+    events.index.json   # event_id -> byte offset (O(1) get)
 Design decisions:
 
-1.  **Hash chain** — every event carries ``prev_hash`` (the previous
+1.  **Hash chain** - every event carries ``prev_hash`` (the previous
     event's ``event_hash``) and ``event_hash = sha256(canonical_json(
     signable_dict()))``. Tampering with any historical event invalidates
     every event after it; the team can replay the stream and detect the
     cut point.
 
-2.  **Optional Ed25519 signatures** — when the emitting identity has
+2.  **Optional Ed25519 signatures** - when the emitting identity has
     PyNaCl available, the signer signs ``signable_dict()`` and the
     signature lives in ``sig``. Unsigned events still chain, but
     ``verify()`` returns ``UNSIGNED`` so downstream code can decide
     trust on its own.
 
-3.  **Cross-process safe** — every emit() takes an inter-process file
+3.  **Cross-process safe** - every emit() takes an inter-process file
     lock on the events file. The append uses ``fsync`` and the index
     update goes through ``atomic_write_json`` so a crash during write
     leaves at most one trailing partial line (which the reader skips).
 
-4.  **Streaming reads** — ``replay()`` is a generator. ``get(event_id)``
+4.  **Streaming reads** - ``replay()`` is a generator. ``get(event_id)``
     is O(1) via the offset index, with a self-check that catches
     stale indices.
 
-5.  **Deterministic stats** — ``agent_stats(fingerprint)`` and
+5.  **Deterministic stats** - ``agent_stats(fingerprint)`` and
     ``team_stats()`` fold the event stream into per-agent / cross-agent
-    summaries. Same events ⇒ same dict on any implementation that
+    summaries. Same events -> same dict on any implementation that
     re-reads ``events.jsonl``.
 
 Original design contributed by @andy1868 in PR #7. Reworked here to:
@@ -61,6 +60,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 from .identity import (
+    AgentID,
     AgentIdentity,
     _NACL_AVAILABLE,
     _VerifyKey,
@@ -99,14 +99,21 @@ def _fingerprint_of(pubkey_hex: str) -> str:
     return hashlib.sha256(pubkey_hex.encode("utf-8")).hexdigest()[:16]
 
 
+def _agent_id_for_pubkey(pubkey_hex: str) -> str:
+    try:
+        return str(AgentID.from_pubkey(pubkey_hex))
+    except Exception:
+        return ""
+
+
 class VerificationResult(str, Enum):
     """Explicit four-way verification outcome so callers can never
     silently treat an unsigned or unverifiable event as trusted."""
 
     VALID = "valid"               # signature OK
     INVALID = "invalid"           # signature present but rejected
-    UNSIGNED = "unsigned"         # no sig — emitter was anonymous
-    UNVERIFIABLE = "unverifiable"  # PyNaCl missing — cannot decide
+    UNSIGNED = "unsigned"         # no sig, emitter was anonymous
+    UNVERIFIABLE = "unverifiable"  # PyNaCl missing, cannot decide
 
 
 @dataclass
@@ -143,7 +150,7 @@ class BusEvent:
 
     def signable_dict(self) -> Dict[str, Any]:
         """The bytes that get signed AND hashed. ``sig`` and ``event_hash``
-        are excluded — they describe THIS step rather than belong to it."""
+        are excluded; they describe THIS step rather than belong to it."""
         return {
             "event_id": self.event_id,
             "event_type": self.event_type,
@@ -168,12 +175,12 @@ class BusEvent:
         if pubkey and not _is_hex(pubkey, 64):
             raise ValueError(
                 f"actor_pubkey must be 64 hex chars, got "
-                f"{len(pubkey)}-char value '{pubkey[:20]}…'"
+                f"{len(pubkey)}-char value '{pubkey[:20]}...'"
             )
         if sig and not _is_hex(sig, 128):
             raise ValueError(
                 f"sig must be 128 hex chars, got "
-                f"{len(sig)}-char value '{sig[:20]}…'"
+                f"{len(sig)}-char value '{sig[:20]}...'"
             )
         return cls(
             event_id=data.get("event_id", uuid.uuid4().hex[:16]),
@@ -213,7 +220,7 @@ class EventBus:
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.identity = identity
 
-    # ─── filesystem properties ───
+    # filesystem properties
 
     @property
     def events_dir(self) -> Path:
@@ -231,7 +238,7 @@ class EventBus:
     def can_sign(self) -> bool:
         return bool(self.identity and self.identity.can_sign)
 
-    # ─── emit ───
+    # emit
 
     def emit(
         self,
@@ -273,6 +280,12 @@ class EventBus:
             line_bytes = line.encode("utf-8") + b"\n"
             offset = self.events_path.stat().st_size if self.events_path.exists() else 0
             with self.events_path.open("ab") as fh:
+                if offset:
+                    with self.events_path.open("rb") as check:
+                        check.seek(-1, os.SEEK_END)
+                        if check.read(1) != b"\n":
+                            fh.write(b"\n")
+                            offset += 1
                 fh.write(line_bytes)
                 fh.flush()
                 os.fsync(fh.fileno())
@@ -284,33 +297,32 @@ class EventBus:
         return event
 
     def _tail_unlocked(self) -> Tuple[int, str]:
-        """Walk the file once to the last well-formed line. Returns
-        ``(seq, event_hash)`` of the last event, or ``(0, ZERO_HASH)``
-        for an empty / missing stream. Called while holding the lock
-        so no concurrent emit can interleave."""
+        """Return the last valid (seq, hash), allowing only a torn tail line."""
         if not self.events_path.exists():
             return 0, ZERO_HASH
         last_seq = 0
         last_hash = ZERO_HASH
         try:
-            with self.events_path.open("r", encoding="utf-8") as fh:
-                for raw in fh:
-                    line = raw.strip()
-                    if not line:
+            raw_bytes = self.events_path.read_bytes()
+            ends_with_newline = raw_bytes.endswith(b"\n")
+            lines = raw_bytes.decode("utf-8").splitlines()
+            for line_no, raw in enumerate(lines, start=1):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    is_tail = line_no == len(lines) and not ends_with_newline
+                    if is_tail:
                         continue
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        # Trailing partial write from a crash — ignore;
-                        # next emit naturally continues the chain.
-                        continue
-                    last_seq = int(data.get("seq", last_seq))
-                    last_hash = data.get("event_hash", last_hash) or last_hash
+                    raise RuntimeError(f"corrupt event JSON before tail on line {line_no}: {exc}") from exc
+                last_seq = int(data.get("seq", last_seq))
+                last_hash = data.get("event_hash", last_hash) or last_hash
         except OSError as exc:
             logger.warning("tail scan failed: %s", exc)
         return last_seq, last_hash
-
-    # ─── read ───
+    # read
 
     def replay(
         self,
@@ -378,7 +390,10 @@ class EventBus:
         index = self._load_index()
         offset = index.get(event_id)
         if offset is None:
-            return None
+            self.rebuild_index()
+            offset = self._load_index().get(event_id)
+            if offset is None:
+                return None
         try:
             with self.events_path.open("rb") as fh:
                 fh.seek(offset)
@@ -388,7 +403,7 @@ class EventBus:
                 event = BusEvent.from_dict(json.loads(line))
                 if event.event_id != event_id:
                     logger.warning(
-                        "index offset %d for %s returned event %s — index stale",
+                        "index offset %d for %s returned event %s; index stale",
                         offset, event_id, event.event_id,
                     )
                     return None
@@ -398,14 +413,16 @@ class EventBus:
                            event_id, offset, exc)
             return None
 
-    # ─── verify ───
+    # verify
 
     def verify(self, event: BusEvent) -> VerificationResult:
         """Check one event's Ed25519 signature in isolation. Does NOT
-        check chain integrity — use ``verify_chain()`` for that."""
+        check chain integrity; use ``verify_chain()`` for that."""
         if not event.sig:
             return VerificationResult.UNSIGNED
         if not _is_hex(event.actor_pubkey, 64):
+            return VerificationResult.INVALID
+        if event.actor_id != _agent_id_for_pubkey(event.actor_pubkey):
             return VerificationResult.INVALID
         if not _NACL_AVAILABLE:
             return VerificationResult.UNVERIFIABLE
@@ -428,7 +445,7 @@ class EventBus:
         - if ``sig`` present: signature verifies under ``actor_pubkey``
 
         Returns ``(ok, reason)``. First failure short-circuits with
-        the offending event_id in the reason — perfect for forensic
+        the offending event_id in the reason; useful for forensic
         diffing against a suspected-good copy."""
         if not self.events_path.exists():
             return True, "ok (empty)"
@@ -466,14 +483,14 @@ class EventBus:
                 prev_hash = event.event_hash
                 expected_seq += 1
         if unverifiable_seen:
-            return True, "ok (some events unverifiable — install PyNaCl to recheck)"
+            return True, "ok (some events unverifiable; install PyNaCl to recheck)"
         return True, "ok"
 
     def verify_all(
         self, event_types: Optional[List[str]] = None
     ) -> Tuple[int, int, int, int]:
         """Per-event signature audit; returns ``(total, valid, invalid,
-        unverifiable)``. Independent of chain integrity — pair with
+        unverifiable)``. Independent of chain integrity; pair with
         ``verify_chain()`` for the full picture."""
         total = valid = invalid = unverifiable = 0
         for event in self.replay(event_types=event_types):
@@ -487,12 +504,14 @@ class EventBus:
                 unverifiable += 1
         return total, valid, invalid, unverifiable
 
-    # ─── stats ───
+    # stats
 
     def agent_stats(
         self,
         fingerprint: str,
         since: Optional[str] = None,
+        *,
+        trusted: bool = True,
     ) -> Dict[str, Any]:
         """Fold the stream into one agent's contribution summary.
         Mirrors AgentLedger.stats() field names so consumers can fall
@@ -510,7 +529,8 @@ class EventBus:
             "total_events": 0,
             "since": since or "",
         }
-        for event in self._stream_raw():
+        for item in self._stream_for_stats(trusted=trusted):
+            event = item.to_dict() if isinstance(item, BusEvent) else item
             actor_pubkey = event.get("actor_pubkey", "")
             if not actor_pubkey or _fingerprint_of(actor_pubkey) != fingerprint:
                 continue
@@ -537,13 +557,14 @@ class EventBus:
                 stats["missions_owned"] += 1
         return stats
 
-    def team_stats(self) -> Dict[str, Any]:
+    def team_stats(self, *, trusted: bool = True) -> Dict[str, Any]:
         """Cross-agent rollup: agent_count + total_events + per-agent
         event counts + last_active_at. Useful as a cheap dashboard
         endpoint without materialising the whole stream client-side."""
         agents: Dict[str, Dict[str, Any]] = {}
         total = 0
-        for event in self._stream_raw():
+        for item in self._stream_for_stats(trusted=trusted):
+            event = item.to_dict() if isinstance(item, BusEvent) else item
             total += 1
             actor_pubkey = event.get("actor_pubkey", "")
             fp = _fingerprint_of(actor_pubkey) if actor_pubkey else ""
@@ -568,7 +589,36 @@ class EventBus:
                 n += 1
         return n
 
-    # ─── helpers ───
+    # helpers
+
+    def _stream_for_stats(self, *, trusted: bool) -> Iterator[Union[BusEvent, Dict[str, Any]]]:
+        if not trusted:
+            yield from self._stream_raw()
+            return
+        ok, reason = self.verify_chain()
+        if not ok:
+            raise ValueError(f"event stream verification failed: {reason}")
+        for event in self.replay():
+            if self.verify(event) == VerificationResult.VALID:
+                yield event
+
+    def rebuild_index(self) -> Dict[str, int]:
+        """Rebuild the event_id -> byte offset index from events.jsonl."""
+        self.events_dir.mkdir(parents=True, exist_ok=True)
+        index: Dict[str, int] = {}
+        offset = 0
+        if self.events_path.exists():
+            with self.events_path.open("rb") as fh:
+                for raw in fh:
+                    try:
+                        event = BusEvent.from_dict(json.loads(raw.decode("utf-8")))
+                    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+                        offset += len(raw)
+                        continue
+                    index[event.event_id] = offset
+                    offset += len(raw)
+        atomic_write_json(self.index_path, index)
+        return index
 
     def _stream_raw(self) -> Iterator[Dict[str, Any]]:
         """Yield raw dicts (faster than instantiating BusEvent) for
@@ -597,7 +647,7 @@ class EventBus:
             if isinstance(v, int):
                 index[str(k)] = v
             elif isinstance(v, float):
-                logger.warning("index %s has float value %.1f — treated as corrupt", k, v)
+                logger.warning("index %s has float value %.1f; treated as corrupt", k, v)
         return index
 
 
