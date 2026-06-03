@@ -77,8 +77,13 @@ logger = logging.getLogger("nth_dao.event_bus")
 DEFAULT_EVENTS_DIR = "team_audit"
 DEFAULT_EVENTS_FILE = "events.jsonl"
 DEFAULT_INDEX_FILE = "events.index.json"
+DEFAULT_CORRECTIONS_INDEX_FILE = "corrections.index.json"
 
 ZERO_HASH = "0" * 64
+
+import re
+
+_EVENT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _is_hex(value: str, expected_len: int) -> bool:
@@ -249,6 +254,10 @@ class EventBus:
         return self.events_dir / DEFAULT_INDEX_FILE
 
     @property
+    def corrections_index_path(self) -> Path:
+        return self.events_dir / DEFAULT_CORRECTIONS_INDEX_FILE
+
+    @property
     def can_sign(self) -> bool:
         return bool(self.identity and self.identity.can_sign)
 
@@ -320,6 +329,13 @@ class EventBus:
         check ``get_corrections_for()`` to discover whether an event they
         are about to act on has been superseded.
 
+        **Authorization:** Only the original emitter (matched by Ed25519
+        pubkey) may correct an event.  Emitting without an identity, or
+        with a different identity, raises ``ValueError``.  The one
+        exception is events that were emitted unsigned — any signed
+        identity may correct those (they had no original author to
+        protect).
+
         ``correction_type`` is one of ``CorrectionType``:
 
         - ``DEPRECATED`` — still true but no longer actionable.
@@ -329,13 +345,43 @@ class EventBus:
           (compromised credential, faulty agent run, etc.).
 
         ``reason`` is human-readable but optional. ``corrected_payload``
-        carries the fixed data and is only meaningful with CORRECTED.
+        carries the fixed data and is ONLY accepted with CORRECTED;
+        passing it with DEPRECATED or RETRACTED raises ``ValueError``.
 
-        Raises ``ValueError`` if ``original_event_id`` is empty.
+        Raises ``ValueError`` if ``original_event_id`` is empty or
+        malformed, or if the emitter is not authorised.
         """
-        if not original_event_id or not original_event_id.strip():
-            raise ValueError("original_event_id must be non-empty")
+        # ── validate original_event_id ──
+        if not _EVENT_ID_RE.match(original_event_id):
+            raise ValueError(
+                f"original_event_id must be 16 hex chars, got {original_event_id!r}"
+            )
 
+        # ── validate corrected_payload only with CORRECTED ──
+        if correction_type != CorrectionType.CORRECTED and corrected_payload is not None:
+            raise ValueError(
+                f"corrected_payload is only meaningful with CORRECTED, "
+                f"not {correction_type.value}"
+            )
+
+        # ── authorisation check ──
+        signer = identity or self.identity
+        original = self.get(original_event_id)
+        if original is not None and original.actor_pubkey:
+            # Original was signed — only the same pubkey may correct it
+            if signer is None or not signer.can_sign:
+                raise ValueError(
+                    f"cannot correct signed event {original_event_id}: "
+                    f"no signing identity provided"
+                )
+            if signer.pubkey_hex != original.actor_pubkey:
+                raise ValueError(
+                    f"cannot correct event {original_event_id}: "
+                    f"emitter pubkey {signer.pubkey_hex[:16]}... does not "
+                    f"match original author {original.actor_pubkey[:16]}..."
+                )
+
+        # ── emit ──
         payload: Dict[str, Any] = {
             "original_event_id": original_event_id,
             "correction_type": correction_type.value,
@@ -344,11 +390,27 @@ class EventBus:
         if corrected_payload is not None:
             payload["corrected_payload"] = corrected_payload
 
-        return self.emit("event.correction", payload, identity=identity)
+        event = self.emit("event.correction", payload, identity=identity)
+
+        # ── update secondary index (best-effort outside emit lock) ──
+        try:
+            cidx = self._load_corrections_index()
+            entry = cidx.setdefault(original_event_id, [])
+            if event.event_id not in entry:
+                entry.append(event.event_id)
+            atomic_write_json(self.corrections_index_path, cidx)
+        except OSError as exc:
+            logger.warning("corrections index update failed: %s", exc)
+
+        return event
 
     def get_corrections_for(self, original_event_id: str) -> Iterator[BusEvent]:
         """Yield every ``event.correction`` that references the given
         ``original_event_id``, in stream order.
+
+        Uses an O(1) secondary index (``corrections.index.json``) for
+        lookup; falls back to a full stream scan only when the index is
+        missing or corrupt.
 
         The stream MAY contain multiple corrections for one event
         (e.g. first DEPRECATED, later RETRACTED). Consumers should
@@ -356,6 +418,18 @@ class EventBus:
         """
         if not original_event_id:
             return
+
+        # Fast path: use the secondary index
+        cidx = self._load_corrections_index()
+        correction_ids = cidx.get(original_event_id, [])
+        if correction_ids:
+            for event_id in correction_ids:
+                event = self.get(event_id)
+                if event is not None:
+                    yield event
+            return
+
+        # Slow path: full scan (first use, or index missing after crash)
         for event in self.replay(event_types=["event.correction"]):
             p = event.payload
             if isinstance(p, dict) and p.get("original_event_id") == original_event_id:
@@ -680,6 +754,40 @@ class EventBus:
                 logger.warning("index %s has float value %.1f — treated as corrupt", k, v)
         return index
 
+    def _load_corrections_index(self) -> Dict[str, List[str]]:
+        """Load the corrections secondary index::
+
+            {"<original_event_id>": ["<correction_event_id>", ...]}
+
+        Uses the same ``safe_load_json`` pattern as the main events
+        index so corrupt files simply degrade to the slow path.
+        """
+        data = safe_load_json(self.corrections_index_path, fallback=None)
+        if not isinstance(data, dict):
+            return {}
+        cidx: Dict[str, List[str]] = {}
+        for k, v in data.items():
+            if isinstance(v, list):
+                cidx[str(k)] = [str(eid) for eid in v if isinstance(eid, str)]
+        return cidx
+
+    def _rebuild_corrections_index(self) -> Dict[str, List[str]]:
+        """Full-stream scan to rebuild a lost or corrupt corrections
+        index.  Safe to call at any time — it reads the stream and
+        writes ``corrections.index.json`` atomically."""
+        cidx: Dict[str, List[str]] = {}
+        for event in self.replay(event_types=["event.correction"]):
+            p = event.payload
+            if isinstance(p, dict):
+                oid = p.get("original_event_id", "")
+                if oid:
+                    cidx.setdefault(oid, []).append(event.event_id)
+        try:
+            atomic_write_json(self.corrections_index_path, cidx)
+        except OSError as exc:
+            logger.warning("rebuild corrections index failed: %s", exc)
+        return cidx
+
 
 __all__ = [
     "BusEvent",
@@ -690,4 +798,5 @@ __all__ = [
     "DEFAULT_EVENTS_DIR",
     "DEFAULT_EVENTS_FILE",
     "DEFAULT_INDEX_FILE",
+    "DEFAULT_CORRECTIONS_INDEX_FILE",
 ]
