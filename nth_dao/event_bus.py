@@ -109,6 +109,27 @@ class VerificationResult(str, Enum):
     UNVERIFIABLE = "unverifiable"  # PyNaCl missing — cannot decide
 
 
+class CorrectionType(str, Enum):
+    """Standard semantic types for event corrections.
+
+    These are agent-first error patterns — not human social UX
+    (message recall, typo edits). Agents don't make typos; they make
+    deterministic mistakes:
+
+    - ``DEPRECATED`` — the event was valid at the time but is no longer
+      actionable (e.g. a deployment URL that has since rotated).
+    - ``CORRECTED`` — the event carried wrong data; the correction
+      carries ``corrected_payload`` with the right values.
+    - ``RETRACTED`` — the event should not have been emitted at all
+      (e.g. it was produced by a compromised credential). The audit
+      trail preserves the original; consumers MUST treat it as void.
+    """
+
+    DEPRECATED = "DEPRECATED"
+    CORRECTED = "CORRECTED"
+    RETRACTED = "RETRACTED"
+
+
 @dataclass
 class BusEvent:
     """One signed, hash-chained event on the team stream.
@@ -282,6 +303,65 @@ class EventBus:
             atomic_write_json(self.index_path, index)
 
         return event
+
+    def correct(
+        self,
+        original_event_id: str,
+        correction_type: CorrectionType,
+        *,
+        reason: str = "",
+        corrected_payload: Optional[Dict[str, Any]] = None,
+        identity: Optional[AgentIdentity] = None,
+    ) -> BusEvent:
+        """Emit an ``event.correction`` that references a prior event.
+
+        The original event is NEVER deleted or mutated — it stays in the
+        stream as an auditable record. Consumers reading the stream should
+        check ``get_corrections_for()`` to discover whether an event they
+        are about to act on has been superseded.
+
+        ``correction_type`` is one of ``CorrectionType``:
+
+        - ``DEPRECATED`` — still true but no longer actionable.
+        - ``CORRECTED`` — the original data was wrong; see
+          ``corrected_payload`` for the right version.
+        - ``RETRACTED`` — the original event MUST be treated as void
+          (compromised credential, faulty agent run, etc.).
+
+        ``reason`` is human-readable but optional. ``corrected_payload``
+        carries the fixed data and is only meaningful with CORRECTED.
+
+        Raises ``ValueError`` if ``original_event_id`` is empty.
+        """
+        if not original_event_id or not original_event_id.strip():
+            raise ValueError("original_event_id must be non-empty")
+
+        payload: Dict[str, Any] = {
+            "original_event_id": original_event_id,
+            "correction_type": correction_type.value,
+            "reason": reason,
+        }
+        if corrected_payload is not None:
+            payload["corrected_payload"] = corrected_payload
+
+        return self.emit("event.correction", payload, identity=identity)
+
+    def get_corrections_for(self, original_event_id: str) -> Iterator[BusEvent]:
+        """Yield every ``event.correction`` that references the given
+        ``original_event_id``, in stream order.
+
+        The stream MAY contain multiple corrections for one event
+        (e.g. first DEPRECATED, later RETRACTED). Consumers should
+        normally act on the *last* correction.
+        """
+        if not original_event_id:
+            return
+        for event in self.replay(event_types=["event.correction"]):
+            p = event.payload
+            if isinstance(p, dict) and p.get("original_event_id") == original_event_id:
+                yield event
+
+    # ─── internal ───
 
     def _tail_unlocked(self) -> Tuple[int, str]:
         """Walk the file once to the last well-formed line. Returns
@@ -603,6 +683,7 @@ class EventBus:
 
 __all__ = [
     "BusEvent",
+    "CorrectionType",
     "EventBus",
     "VerificationResult",
     "ZERO_HASH",
