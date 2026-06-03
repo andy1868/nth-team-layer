@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from .agent_registry import AgentRecord, AgentRegistry
+from .agent_registry import AgentRecord, AgentRegistry, CapacityStatus
 
 
 @dataclass
@@ -88,16 +88,18 @@ class PeerFinder:
         self,
         needed_capabilities: List[str],
         prefer_idle: bool = True,
+        prefer_available: bool = True,
         prefer_group: Optional[str] = None,
         prefer_hostname: Optional[str] = None,
         exclude_agent_ids: Optional[List[str]] = None,
         only_alive: bool = True,
         min_match: int = 1,
     ) -> Optional[MatchResult]:
-        """返回最佳匹配；min_match=N 要求至少匹中 N 个 capability。"""
+        """Return the single best-scored match."""
         results = self.rank(
             needed_capabilities=needed_capabilities,
             prefer_idle=prefer_idle,
+            prefer_available=prefer_available,
             prefer_group=prefer_group,
             prefer_hostname=prefer_hostname,
             exclude_agent_ids=exclude_agent_ids,
@@ -110,18 +112,20 @@ class PeerFinder:
         self,
         needed_capabilities: List[str],
         prefer_idle: bool = True,
+        prefer_available: bool = True,
         prefer_group: Optional[str] = None,
         prefer_hostname: Optional[str] = None,
         exclude_agent_ids: Optional[List[str]] = None,
         only_alive: bool = True,
         min_match: int = 1,
     ) -> List[MatchResult]:
-        """按 score 排序的匹配结果。
+        """Score and sort candidates by capability match + capacity.
 
         Args:
-            min_match: 最少需要匹中的 capability 数。默认 1（至少 1 个 cap 匹中）。
-                       传 0 时退化为"任何活着的 agent"——之前 min_score=0.5 的旧行为
-                       会返回 0 个 cap 匹中但 idle 的 agent，这是 H-6 的坑。
+            min_match: Minimum number of matched capabilities (default 1).
+            prefer_available: When True, exclude OVERLOADED agents and
+                boost low-queue-depth agents. When False, include
+                everyone regardless of capacity.
         """
         candidates = (
             self.registry.list_alive() if only_alive else self.registry.list_all()
@@ -135,10 +139,27 @@ class PeerFinder:
             matched = [c for c in needed_capabilities if c in r.capabilities]
             if len(matched) < min_match:
                 continue
+
+            # Exclude overloaded agents when capacity-aware routing is on
+            if prefer_available and r.capacity_status == CapacityStatus.OVERLOADED:
+                continue
+
             score = float(len(matched))
 
             if prefer_idle and r.status == "idle":
                 score += 0.5
+            if prefer_available:
+                # Capacity bonus: lower queue = higher score
+                # IDLE agents (queue=0) get +1.0; BUSY agents get
+                # proportional bonus based on remaining capacity
+                if r.queue_depth == 0:
+                    score += 1.0
+                elif r.max_concurrent_tasks > 0:
+                    free_slots = r.max_concurrent_tasks - r.queue_depth
+                    score += max(0.0, 0.5 * free_slots / r.max_concurrent_tasks)
+                # Penalise long wait times
+                if r.estimated_wait_seconds > 0:
+                    score -= min(0.5, r.estimated_wait_seconds / 120.0)
             if prefer_group and prefer_group in r.groups:
                 score += 0.3
             if prefer_hostname and r.hostname == prefer_hostname:
@@ -150,6 +171,28 @@ class PeerFinder:
 
         results.sort(key=lambda x: x.score, reverse=True)
         return results
+
+    def find_available(
+        self,
+        capability: Optional[str] = None,
+        only_alive: bool = True,
+        exclude_agent_ids: Optional[List[str]] = None,
+    ) -> List[AgentRecord]:
+        """Return agents that can accept new work — not OFFLINE and not
+        OVERLOADED.  Useful for orchestrators that need to route a task
+        to ANY available agent with a given capability."""
+        candidates = (
+            self.registry.list_alive() if only_alive else self.registry.list_all()
+        )
+        if exclude_agent_ids:
+            excl = set(exclude_agent_ids)
+            candidates = [r for r in candidates if r.agent_id not in excl]
+        if capability is not None:
+            candidates = [r for r in candidates if capability in r.capabilities]
+        return [
+            r for r in candidates
+            if r.capacity_status not in (CapacityStatus.OFFLINE, CapacityStatus.OVERLOADED)
+        ]
 
     #
 
@@ -295,19 +338,21 @@ def _score_record(record, q: str, fields):
 
 
 def _summary_table_impl(registry):
-    """ASCII table of alive agents."""
+    """ASCII table of alive agents with capacity info."""
     records = registry.list_alive()
     if not records:
         return "(no agents online)"
     lines = [
-        f"{'agent_id':25s} | {'backend':12s} | {'status':8s} | {'capabilities':30s} | last_seen",
-        "-" * 100,
+        f"{'agent_id':25s} | {'backend':12s} | {'capacity':10s} | {'q':>3s} | {'capabilities':30s} | last_seen",
+        "-" * 110,
     ]
     for r in records:
         caps = ",".join(r.capabilities[:3])
         if len(r.capabilities) > 3:
             caps += f"+{len(r.capabilities) - 3}"
+        cap_status = r.capacity_status.value
+        wait_str = f"{r.estimated_wait_seconds:.0f}s" if r.estimated_wait_seconds > 0 else ""
         lines.append(
-            f"{r.agent_id:25s} | {r.backend_id:12s} | {r.status:8s} | {caps:30s} | {r.last_seen[:19]}"
+            f"{r.agent_id:25s} | {r.backend_id:12s} | {cap_status:10s} | {r.queue_depth:3d} | {caps:30s} | {r.last_seen[:19]}"
         )
     return "\n".join(lines)

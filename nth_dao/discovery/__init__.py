@@ -16,7 +16,7 @@ Three layers, increasing scope:
    network. No git_sync, no shared filesystem required — pure broadcast.
 """
 
-from .agent_registry import AgentRecord, AgentRegistry
+from .agent_registry import AgentRecord, AgentRegistry, CapacityStatus
 from .peer_finder import MatchResult, PeerFinder
 from .lan import LANDiscovery, LANPeer
 
@@ -35,6 +35,7 @@ except ImportError:
 __all__ = [
     "AgentRecord",
     "AgentRegistry",
+    "CapacityStatus",
     "MatchResult",
     "PeerFinder",
     "LANDiscovery",

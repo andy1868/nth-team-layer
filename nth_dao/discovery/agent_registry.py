@@ -24,6 +24,7 @@ import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -38,6 +39,27 @@ logger = logging.getLogger("nth_dao.discovery")
 DEFAULT_AGENTS_DIR = "team_agents"
 
 
+class CapacityStatus(str, Enum):
+    """Quantitative capacity states for agent workload declaration.
+
+    Designed for orchestrator routing decisions, NOT human presence UI.
+    Agents self-report their queue depth and max concurrency; the
+    ``capacity_status`` property on ``AgentRecord`` derives the semantic
+    state from those raw numbers.
+
+    - ``IDLE`` — queue is empty, ready for immediate work.
+    - ``BUSY`` — has tasks but still under max capacity.
+    - ``OVERLOADED`` — queue >= max_concurrent_tasks; should not
+      receive new work until the backlog clears.
+    - ``OFFLINE`` — agent is shut down (heartbeat tombstone).
+    """
+
+    IDLE = "idle"
+    BUSY = "busy"
+    OVERLOADED = "overloaded"
+    OFFLINE = "offline"
+
+
 @dataclass
 class AgentRecord:
     """One agent's discovery record (persisted as team_agents/{agent_id}.json)."""
@@ -49,10 +71,31 @@ class AgentRecord:
     groups: List[str] = field(default_factory=list)        # e.g. ["frontend", "ops"]
     status: str = "idle"                # idle / busy / blocked / offline
     current_mission: Optional[str] = None
+    # ── capacity fields ──
+    queue_depth: int = 0                # tasks currently queued
+    estimated_wait_seconds: float = 0.0  # estimated time until next free slot
+    max_concurrent_tasks: int = 3       # soft cap; agent sets its own limit
+    # ── ──
     metadata: Dict[str, Any] = field(default_factory=dict)
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
     instance_token: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+
+    @property
+    def capacity_status(self) -> CapacityStatus:
+        """Derived semantic state from queue_depth + max_concurrent_tasks.
+
+        - queue_depth == 0 → IDLE
+        - 0 < queue_depth < max_concurrent_tasks → BUSY
+        - queue_depth >= max_concurrent_tasks → OVERLOADED
+        """
+        if self.status == "offline":
+            return CapacityStatus.OFFLINE
+        if self.queue_depth == 0:
+            return CapacityStatus.IDLE
+        if self.queue_depth < self.max_concurrent_tasks:
+            return CapacityStatus.BUSY
+        return CapacityStatus.OVERLOADED
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -158,6 +201,30 @@ class AgentRegistry:
             self._record.current_mission = current_mission
         if metadata_patch:
             self._record.metadata.update(metadata_patch)
+        self._record.last_seen = datetime.now().isoformat()
+        self._write(self._record)
+
+    def update_capacity(
+        self,
+        queue_depth: Optional[int] = None,
+        estimated_wait_seconds: Optional[float] = None,
+        max_concurrent_tasks: Optional[int] = None,
+    ) -> None:
+        """Declare quantitative workload so orchestrators can route
+        tasks to the least-loaded capable agent.
+
+        All parameters are optional — only provided fields are patched.
+        Negative ``queue_depth`` is clamped to 0; negative
+        ``estimated_wait_seconds`` is clamped to 0.0.
+        """
+        if self._record is None:
+            raise RuntimeError("call register() first")
+        if queue_depth is not None:
+            self._record.queue_depth = max(0, queue_depth)
+        if estimated_wait_seconds is not None:
+            self._record.estimated_wait_seconds = max(0.0, estimated_wait_seconds)
+        if max_concurrent_tasks is not None:
+            self._record.max_concurrent_tasks = max(1, max_concurrent_tasks)
         self._record.last_seen = datetime.now().isoformat()
         self._write(self._record)
 
