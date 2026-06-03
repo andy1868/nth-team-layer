@@ -47,6 +47,15 @@ class CapacityStatus(str, Enum):
     ``capacity_status`` property on ``AgentRecord`` derives the semantic
     state from those raw numbers.
 
+    .. warning::
+
+       Capacity fields (``queue_depth``, ``estimated_wait_seconds``,
+       ``max_concurrent_tasks``) are **self-reported and unverified**.
+       Consumers SHOULD cross-reference with ``AgentLedger.stats()``
+       (actual throughput) and ``reputation.get_score()`` before
+       treating capacity declarations as truth.  ``PeerFinder.rank()``
+       treats capacity bonuses as *hints*, not guarantees.
+
     - ``IDLE`` — queue is empty, ready for immediate work.
     - ``BUSY`` — has tasks but still under max capacity.
     - ``OVERLOADED`` — queue >= max_concurrent_tasks; should not
@@ -85,15 +94,19 @@ class AgentRecord:
     def capacity_status(self) -> CapacityStatus:
         """Derived semantic state from queue_depth + max_concurrent_tasks.
 
+        Clamps negative ``queue_depth`` to 0 — a record loaded from a
+        corrupt or tampered file should never report a bogus status.
+
         - queue_depth == 0 → IDLE
         - 0 < queue_depth < max_concurrent_tasks → BUSY
         - queue_depth >= max_concurrent_tasks → OVERLOADED
         """
         if self.status == "offline":
             return CapacityStatus.OFFLINE
-        if self.queue_depth == 0:
+        qd = max(0, self.queue_depth)
+        if qd == 0:
             return CapacityStatus.IDLE
-        if self.queue_depth < self.max_concurrent_tasks:
+        if qd < self.max_concurrent_tasks:
             return CapacityStatus.BUSY
         return CapacityStatus.OVERLOADED
 
@@ -117,9 +130,10 @@ class AgentRecord:
     def short(self) -> str:
         marker = "*" if self.is_alive() else "-"
         cap_str = ",".join(self.capabilities[:3]) or "-"
+        cap_label = self.capacity_status.value
         return (
             f"{marker} {self.agent_id:20s} backend={self.backend_id:12s} "
-            f"caps=[{cap_str}] status={self.status}"
+            f"caps=[{cap_str}] status={self.status} {cap_label} q={self.queue_depth}"
         )
 
 
@@ -216,6 +230,13 @@ class AgentRegistry:
         All parameters are optional — only provided fields are patched.
         Negative ``queue_depth`` is clamped to 0; negative
         ``estimated_wait_seconds`` is clamped to 0.0.
+
+        .. warning::
+
+           These values are **self-reported and unverified**.  A busy
+           or malicious agent can claim ``queue_depth=0`` regardless
+           of its actual workload.  Consumers SHOULD cross-reference
+           with ``AgentLedger.stats()`` for actual throughput.
         """
         if self._record is None:
             raise RuntimeError("call register() first")

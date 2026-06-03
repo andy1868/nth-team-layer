@@ -79,6 +79,25 @@ def test_agent_record_capacity_status_property():
     assert r.capacity_status == CapacityStatus.OVERLOADED
 
 
+def test_capacity_status_clamps_negative_queue_depth():
+    """Negative queue_depth (corrupt file / direct construction) clamps
+    to 0 — never produces a bogus capacity status."""
+    r = AgentRecord(agent_id="x", hostname="h", pid=1,
+                    queue_depth=-5, max_concurrent_tasks=3)
+    assert r.capacity_status == CapacityStatus.IDLE  # clamped to 0
+
+    r.queue_depth = -1
+    r.max_concurrent_tasks = 5
+    assert r.capacity_status == CapacityStatus.IDLE  # clamped to 0
+
+
+def test_capacity_status_offline_trumps_negative_queue():
+    """OFFLINE status takes priority regardless of queue_depth value."""
+    r = AgentRecord(agent_id="x", hostname="h", pid=1,
+                    queue_depth=-5, status="offline")
+    assert r.capacity_status == CapacityStatus.OFFLINE
+
+
 # ─── AgentRegistry.update_capacity() ─────────────────────────────────────
 
 

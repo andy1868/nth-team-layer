@@ -105,13 +105,19 @@ def test_search_group_match(tmp_path):
 
 
 def test_search_idle_bonus_breaks_ties(tmp_path):
-    reg = _seed_registry(tmp_path, [
-        _rec("alice-busy", status="busy"),
-        _rec("alice-idle", status="idle"),
-    ])
+    """Idle agents (queue_depth=0) rank above busy ones with the same
+    fuzzy search score.  The busy agent has queue_depth=1 so it only
+    gets the proportional bonus."""
+    alice_busy = _rec("alice-busy", status="busy")
+    alice_busy.queue_depth = 1
+    alice_busy.max_concurrent_tasks = 5
+    alice_idle = _rec("alice-idle", status="idle")
+    alice_idle.queue_depth = 0
+
+    reg = _seed_registry(tmp_path, [alice_busy, alice_idle])
     finder = PeerFinder(reg)
     results = finder.search("alice")
-    # Both have prefix match equal score; idle wins via +0.5 bonus
+    # Both have prefix match equal score; idle wins via queue_depth=0 bonus
     assert results[0].record.agent_id == "alice-idle"
 
 
