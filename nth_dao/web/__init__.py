@@ -6,17 +6,23 @@ membership and group APIs without bypassing their permission checks.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+logger = logging.getLogger("nth_dao.web")
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from nth_dao.agent_code import code_for_agent_id, code_for_pubkey, parse_code
+from nth_dao.demo_responder import DEFAULT_AGENT_ID as ECHO_AGENT_ID
+from nth_dao.demo_responder import maybe_reply as _demo_maybe_reply
 from nth_dao.discovery import AgentRegistry, LANDiscovery, PeerFinder
 from nth_dao.groups import DEFAULT_CHANNEL_ID, GroupManager, TaskStatus
 from nth_dao.group_registry import (
@@ -164,7 +170,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
     app.state.nth = state
 
     @app.get("/api/summary")
-    def summary() -> dict[str, Any]:
+    def summary(actor_id: str = DEFAULT_ADMIN_ID) -> dict[str, Any]:
         config = state.membership.load_config()
         return {
             "team": _team_dict(config),
@@ -176,6 +182,10 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             "active_missions": len(state.missions.list_active()),
             "blackboard_entries": len(state.blackboard.list()),
             "server_time": datetime.now().isoformat(),
+            # v0.9.8: surface the caller's stable visible code so the UI
+            # can show "Your code: a3f7-b2e8" in the header without an
+            # extra round-trip.
+            "actor_code": code_for_agent_id(actor_id),
         }
 
     @app.get("/api/state")
@@ -184,7 +194,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         config = state.membership.load_config()
         return {
             "team": _team_dict(config),
-            "actor": {"agent_id": agent_id, "role": config.role_for(agent_id).value},
+            "actor": _actor_dict(agent_id, config.role_for(agent_id).value),
             "members": _members(state, config),
             "channels": [c.to_dict() for c in state.groups.list_channels(actor_id=agent_id)],
             "messages": [m.to_dict() for m in state.groups.list_messages(channel_id, actor_id=agent_id, limit=100)],
@@ -218,14 +228,36 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/daos/{slug}/messages")
     def dao_post_message(slug: str, payload: MessagePayload) -> dict[str, Any]:
-        kind, _ = _resolve_dao(state, slug)
+        kind, record = _resolve_dao(state, slug)
         _require_member(state, payload.agent_id)
         prefix = _dao_channel_prefix(slug if kind == "group" else "")
         channel_id = payload.channel_id or (prefix + "general" if prefix else DEFAULT_CHANNEL_ID)
         if prefix and not channel_id.startswith(prefix):
             raise HTTPException(status_code=400, detail=f"channel_id must start with '{prefix}' for DAO '{slug}'")
         msg = state.groups.post_message(channel_id, sender_id=payload.agent_id, body=payload.body)
-        return msg.to_dict()
+        # v0.9.8: fire the responder for this DAO too. Policy / description
+        # come from the GroupRecord when present so opt-in heuristics
+        # ("demo" in name, "open" policy) work per DAO.
+        dao_policy = ""
+        dao_description = ""
+        if record is not None:
+            dao_policy = record.policy.value if hasattr(record.policy, "value") else str(record.policy)
+            dao_description = getattr(record, "description", "")
+        else:
+            dao_policy = state.membership.load_config().join_policy
+        reply = _demo_maybe_reply(
+            state.groups,
+            dao_slug=slug,
+            channel_id=channel_id,
+            sender_id=payload.agent_id,
+            body=payload.body,
+            dao_policy=dao_policy,
+            dao_description=dao_description,
+        )
+        result = msg.to_dict()
+        if reply:
+            result["echo_reply"] = reply
+        return result
 
     @app.get("/api/daos/{slug}/state")
     def dao_scoped_state(
@@ -260,7 +292,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         dao_meta = _dao_meta_dict(slug, kind, record, member_count=len(members))
         return {
             "team": _team_dict(config),
-            "actor": {"agent_id": agent_id, "role": config.role_for(agent_id).value},
+            "actor": _actor_dict(agent_id, config.role_for(agent_id).value),
             "dao": dao_meta,
             "members": members,
             "channels": [c.to_dict() for c in scoped_channels],
@@ -303,7 +335,20 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             sender_id=payload.agent_id,
             body=payload.body,
         )
-        return msg.to_dict()
+        # v0.9.8: fire the demo responder so the home DAO is conversational
+        # out of the box. Skipped silently when the DAO opts out.
+        reply = _demo_maybe_reply(
+            state.groups,
+            dao_slug=HOME_DAO_SLUG,
+            channel_id=payload.channel_id,
+            sender_id=payload.agent_id,
+            body=payload.body,
+            dao_policy=state.membership.load_config().join_policy,
+        )
+        result = msg.to_dict()
+        if reply:
+            result["echo_reply"] = reply
+        return result
 
     @app.post("/api/announcements")
     def post_announcement(payload: AnnouncementPayload) -> dict[str, Any]:
@@ -352,6 +397,43 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         return task.to_dict()
 
     # v0.9.6: agent search + LAN discovery + add-friend
+
+    @app.get("/api/agents/by_code/{code}")
+    def lookup_agent_by_code(code: str) -> dict[str, Any]:
+        """Direct code lookup — the 'add by Telegram username' analogue.
+
+        Searches both home-workspace members (code derived from agent_id)
+        and every GroupRegistry record's pubkey set (code derived from
+        pubkey). Returns the first match; 404 if none.
+        """
+        try:
+            normalized = parse_code(code)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # 1) Try home members.
+        config = state.membership.load_config()
+        for agent_id in config.member_ids:
+            if code_for_agent_id(agent_id).replace("-", "") == normalized:
+                return {
+                    "code": code_for_agent_id(agent_id),
+                    "agent_id": agent_id,
+                    "pubkey_hex": "",
+                    "source": "home",
+                    "role": config.role_for(agent_id).value,
+                }
+        # 2) Try every group's pubkey set.
+        for record in state.group_registry.list_all():
+            for pk in set(record.member_pubkeys + record.admin_pubkeys):
+                if code_for_pubkey(pk).replace("-", "") == normalized:
+                    return {
+                        "code": code_for_pubkey(pk),
+                        "agent_id": pk[:16],
+                        "pubkey_hex": pk,
+                        "source": "group",
+                        "group_slug": record.slug,
+                        "role": "admin" if pk in record.admin_pubkeys else "member",
+                    }
+        raise HTTPException(status_code=404, detail=f"agent code '{code}' not found")
 
     @app.get("/api/agents/search")
     def search_agents(q: str = "", limit: int = 10) -> dict[str, Any]:
@@ -692,6 +774,13 @@ def _bootstrap(state: WebState) -> None:
             topic="Default DAO channel",
         )
 
+    # v0.9.8: register the demo responder as a workspace member so its
+    # auto-replies pass the membership gate. Skipped if it's already in.
+    if ECHO_AGENT_ID not in config.member_ids:
+        ok, _ = state.membership.ensure_member(ECHO_AGENT_ID)
+        if not ok:
+            logger.debug("echo-agent join skipped (membership policy)")
+
 
 def _require_member_or_joinable(state: WebState, agent_id: str) -> None:
     config = state.membership.load_config()
@@ -730,9 +819,19 @@ def _members(state: WebState, config: TeamConfig) -> list[dict[str, Any]]:
             "agent_id": agent_id,
             "role": config.role_for(agent_id).value,
             "online": agent_id in online,
+            "code": code_for_agent_id(agent_id),
         }
         for agent_id in sorted(config.member_ids)
     ]
+
+
+def _actor_dict(agent_id: str, role: str) -> dict[str, Any]:
+    """Standard shape for the 'who am I' block on every state response."""
+    return {
+        "agent_id": agent_id,
+        "role": role,
+        "code": code_for_agent_id(agent_id),
+    }
 
 
 # ─── v0.9.7: multi-DAO helpers ────────────────────────────────────────────
@@ -822,8 +921,11 @@ def _resolve_dao(state: WebState, slug: str) -> tuple[str, Optional[Any]]:
 def _members_from_group(record: Any) -> list[dict[str, Any]]:
     """Synthesize a `members` array from a GroupRecord's pubkey set.
 
-    We can't tell online/offline from the registry alone, so `online` is
-    False everywhere — the LAN-discovery layer fills that in later.
+    Every member carries a copy-and-paste-able ``code`` derived from
+    their pubkey so the UI can show a stable handle instead of the
+    raw 64-char hex. We can't tell online/offline from the registry
+    alone, so ``online`` is False everywhere — LAN discovery fills
+    that in later.
     """
     admin_set = {p.lower() for p in record.admin_pubkeys}
     out: list[dict[str, Any]] = []
@@ -833,6 +935,7 @@ def _members_from_group(record: Any) -> list[dict[str, Any]]:
             "role": "admin" if pk.lower() in admin_set else "member",
             "online": False,
             "pubkey_hex": pk,
+            "code": code_for_pubkey(pk),
         })
     return out
 
