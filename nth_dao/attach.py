@@ -219,6 +219,7 @@ class TeamSession:
             target,
             identity=self.identity,
             registry=self.registry,
+            fault_isolator=getattr(self, "fault_isolator", None),
         )
 
     def detach(self) -> None:
