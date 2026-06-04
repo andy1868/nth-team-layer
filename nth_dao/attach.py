@@ -48,6 +48,7 @@ from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
 from .membership import MembershipManager
 from .identity import AgentIdentity
+from .agent_card import AgentCard
 
 logger = logging.getLogger("nth_dao.attach")
 
@@ -210,6 +211,15 @@ class TeamSession:
         self.runner.claim(mission.id, step.id)
         self.registry.update_status(status="busy", current_mission=mission.id)
         return mission
+
+    def card(self, agent_id: Optional[str] = None) -> AgentCard:
+        """Build an AgentCard for *agent_id* (defaults to self)."""
+        target = agent_id or self.agent_id
+        return AgentCard.build(
+            target,
+            identity=self.identity,
+            registry=self.registry,
+        )
 
     def detach(self) -> None:
         """完成所有清理：agent.finalize、registry.unregister、backend.close。
