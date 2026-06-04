@@ -238,6 +238,12 @@ from .group_registry import (
 )
 from .attach import attach, TeamSession
 
+# ── v0.9.8: Event Subscriptions — pub/sub on EventBus ──
+from .event_subscriptions import (
+    SubscriptionManager,
+    Subscription,
+)
+
 __all__ = [
     # Facade re-exports (team_layer PR 1–7)
     "TeamAgent",
@@ -389,4 +395,7 @@ __all__ = [
     "apply_proposal",
     "normalize_group_name",
     "group_cast_vote",
+    # ── v0.9.8 Event Subscriptions ──
+    "SubscriptionManager",
+    "Subscription",
 ]
