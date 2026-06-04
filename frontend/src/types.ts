@@ -18,17 +18,32 @@ export type Summary = {
   active_missions: number;
   blackboard_entries: number;
   server_time: string;
+  actor_code?: string;   // v0.9.8: the caller's stable visible handle
+};
+
+// v0.9.8: result of `GET /api/agents/by_code/{code}` — used by the
+// "add agent by code" search box.
+export type CodeLookupResult = {
+  code: string;
+  agent_id: string;
+  pubkey_hex: string;
+  source: "home" | "group";
+  role: TeamRole | string;
+  group_slug?: string;
 };
 
 export type Actor = {
   agent_id: string;
   role: TeamRole;
+  code?: string;       // v0.9.8: visible Telegram-style handle
 };
 
 export type Member = {
   agent_id: string;
   role: TeamRole;
   online: boolean;
+  code?: string;       // v0.9.8
+  pubkey_hex?: string; // present for group-DAO members
 };
 
 export type Channel = {

@@ -6,6 +6,7 @@ import {
   getDaos,
   getSummary,
   join,
+  lookupAgentByCode,
   postAnnouncement,
   postMessage,
   updateTaskStatus
@@ -47,6 +48,9 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [wallet, setWallet] = useState<BrowserWallet | null>(null);
   const [walletError, setWalletError] = useState<string | null>(null);
+  // v0.9.8: agent-code lookup form (the Telegram-style "add by username" box)
+  const [lookupCode, setLookupCode] = useState("");
+  const [lookupResult, setLookupResult] = useState<string>("");
 
   // Load (or generate on first run) the browser-resident Ed25519 wallet.
   // Private key stays inside IndexedDB as non-extractable CryptoKey.
@@ -70,7 +74,7 @@ function App() {
   ) {
     const cleanAgent = nextAgent.trim() || "admin";
     const [summaryData, stateData] = await Promise.all([
-      getSummary(),
+      getSummary(cleanAgent),
       getDaoState(nextDao, cleanAgent, nextChannel),
     ]);
     setSummary(summaryData);
@@ -195,6 +199,21 @@ function App() {
     }, "Task status updated");
   }
 
+  // v0.9.8: "Add agent by code" — paste e.g. "a3f7-b2e8" and the API
+  // resolves it back to the underlying agent_id / pubkey / DAO source.
+  async function onLookupCode(event: FormEvent) {
+    event.preventDefault();
+    if (!lookupCode.trim()) return;
+    setLookupResult("Searching…");
+    try {
+      const hit = await lookupAgentByCode(lookupCode.trim());
+      const where = hit.source === "group" ? `in @${hit.group_slug}` : "in home";
+      setLookupResult(`Found ${hit.agent_id} (${hit.code}) ${where}`);
+    } catch (e) {
+      setLookupResult((e as Error).message);
+    }
+  }
+
   return (
     <main className="shell">
       <header className="topbar">
@@ -223,7 +242,30 @@ function App() {
               />
               <button type="submit" disabled={busy}>Join</button>
             </div>
-            <p className="hint">Current membership policy: {summary?.team.join_policy ?? "loading"}</p>
+            <p className="hint">
+              Current policy: {summary?.team.join_policy ?? "loading"}
+              {summary?.actor_code && (
+                <> · Your code: <code className="agent-code">{summary.actor_code}</code></>
+              )}
+            </p>
+          </form>
+
+          {/* v0.9.8: Telegram-style "add by code". Paste a friend's a3f7-b2e8
+              handle, the API resolves it back to agent_id + pubkey + DAO. */}
+          <form className="panel" onSubmit={onLookupCode}>
+            <div className="panel-heading">
+              <h2>Find by code</h2>
+            </div>
+            <div className="inline">
+              <input
+                placeholder="a3f7-b2e8"
+                value={lookupCode}
+                onChange={(event) => setLookupCode(event.target.value)}
+                spellCheck={false}
+              />
+              <button type="submit" disabled={!lookupCode.trim()}>Find</button>
+            </div>
+            {lookupResult && <p className="hint">{lookupResult}</p>}
           </form>
 
           {/* QQ-style "My DAOs" list — one agent ↔ many DAOs. Click to switch. */}
@@ -363,8 +405,13 @@ function App() {
               <div className="member-list">
                 {state?.members.map((member) => (
                   <div className="member" key={member.agent_id}>
-                    <span>{member.agent_id}</span>
-                    <small>{member.role}{member.online ? " online" : ""}</small>
+                    <span>
+                      {member.agent_id}
+                      {member.code && (
+                        <code className="agent-code agent-code-inline">{member.code}</code>
+                      )}
+                    </span>
+                    <small>{member.role}{member.online ? " · online" : ""}</small>
                   </div>
                 ))}
               </div>

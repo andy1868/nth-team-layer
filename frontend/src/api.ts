@@ -1,4 +1,4 @@
-import type { DaoState, DaoSummary, DaoTask, Message, Summary, TaskStatus } from "./types";
+import type { CodeLookupResult, DaoState, DaoSummary, DaoTask, Message, Summary, TaskStatus } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -21,8 +21,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getSummary(): Promise<Summary> {
-  return request<Summary>("/api/summary");
+export function getSummary(actorId: string = ""): Promise<Summary> {
+  const qs = actorId ? `?actor_id=${encodeURIComponent(actorId)}` : "";
+  return request<Summary>(`/api/summary${qs}`);
+}
+
+// v0.9.8: look up an agent by their 8-hex visible code, e.g. "a3f7-b2e8".
+// Used by the "add agent by code" search box.
+export function lookupAgentByCode(code: string): Promise<CodeLookupResult> {
+  return request<CodeLookupResult>(`/api/agents/by_code/${encodeURIComponent(code)}`);
 }
 
 export function getState(agentId: string, channelId: string): Promise<DaoState> {

@@ -492,6 +492,23 @@ details.collapsible.contacts-panel-host .collapsible-body {
   letter-spacing: 0.2px;
 }
 
+/* v0.9.8 — visible agent code (Telegram-style handle) */
+.agent-code {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: #f1ecdc;
+  color: #245b48;
+  border: 1px solid #d8d0c0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.4px;
+}
+
+.agent-code-inline {
+  margin-left: 8px;
+  font-size: 11px;
+}
+
 .empty {
   color: #6e665d;
   padding: 14px;
