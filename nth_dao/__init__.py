@@ -238,6 +238,14 @@ from .group_registry import (
 )
 from .attach import attach, TeamSession
 
+# ── v0.9.8: Fault Isolator — circuit breaker + health tracking ──
+from .fault_isolation import (
+    FaultIsolator,
+    AgentHealth,
+    CircuitState,
+    FailureRecord,
+)
+
 __all__ = [
     # Facade re-exports (team_layer PR 1–7)
     "TeamAgent",
@@ -389,4 +397,9 @@ __all__ = [
     "apply_proposal",
     "normalize_group_name",
     "group_cast_vote",
+    # ── v0.9.8 Fault Isolator ──
+    "FaultIsolator",
+    "AgentHealth",
+    "CircuitState",
+    "FailureRecord",
 ]

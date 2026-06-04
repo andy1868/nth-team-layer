@@ -48,6 +48,7 @@ from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
 from .membership import MembershipManager
 from .identity import AgentIdentity
+from .fault_isolation import FaultIsolator
 
 logger = logging.getLogger("nth_dao.attach")
 
@@ -117,6 +118,7 @@ class TeamSession:
     membership: MembershipManager
     identity: Optional[AgentIdentity] = None
     backend: Optional[AgentBackend] = None
+    fault_isolator: Optional[FaultIsolator] = None
     capabilities: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
     _detached: bool = False
@@ -366,6 +368,9 @@ def attach(
         registry=registry,  # 让 handoff 能检查目标 alive
     )
 
+    # 8. Fault Isolator — circuit breaker + health tracking
+    fault_isolator = FaultIsolator(workspace=workspace)
+
     return TeamSession(
         agent_id=agent_id,
         backend_id=backend_id_str,
@@ -379,6 +384,7 @@ def attach(
         runner=runner,
         membership=membership,
         identity=agent_identity,
+        fault_isolator=fault_isolator,
         backend=backend_instance,
         capabilities=capabilities,
         groups=groups,
