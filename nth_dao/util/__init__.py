@@ -12,6 +12,7 @@ from .io import (
     file_lock,
     InterProcessLock,
 )
+from .time_utils import now_iso, monotonic_ms
 
 __all__ = [
     "safe_id",
@@ -20,4 +21,6 @@ __all__ = [
     "safe_load_json",
     "file_lock",
     "InterProcessLock",
+    "now_iso",
+    "monotonic_ms",
 ]

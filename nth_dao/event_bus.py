@@ -70,6 +70,7 @@ from .identity import (
 from .util import (
     InterProcessLock,
     atomic_write_json,
+    now_iso,
     safe_load_json,
 )
 
@@ -175,7 +176,7 @@ class BusEvent:
     actor_id: str = ""
     actor_pubkey: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=lambda: now_iso())
     seq: int = 0
     prev_hash: str = ZERO_HASH
     event_hash: str = ""
@@ -221,7 +222,7 @@ class BusEvent:
             actor_id=data.get("actor_id", ""),
             actor_pubkey=pubkey,
             payload=dict(data.get("payload", {})),
-            timestamp=data.get("timestamp", datetime.now().isoformat()),
+            timestamp=data.get("timestamp", now_iso()),
             seq=int(data.get("seq", 0)),
             prev_hash=data.get("prev_hash", ZERO_HASH),
             event_hash=data.get("event_hash", ""),
@@ -383,8 +384,50 @@ class EventBus:
 
         signer = identity or self.identity
         original = self.get(original_event_id)
-        if original is not None and original.actor_pubkey:
-            # Signed original — only its emitter may correct it.
+
+        # C-5 fix: if the index says the event doesn't exist, confirm via a
+        # full scan before falling through to the "unsigned original" branch.
+        # Otherwise an attacker who can mutate events.index.json could downgrade
+        # the authorisation gate from "matching pubkey required" to "any signer".
+        if original is None:
+            original = self._scan_for_event(original_event_id)
+            if original is None:
+                # Genuinely absent — refuse rather than silently allowing any
+                # signer to "correct" a non-existent event.
+                raise ValueError(
+                    f"cannot correct event {original_event_id}: not found in stream"
+                )
+
+        # M-5 fix: corrections cascading on corrections create ambiguous
+        # semantics (does RETRACTED of a CORRECTED restore the original?).
+        # Refuse outright until a real use case forces a designed answer.
+        if original.event_type == CORRECTION_EVENT_TYPE:
+            raise ValueError(
+                "cannot correct a correction event; correct the original instead"
+            )
+
+        if original.actor_pubkey:
+            # C-4 fix: verify the original's own signature before trusting its
+            # actor_pubkey field for the authorisation decision. Without this
+            # check, a tampered events.jsonl with rewritten actor_pubkey would
+            # silently grant the attacker the right to retract victim events.
+            verification = self.verify(original)
+            if verification == VerificationResult.INVALID:
+                raise ValueError(
+                    f"cannot correct event {original_event_id}: its own "
+                    "signature does not verify — refusing to trust its "
+                    "actor_pubkey for authorisation"
+                )
+            # UNSIGNED is unreachable here (we're inside the actor_pubkey
+            # branch); UNVERIFIABLE is permitted with a warning so that
+            # operators without PyNaCl can still issue corrections, but the
+            # operator is responsible for the trust call.
+            if verification == VerificationResult.UNVERIFIABLE:
+                logger.warning(
+                    "correcting %s without PyNaCl-backed signature check; "
+                    "authorisation degrades to actor_pubkey trust",
+                    original_event_id,
+                )
             if signer is None or not signer.can_sign:
                 raise ValueError(
                     f"cannot correct signed event {original_event_id}: "
@@ -407,19 +450,29 @@ class EventBus:
 
         event = self.emit(CORRECTION_EVENT_TYPE, payload, identity=identity)
 
-        # Best-effort secondary index update outside the emit lock. A failure
-        # here only forces get_corrections_for() onto the slow scan path; it
-        # does NOT compromise the primary chain.
+        # C-6 fix: read-modify-write of the corrections index must be
+        # serialised across concurrent emitters or we lose entries on
+        # interleaving. The lock is a dedicated file so it doesn't tangle
+        # with the main events.jsonl lock.
         try:
-            cidx = self._load_corrections_index()
-            entry = cidx.setdefault(original_event_id, [])
-            if event.event_id not in entry:
-                entry.append(event.event_id)
-            atomic_write_json(self.corrections_index_path, cidx)
+            with InterProcessLock(self.corrections_index_path.with_suffix(".json.lock")):
+                cidx = self._load_corrections_index()
+                entry = cidx.setdefault(original_event_id, [])
+                if event.event_id not in entry:
+                    entry.append(event.event_id)
+                atomic_write_json(self.corrections_index_path, cidx)
         except OSError as exc:
             logger.warning("corrections index update failed: %s", exc)
 
         return event
+
+    def _scan_for_event(self, event_id: str) -> Optional["BusEvent"]:
+        """Full-stream scan for an event by id. O(n) — only used to confirm
+        absence after a fast-path miss, never on the hot path."""
+        for event in self.replay():
+            if event.event_id == event_id:
+                return event
+        return None
 
     def get_corrections_for(self, original_event_id: str) -> Iterator["BusEvent"]:
         """Yield every ``event.correction`` referencing ``original_event_id``.
@@ -428,6 +481,11 @@ class EventBus:
         stream scan when the index file is missing or corrupt. The stream
         MAY carry multiple corrections per event (DEPRECATED → RETRACTED);
         consumers should normally act on the *last* one.
+
+        M-7 fix: after the slow path runs once, the full corrections index
+        is rebuilt and persisted so the *next* call is back to O(1). Without
+        this, a destroyed index would cost a full-stream scan per consumer
+        forever.
         """
         if not original_event_id:
             return
@@ -439,11 +497,33 @@ class EventBus:
                 if event is not None:
                     yield event
             return
-        # Slow path: first call after a crash that lost the index.
+        # Slow path: rebuild the FULL index while we're scanning anyway.
+        rebuilt: Dict[str, List[str]] = {}
+        matching: List["BusEvent"] = []
         for event in self.replay(event_types=[CORRECTION_EVENT_TYPE]):
             data = event.payload
-            if isinstance(data, dict) and data.get("original_event_id") == original_event_id:
-                yield event
+            if not isinstance(data, dict):
+                continue
+            original_id = data.get("original_event_id", "")
+            if not original_id:
+                continue
+            rebuilt.setdefault(original_id, []).append(event.event_id)
+            if original_id == original_event_id:
+                matching.append(event)
+        if rebuilt:
+            try:
+                with InterProcessLock(self.corrections_index_path.with_suffix(".json.lock")):
+                    # Merge instead of overwrite — another writer may have
+                    # raced ahead and added a newer entry while we scanned.
+                    on_disk = self._load_corrections_index()
+                    for k, v in rebuilt.items():
+                        merged = list(dict.fromkeys(on_disk.get(k, []) + v))
+                        rebuilt[k] = merged
+                    on_disk.update(rebuilt)
+                    atomic_write_json(self.corrections_index_path, on_disk)
+            except OSError as exc:
+                logger.warning("corrections index rebuild failed: %s", exc)
+        yield from matching
 
     def _load_corrections_index(self) -> Dict[str, List[str]]:
         """Load the corrections secondary index (degrade quietly on corruption)."""
