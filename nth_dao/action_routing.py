@@ -388,16 +388,33 @@ class ActionRouter:
     # ── execution ─────────────────────────────────────────
 
     def handle(self, request: ActionRequest) -> ActionResponse:
-        """verify → dedup → dispatch → sign → log.
+        """verify -> target gate -> dedup -> dispatch -> sign -> log.
 
         C-1 fix: the entire critical section is under ``self._lock``.
         Concurrent handle() calls with the same request_id will serialise,
         the second one will hit the dedup cache, and the handler will
         execute exactly once. Without the lock, idempotency was a hope.
+
+        P0-#2 fix: requests addressed to OTHER agents are rejected at
+        the gate. Without this check, a signed request for Alice that
+        leaks (or is routed) to Bob's router would execute on Bob's
+        handlers - the signature is valid, just the destination is wrong.
+        Treat as a protocol violation, not a silent bug.
         """
-        # H-6 fix: H-6 amplification mitigation — reject early WITHOUT
-        # signing the response and with a bounded echo of the attacker
-        # input. Verification doesn't need the lock; it's pure.
+        # P0-#2: target gate - cheaper than signature verify, so do it
+        # FIRST and reject misdirected traffic before spending CPU on Ed25519.
+        if request.to_agent and request.to_agent != self.agent_id:
+            return ActionResponse(
+                request_id=request.request_id,
+                action_type=request.action_type,
+                from_agent=self.agent_id,
+                to_agent=_truncate(request.from_agent, MAX_LOG_TO_AGENT_LEN),
+                status=ActionStatus.REJECTED.value,
+                error=f"misdirected: to_agent={_truncate(request.to_agent, 64)!r} "
+                      f"!= self.agent_id={self.agent_id!r}",
+                sig="",   # do not sign misdirected rejections (H-6 rule)
+            )
+        # H-6 fix: signature-failure rejections - same rules as above.
         if not self._verify_request(request):
             return ActionResponse(
                 request_id=request.request_id,
@@ -616,10 +633,62 @@ class ActionRouter:
     # ── inbound parsing ───────────────────────────────────
 
     def parse_incoming(self, message_data: dict) -> Optional[ActionRequest]:
+        """Parse a ChannelMessage envelope OR a flat ActionRequest dict.
+
+        P0-#1 fix: the original implementation expected ``message_data``
+        to be flat (``request_id``, ``action_type``, ``to_agent`` at top
+        level). That worked for unit tests but NOT for messages produced
+        by ``route()`` -> ``channel.send()``, which wraps the request
+        payload as a JSON string under ``content`` inside a
+        ``ChannelMessage``:
+
+            {"msg_id": ..., "from_agent": ..., "content_type":
+             "action/request", "content": "<JSON of ActionRequest>", ...}
+
+        Now handles both shapes:
+          * if ``content`` is a string and ``content_type`` is
+            ``action/request``, JSON-decode the content and build from it
+          * if the dict already looks like a flat ActionRequest, build
+            directly (kept for unit tests and out-of-band callers).
+
+        Cross-check: when the envelope carries its own ``from_agent``
+        (e.g. relayed via a TeamChannel), and it disagrees with the
+        inner request's ``from_agent``, log a warning. Authentication
+        still rides on the signature, so this is informational, not
+        a rejection.
+        """
         if message_data.get("content_type", "") != "action/request":
             return None
+
+        # Real ChannelMessage envelope: content is a JSON string
+        content = message_data.get("content")
+        request_dict: Dict[str, Any]
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError as exc:
+                logger.warning("action/request content is not valid JSON: %s", exc)
+                return None
+            if not isinstance(parsed, dict):
+                logger.warning(
+                    "action/request content is not a JSON object: %s",
+                    type(parsed).__name__,
+                )
+                return None
+            request_dict = parsed
+            envelope_sender = message_data.get("from_agent", "")
+            if envelope_sender and envelope_sender != request_dict.get("from_agent"):
+                logger.info(
+                    "action/request envelope sender %r != inner from_agent %r "
+                    "(probably a relay; signature verification still applies)",
+                    envelope_sender, request_dict.get("from_agent"),
+                )
+        else:
+            # Backwards-compat: flat dict (the unit-test calling pattern).
+            request_dict = message_data
+
         try:
-            return ActionRequest.from_dict(message_data)
+            return ActionRequest.from_dict(request_dict)
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("failed to parse action request: %s", exc)
             return None

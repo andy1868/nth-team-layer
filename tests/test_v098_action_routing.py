@@ -245,7 +245,7 @@ def test_unregister_clears_round_robin_index(dev_router: ActionRouter):
 
 
 def test_unknown_action_returns_failed_not_exception(dev_router: ActionRouter):
-    req = ActionRequest(request_id="r1", action_type="nope", from_agent="b", to_agent="a")
+    req = ActionRequest(request_id="r1", action_type="nope", from_agent="b", to_agent="alice")
     resp = dev_router.handle(req)
     assert resp.status == ActionStatus.FAILED.value
     assert "no handler" in resp.error
@@ -255,7 +255,7 @@ def test_handler_exception_becomes_failed_status(dev_router: ActionRouter):
     def boom(_req):
         raise ValueError("intentional")
     dev_router.register("boom", boom)
-    req = ActionRequest(request_id="r1", action_type="boom", from_agent="b", to_agent="a")
+    req = ActionRequest(request_id="r1", action_type="boom", from_agent="b", to_agent="alice")
     resp = dev_router.handle(req)
     assert resp.status == ActionStatus.FAILED.value
     assert "ValueError: intentional" in resp.error
@@ -268,7 +268,7 @@ def test_handle_dedups_on_request_id(dev_router: ActionRouter):
     calls = []
     dev_router.register("counted", lambda r: calls.append(r.request_id))
     req = ActionRequest(request_id="rid-1", action_type="counted",
-                        from_agent="b", to_agent="a")
+                        from_agent="b", to_agent="alice")
     dev_router.handle(req)
     dev_router.handle(req)
     dev_router.handle(req)
@@ -317,7 +317,7 @@ def test_parse_incoming_accepts_action_request(dev_router: ActionRouter):
 def test_handle_appends_to_received_and_responses_logs(dev_router: ActionRouter):
     dev_router.register("ping", lambda r: "pong")
     req = ActionRequest(request_id="r1", action_type="ping",
-                        from_agent="b", to_agent="a")
+                        from_agent="b", to_agent="alice")
     dev_router.handle(req)
     received = list(dev_router.requests_received())
     responses = list(dev_router.responses_sent())

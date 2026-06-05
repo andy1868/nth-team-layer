@@ -534,14 +534,24 @@ class FaultIsolator:
 
         Swallows per-event OSErrors (file lock contention, disk full) so
         a downed EventBus cannot freeze the fault path. Wider exceptions
-        (M-6 fix) are NOT swallowed — those are programmer bugs that
-        should surface, not crash audit silently."""
-        if self._event_bus is None:
+        (M-6 fix) are NOT swallowed - those are programmer bugs that
+        should surface, not crash audit silently.
+
+        P0-#3 fix: snapshot + clear must happen atomically under
+        ``self._lock``, otherwise a concurrent recording thread that
+        appends between ``list(self._pending_events)`` and
+        ``.clear()`` has its event silently dropped. Original code
+        had a comment claiming the lock was taken; the code did not
+        actually take it.
+        """
+        with self._lock:
+            if self._event_bus is None:
+                self._pending_events.clear()
+                return
+            pending = list(self._pending_events)
             self._pending_events.clear()
-            return
-        # Snapshot under a separate brief lock then clear.
-        pending = list(self._pending_events)
-        self._pending_events.clear()
+        # Emit OUTSIDE the lock per H-1 (don't hold our lock across the
+        # EventBus's file lock + fsync).
         for event_type, payload in pending:
             try:
                 self._event_bus.emit(event_type, payload)
