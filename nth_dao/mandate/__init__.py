@@ -59,6 +59,13 @@ from .payment import (
     sign_payment_mandate,
     verify_payment_mandate,
 )
+# T-5: Mandate-lifecycle EventBus emit helpers
+from .events import (
+    emit_cart_received,
+    emit_intent_issued,
+    emit_payment_authorised,
+    emit_settlement_completed,
+)
 
 __all__ = [
     # IntentMandate (T-1)
@@ -92,4 +99,9 @@ __all__ = [
     "payment_satisfies_cart",
     "sign_payment_mandate",
     "verify_payment_mandate",
+    # T-5 lifecycle emit helpers
+    "emit_intent_issued",
+    "emit_cart_received",
+    "emit_payment_authorised",
+    "emit_settlement_completed",
 ]

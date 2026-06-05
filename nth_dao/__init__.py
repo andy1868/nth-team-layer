@@ -203,6 +203,12 @@ from .event_bus import (
     CorrectionType,
     EventBus,
     VerificationResult as EventBusVerificationResult,
+    # v0.10 T-5 reserved Mandate-lifecycle event types
+    MANDATE_CART_RECEIVED,
+    MANDATE_INTENT_ISSUED,
+    MANDATE_LIFECYCLE_EVENT_TYPES,
+    MANDATE_PAYMENT_AUTHORISED,
+    SETTLEMENT_COMPLETED,
 )
 # v0.9.8: Agent collaboration primitives (P4 facade entry points).
 # These five modules together form the cross-agent dispatch layer:
@@ -250,6 +256,11 @@ from .mandate import (
     payment_satisfies_cart,
     sign_payment_mandate,
     verify_payment_mandate,
+    # T-5 Mandate-lifecycle EventBus emit helpers
+    emit_cart_received,
+    emit_intent_issued,
+    emit_payment_authorised,
+    emit_settlement_completed,
 )
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
@@ -453,6 +464,16 @@ __all__ = [
     "payment_satisfies_cart",
     "sign_payment_mandate",
     "verify_payment_mandate",
+    # v0.10 T-5 reserved Mandate-lifecycle event types + emit helpers
+    "MANDATE_INTENT_ISSUED",
+    "MANDATE_CART_RECEIVED",
+    "MANDATE_PAYMENT_AUTHORISED",
+    "SETTLEMENT_COMPLETED",
+    "MANDATE_LIFECYCLE_EVENT_TYPES",
+    "emit_intent_issued",
+    "emit_cart_received",
+    "emit_payment_authorised",
+    "emit_settlement_completed",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",

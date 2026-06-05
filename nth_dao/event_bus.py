@@ -82,6 +82,34 @@ DEFAULT_INDEX_FILE = "events.index.json"
 DEFAULT_CORRECTIONS_INDEX_FILE = "corrections.index.json"
 
 CORRECTION_EVENT_TYPE = "event.correction"
+
+# v0.10 T-5: reserved Mandate-lifecycle event types.
+#
+# These four strings are the CANONICAL audit-trail event types for the
+# AP2-shape Mandate triad. Subsystems that produce a Mandate-related
+# audit signal MUST use these exact strings - downstream consumers
+# (UI dashboards, settlement adapters, third-party watchers) match on
+# these literals, so any drift breaks downstream filtering.
+#
+# Constants live in event_bus.py (which owns the event vocabulary)
+# rather than the mandate package, so consumers that only care about
+# the event stream do not need to import mandate code.
+#
+# Builders for the matching payload shapes live in nth_dao.mandate.events
+# and are reachable via nth_dao.emit_intent_issued / emit_cart_received /
+# emit_payment_authorised / emit_settlement_completed.
+
+MANDATE_INTENT_ISSUED = "mandate.intent.issued"
+MANDATE_CART_RECEIVED = "mandate.cart.received"
+MANDATE_PAYMENT_AUTHORISED = "mandate.payment.authorised"
+SETTLEMENT_COMPLETED = "settlement.completed"
+
+MANDATE_LIFECYCLE_EVENT_TYPES: frozenset = frozenset({
+    MANDATE_INTENT_ISSUED,
+    MANDATE_CART_RECEIVED,
+    MANDATE_PAYMENT_AUTHORISED,
+    SETTLEMENT_COMPLETED,
+})
 ZERO_HASH = "0" * 64
 
 # Event IDs are 16 lowercase hex characters (uuid4 short). Strict regex so
@@ -902,4 +930,10 @@ __all__ = [
     "DEFAULT_EVENTS_FILE",
     "DEFAULT_INDEX_FILE",
     "DEFAULT_CORRECTIONS_INDEX_FILE",
+    # v0.10 T-5 reserved Mandate-lifecycle event types
+    "MANDATE_INTENT_ISSUED",
+    "MANDATE_CART_RECEIVED",
+    "MANDATE_PAYMENT_AUTHORISED",
+    "SETTLEMENT_COMPLETED",
+    "MANDATE_LIFECYCLE_EVENT_TYPES",
 ]
