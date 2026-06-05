@@ -227,6 +227,15 @@ from .fault_isolation import (
     FailureRecord,
     FaultIsolator,
 )
+# v0.10 Sprint Zero (T-1): Mandate primitives - AP2-shape signed
+# authorisation, will be joined by Cart (T-2) and Payment (T-3).
+from .mandate import (
+    build_intent_mandate,
+    intent_mandate_digest,
+    is_intent_expired,
+    sign_intent_mandate,
+    verify_intent_mandate,
+)
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
     build_credential as build_achievement_credential,
@@ -408,6 +417,12 @@ __all__ = [
     "CircuitState",
     "FailureRecord",
     "FaultIsolator",
+    # v0.10 T-1 Mandate primitives
+    "build_intent_mandate",
+    "intent_mandate_digest",
+    "is_intent_expired",
+    "sign_intent_mandate",
+    "verify_intent_mandate",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",
