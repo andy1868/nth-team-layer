@@ -198,7 +198,12 @@ from .key_recovery import (
 from .agent_ledger import AgentLedger, LedgerEvent
 # v0.9.7: EventBus — team-level signed hash-chained event stream
 # (orthogonal to AgentLedger: per-agent vs per-team)
-from .event_bus import BusEvent, EventBus, VerificationResult as EventBusVerificationResult
+from .event_bus import (
+    BusEvent,
+    CorrectionType,
+    EventBus,
+    VerificationResult as EventBusVerificationResult,
+)
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
     build_credential as build_achievement_credential,
@@ -237,6 +242,7 @@ from .group_registry import (
     normalize_group_name,
 )
 from .attach import attach, TeamSession
+from .agent_daemon import AgentDaemon, DaemonConfig
 
 __all__ = [
     # Facade re-exports (team_layer PR 1–7)
@@ -295,6 +301,8 @@ __all__ = [
     "TemplatePublishError",
     "attach",
     "TeamSession",
+    "AgentDaemon",
+    "DaemonConfig",
     # Membership (PR 9): join requests / approvals / roles
     "JoinPolicy",
     "RequestStatus",
@@ -361,6 +369,7 @@ __all__ = [
     "BusEvent",
     "EventBus",
     "EventBusVerificationResult",
+    "CorrectionType",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",

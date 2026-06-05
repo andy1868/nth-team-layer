@@ -52,6 +52,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -77,8 +78,40 @@ logger = logging.getLogger("nth_dao.event_bus")
 DEFAULT_EVENTS_DIR = "team_audit"
 DEFAULT_EVENTS_FILE = "events.jsonl"
 DEFAULT_INDEX_FILE = "events.index.json"
+DEFAULT_CORRECTIONS_INDEX_FILE = "corrections.index.json"
 
+CORRECTION_EVENT_TYPE = "event.correction"
 ZERO_HASH = "0" * 64
+
+# Event IDs are 16 lowercase hex characters (uuid4 short). Strict regex so
+# `correct()` can't accept malformed pointers that fail silently elsewhere.
+_EVENT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+class CorrectionType(str, Enum):
+    """Standard semantic types for event corrections.
+
+    These are agent-first error patterns — not human social UX (message
+    recall / typo edits). Agents don't make typos; they make deterministic
+    mistakes (wrong port, stale URL, compromised credential). Corrections
+    are append-only events that reference the original; the original is
+    NEVER deleted or mutated so the audit chain stays whole.
+
+    - ``DEPRECATED`` — the event was valid when emitted but is no longer
+      actionable (e.g. a deployment URL that has since rotated).
+    - ``CORRECTED`` — the event carried wrong data; the correction
+      carries ``corrected_payload`` with the right values.
+    - ``RETRACTED`` — the event should not have been emitted at all
+      (e.g. produced by a compromised credential). Consumers MUST
+      treat it as void.
+
+    Original design contributed by @andy1868 in the agent-collab
+    submission (June 2026).
+    """
+
+    DEPRECATED = "DEPRECATED"
+    CORRECTED = "CORRECTED"
+    RETRACTED = "RETRACTED"
 
 
 def _is_hex(value: str, expected_len: int) -> bool:
@@ -235,6 +268,10 @@ class EventBus:
         return self.events_dir / DEFAULT_INDEX_FILE
 
     @property
+    def corrections_index_path(self) -> Path:
+        return self.events_dir / DEFAULT_CORRECTIONS_INDEX_FILE
+
+    @property
     def can_sign(self) -> bool:
         return bool(self.identity and self.identity.can_sign)
 
@@ -295,6 +332,129 @@ class EventBus:
             atomic_write_json(self.index_path, index)
 
         return event
+
+    # ─── corrections (append-only error patterns) ───
+
+    def correct(
+        self,
+        original_event_id: str,
+        correction_type: CorrectionType,
+        *,
+        reason: str = "",
+        corrected_payload: Optional[Dict[str, Any]] = None,
+        identity: Optional[AgentIdentity] = None,
+    ) -> "BusEvent":
+        """Emit an ``event.correction`` that references a prior event.
+
+        The original event is NEVER deleted or mutated — it stays in the
+        stream as an auditable record. Consumers reading the stream should
+        check ``get_corrections_for()`` to discover whether an event they
+        are about to act on has been superseded.
+
+        **Authorisation:** only the original emitter (matched by Ed25519
+        pubkey) may correct a *signed* event. An unsigned original may be
+        corrected by any signing identity — there was no original author
+        to protect. Raises ``ValueError`` on a pubkey mismatch.
+
+        ``correction_type`` is one of ``CorrectionType``:
+
+        - ``DEPRECATED`` — still true but no longer actionable.
+        - ``CORRECTED`` — the original data was wrong; see
+          ``corrected_payload`` for the right version.
+        - ``RETRACTED`` — the original event MUST be treated as void.
+
+        ``corrected_payload`` is only accepted with ``CORRECTED``;
+        passing it with DEPRECATED / RETRACTED raises ``ValueError``.
+
+        Original design contributed by @andy1868 in the agent-collab
+        submission (June 2026); this implementation preserves the
+        semantics and pubkey-based authorisation contract while wiring
+        into the existing hash-chained EventBus.
+        """
+        if not _EVENT_ID_RE.match(original_event_id):
+            raise ValueError(
+                f"original_event_id must be 16 hex chars, got {original_event_id!r}"
+            )
+        if correction_type != CorrectionType.CORRECTED and corrected_payload is not None:
+            raise ValueError(
+                "corrected_payload is only meaningful with CorrectionType.CORRECTED, "
+                f"not {correction_type.value}"
+            )
+
+        signer = identity or self.identity
+        original = self.get(original_event_id)
+        if original is not None and original.actor_pubkey:
+            # Signed original — only its emitter may correct it.
+            if signer is None or not signer.can_sign:
+                raise ValueError(
+                    f"cannot correct signed event {original_event_id}: "
+                    "no signing identity provided"
+                )
+            if signer.pubkey_hex != original.actor_pubkey:
+                raise ValueError(
+                    f"cannot correct event {original_event_id}: emitter "
+                    f"pubkey {signer.pubkey_hex[:16]}… does not match "
+                    f"original author {original.actor_pubkey[:16]}…"
+                )
+
+        payload: Dict[str, Any] = {
+            "original_event_id": original_event_id,
+            "correction_type": correction_type.value,
+            "reason": reason,
+        }
+        if corrected_payload is not None:
+            payload["corrected_payload"] = corrected_payload
+
+        event = self.emit(CORRECTION_EVENT_TYPE, payload, identity=identity)
+
+        # Best-effort secondary index update outside the emit lock. A failure
+        # here only forces get_corrections_for() onto the slow scan path; it
+        # does NOT compromise the primary chain.
+        try:
+            cidx = self._load_corrections_index()
+            entry = cidx.setdefault(original_event_id, [])
+            if event.event_id not in entry:
+                entry.append(event.event_id)
+            atomic_write_json(self.corrections_index_path, cidx)
+        except OSError as exc:
+            logger.warning("corrections index update failed: %s", exc)
+
+        return event
+
+    def get_corrections_for(self, original_event_id: str) -> Iterator["BusEvent"]:
+        """Yield every ``event.correction`` referencing ``original_event_id``.
+
+        Uses the O(1) secondary index when present; falls back to a full
+        stream scan when the index file is missing or corrupt. The stream
+        MAY carry multiple corrections per event (DEPRECATED → RETRACTED);
+        consumers should normally act on the *last* one.
+        """
+        if not original_event_id:
+            return
+        cidx = self._load_corrections_index()
+        ids = cidx.get(original_event_id, [])
+        if ids:
+            for cid in ids:
+                event = self.get(cid)
+                if event is not None:
+                    yield event
+            return
+        # Slow path: first call after a crash that lost the index.
+        for event in self.replay(event_types=[CORRECTION_EVENT_TYPE]):
+            data = event.payload
+            if isinstance(data, dict) and data.get("original_event_id") == original_event_id:
+                yield event
+
+    def _load_corrections_index(self) -> Dict[str, List[str]]:
+        """Load the corrections secondary index (degrade quietly on corruption)."""
+        data = safe_load_json(self.corrections_index_path, fallback=None)
+        if not isinstance(data, dict):
+            return {}
+        out: Dict[str, List[str]] = {}
+        for k, v in data.items():
+            if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                out[str(k)] = list(v)
+        return out
 
     def _tail_unlocked(self) -> Tuple[int, str]:
         """Return the last valid (seq, hash), allowing only a torn tail line."""
@@ -655,8 +815,11 @@ __all__ = [
     "BusEvent",
     "EventBus",
     "VerificationResult",
+    "CorrectionType",
+    "CORRECTION_EVENT_TYPE",
     "ZERO_HASH",
     "DEFAULT_EVENTS_DIR",
     "DEFAULT_EVENTS_FILE",
     "DEFAULT_INDEX_FILE",
+    "DEFAULT_CORRECTIONS_INDEX_FILE",
 ]
