@@ -48,7 +48,7 @@ def test_C1_handle_idempotency_under_concurrency(tmp_path: Path):
     """100 threads call handle() with the same request_id; the handler
     must run exactly once (the original implementation could run it
     up to 100 times because handle() had no lock)."""
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     invocations: list = []
 
     def slow_handler(req):
@@ -83,7 +83,7 @@ def test_C1_handle_idempotency_under_concurrency(tmp_path: Path):
 
 def test_C2_two_senders_with_same_request_id_get_distinct_responses(tmp_path: Path):
     """Alice's request_id='r1' and Bob's request_id='r1' must NOT collide."""
-    router = ActionRouter(agent_id="server", workspace=tmp_path)
+    router = ActionRouter(agent_id="server", workspace=tmp_path, allow_unsigned_dev=True)
     router.register("echo", lambda req: {"who": req.from_agent})
 
     req_a = ActionRequest(request_id="r1", action_type="echo",
@@ -105,7 +105,10 @@ def test_C3_lru_eviction_keeps_recently_used(tmp_path: Path):
     """Repeatedly hitting an entry must keep it alive while other
     entries are evicted. Original code evicted by insertion order, so
     a hot entry would be evicted regardless of access frequency."""
-    router = ActionRouter(agent_id="server", workspace=tmp_path, max_dedup_entries=3)
+    router = ActionRouter(
+        agent_id="server", workspace=tmp_path,
+        max_dedup_entries=3, allow_unsigned_dev=True,
+    )
     router.register("ping", lambda r: r.request_id)
 
     # Insert 3 entries
@@ -159,7 +162,7 @@ def test_H3_concurrent_log_writes_produce_valid_jsonl(tmp_path: Path):
     """50 threads each handling a request → 50 valid JSONL lines, no
     interleaved bytes. Without InterProcessLock on the append, large
     JSON payloads could interleave on POSIX (> PIPE_BUF) or Windows."""
-    router = ActionRouter(agent_id="server", workspace=tmp_path)
+    router = ActionRouter(agent_id="server", workspace=tmp_path, allow_unsigned_dev=True)
     router.register("ping", lambda r: {"x": "y" * 5000})   # > PIPE_BUF
 
     def fire(i: int):
@@ -189,7 +192,7 @@ def test_H3_concurrent_log_writes_produce_valid_jsonl(tmp_path: Path):
 def test_H4_elapsed_ms_is_non_negative(tmp_path: Path):
     """Even with clock weirdness, elapsed_ms should be ≥ 0 because we use
     time.monotonic() now."""
-    router = ActionRouter(agent_id="server", workspace=tmp_path)
+    router = ActionRouter(agent_id="server", workspace=tmp_path, allow_unsigned_dev=True)
     router.register("instant", lambda r: None)
     req = ActionRequest(request_id="r1", action_type="instant",
                         from_agent="b", to_agent="server")
@@ -211,7 +214,7 @@ def test_H5_unrelated_typeerror_from_best_match_propagates(tmp_path: Path):
             # propagate, not get retried with prefer_idle.
             raise TypeError("internal bug in PeerFinder")
 
-    router = ActionRouter(agent_id="server", workspace=tmp_path)
+    router = ActionRouter(agent_id="server", workspace=tmp_path, allow_unsigned_dev=True)
     with pytest.raises(TypeError, match="internal bug in PeerFinder"):
         router.dispatch("ping", {}, finder=BrokenFinder())   # type: ignore[arg-type]
 
@@ -295,7 +298,7 @@ def test_M3_scope_resistant_to_separator_injection():
 def test_M8_handler_metadata_is_defensive_copied(tmp_path: Path):
     """If the registrant mutates the dict after register(), the
     registry must not see the mutation."""
-    router = ActionRouter(agent_id="x", workspace=tmp_path)
+    router = ActionRouter(agent_id="x", workspace=tmp_path, allow_unsigned_dev=True)
     md = {"timeout": 100}
     router.register("ping", lambda r: None, metadata=md)
     md["timeout"] = 999   # caller mutates after registration

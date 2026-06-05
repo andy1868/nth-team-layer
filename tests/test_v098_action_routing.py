@@ -76,8 +76,11 @@ def prod_router(tmp_path: Path, alice, directory) -> ActionRouter:
 
 @pytest.fixture
 def dev_router(tmp_path: Path) -> ActionRouter:
-    """No identity, no lookup → dev mode."""
-    return ActionRouter(agent_id="alice", workspace=tmp_path)
+    """No identity, no lookup -> explicit dev mode (P1 contract)."""
+    return ActionRouter(
+        agent_id="alice", workspace=tmp_path,
+        allow_unsigned_dev=True,
+    )
 
 
 def _signed_request_from(
@@ -331,16 +334,21 @@ def test_handle_appends_to_received_and_responses_logs(dev_router: ActionRouter)
 
 
 def test_verify_enabled_requires_BOTH_identity_and_lookup(tmp_path: Path, alice):
-    """Identity alone is not enough — without a lookup we have no way
-    to refute a forged from_agent. The router refuses to think it's in
-    production mode and degrades to dev mode (accepts everything)."""
-    r = ActionRouter(agent_id="alice", identity=alice, workspace=tmp_path)
-    assert r._verify_enabled is False
-
-    r2 = ActionRouter(agent_id="alice", pubkey_lookup=lambda a: None, workspace=tmp_path)
-    assert r2._verify_enabled is False
-
+    """P1 contract: missing identity or pubkey_lookup must REFUSE to
+    construct unless dev mode is explicitly opted in. The original
+    behaviour (silently fall into dev mode) was the worst kind of
+    default for a security-critical module."""
+    # Identity alone -> refuse
+    with pytest.raises(ValueError, match="pubkey_lookup"):
+        ActionRouter(agent_id="alice", identity=alice, workspace=tmp_path)
+    # Lookup alone -> refuse
+    with pytest.raises(ValueError, match="identity"):
+        ActionRouter(agent_id="alice", pubkey_lookup=lambda a: None, workspace=tmp_path)
+    # Both set -> production mode enabled
     r3 = ActionRouter(
         agent_id="alice", identity=alice, pubkey_lookup=lambda a: None, workspace=tmp_path,
     )
     assert r3._verify_enabled is True
+    # Explicit dev mode -> permitted even without prerequisites
+    r4 = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
+    assert r4._verify_enabled is False

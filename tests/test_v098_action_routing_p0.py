@@ -54,7 +54,7 @@ def test_P0_1_parse_real_channel_envelope_with_content_json(tmp_path: Path):
     """A ChannelMessage as produced by route() has the request payload
     as a JSON STRING under `content`. parse_incoming must JSON-decode
     that string, not try to read fields from the envelope top-level."""
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     inner = ActionRequest(
         request_id="r1", action_type="ping",
         from_agent="bob", to_agent="alice",
@@ -83,7 +83,7 @@ def test_P0_1_parse_real_channel_envelope_with_content_json(tmp_path: Path):
 def test_P0_1_parse_still_accepts_flat_dict_for_back_compat(tmp_path: Path):
     """Old callers that pass a flat dict (the way every unit test in this
     suite used to) must still work — back-compat."""
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     flat = {
         "content_type": "action/request",
         "request_id": "r1",
@@ -98,7 +98,7 @@ def test_P0_1_parse_still_accepts_flat_dict_for_back_compat(tmp_path: Path):
 
 
 def test_P0_1_parse_rejects_envelope_with_invalid_json_content(tmp_path: Path):
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     bad = {
         "content_type": "action/request",
         "content": "{not valid json",
@@ -107,7 +107,7 @@ def test_P0_1_parse_rejects_envelope_with_invalid_json_content(tmp_path: Path):
 
 
 def test_P0_1_parse_rejects_envelope_with_non_object_content(tmp_path: Path):
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     bad = {
         "content_type": "action/request",
         "content": "[\"this is a list, not an object\"]",
@@ -122,7 +122,7 @@ def test_P0_1_envelope_sender_mismatch_logs_but_does_not_reject(
     envelope's from_agent is B but the inner request's from_agent is A.
     This is legitimate; signature verification carries the real auth.
     Log it (so a security team can spot anomalies) but don't reject."""
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     inner = {
         "request_id": "r1", "action_type": "ping",
         "from_agent": "actual-sender",
@@ -192,7 +192,7 @@ def test_P0_2_handle_accepts_empty_to_agent_back_compat(tmp_path: Path):
     """A request with empty to_agent (e.g. dev calls that don't set it)
     is still accepted - we only reject when to_agent is set AND wrong.
     Otherwise we'd break every smoke test that builds ActionRequest()."""
-    router = ActionRouter(agent_id="alice", workspace=tmp_path)
+    router = ActionRouter(agent_id="alice", workspace=tmp_path, allow_unsigned_dev=True)
     router.register("ping", lambda r: "pong")
     req = ActionRequest(
         request_id="r1", action_type="ping",
@@ -237,6 +237,7 @@ def test_END_TO_END_route_to_handle_via_envelope(tmp_path: Path, alice, bob):
     bob_router = ActionRouter(
         agent_id="bob", identity=bob, channel=channel,  # type: ignore[arg-type]
         workspace=tmp_path / "bob",
+        allow_unsigned_dev=True,   # bob is the sender; lookup not needed here
     )
     alice_router = ActionRouter(
         agent_id="alice", identity=alice,
@@ -268,6 +269,7 @@ def test_END_TO_END_carol_does_not_execute_alice_bound_request(
     bob_router = ActionRouter(
         agent_id="bob", identity=bob, channel=channel,  # type: ignore[arg-type]
         workspace=tmp_path / "bob",
+        allow_unsigned_dev=True,   # bob is the sender; lookup not needed here
     )
 
     def lookup(aid):

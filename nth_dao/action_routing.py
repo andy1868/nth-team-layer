@@ -258,10 +258,47 @@ class ActionRouter:
         workspace: Optional[Path] = None,
         storage_dir: str = DEFAULT_STORAGE_DIR,
         max_dedup_entries: int = DEFAULT_DEDUP_SIZE,
+        allow_unsigned_dev: bool = False,
     ):
+        """Construct an ActionRouter.
+
+        Production mode (default and recommended) requires BOTH
+        ``identity`` and ``pubkey_lookup``. Every incoming request must
+        carry a verified Ed25519 signature; unsigned / unverified
+        requests are rejected.
+
+        Development mode is OPT-IN via ``allow_unsigned_dev=True``. It
+        accepts unsigned requests AND signed-without-lookup requests
+        without verification - useful for local smoke tests and
+        notebook prototyping. It is a SECURITY HOLE if accidentally
+        enabled in production; the flag is deliberately verbose so it
+        shows up in code review and config files.
+
+        P1 fix: original code silently fell into dev mode whenever
+        identity or pubkey_lookup was missing. Integrators who forgot
+        to wire up the directory would get a router that accepted
+        every request as "unsigned" - the worst kind of default. Now
+        the constructor raises unless dev mode is explicit, OR both
+        production prerequisites are present.
+        """
+        if not allow_unsigned_dev:
+            missing = []
+            if identity is None or not identity.can_sign:
+                missing.append("identity (with can_sign=True)")
+            if pubkey_lookup is None:
+                missing.append("pubkey_lookup")
+            if missing:
+                raise ValueError(
+                    "ActionRouter requires " + " AND ".join(missing)
+                    + " for production mode. To run in development mode "
+                    "(accepts unsigned requests - NEVER for production!), "
+                    "pass allow_unsigned_dev=True explicitly."
+                )
+
         self.agent_id = agent_id
         self._identity = identity
         self._pubkey_lookup = pubkey_lookup
+        self._allow_unsigned_dev = allow_unsigned_dev
         self._channel = channel
         self._workspace = workspace or Path.cwd()
         self._handlers: Dict[str, Callable[[ActionRequest], Any]] = {}
