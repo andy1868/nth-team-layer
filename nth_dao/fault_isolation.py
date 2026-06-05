@@ -57,12 +57,14 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from dataclasses import asdict, dataclass, field, fields
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Deque, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+from .util import now_iso
 from .util.io import atomic_write_json, safe_load_json
 
 if TYPE_CHECKING:
@@ -135,14 +137,29 @@ class FaultIsolator:
         self._storage_dir = storage_dir
         self._event_bus = event_bus
         self._failure_threshold = max(1, failure_threshold)
-        self._failure_window = max(1.0, failure_window_seconds)
+        # Floor is small (10ms) so unit tests can use sub-second windows;
+        # production deployments will configure something sensible (minutes).
+        self._failure_window = max(0.01, failure_window_seconds)
         self._cooldown = max(0.01, cooldown_seconds)
         self._half_open_max_probes = max(1, half_open_max_probes)
         self._success_threshold = max(1, success_threshold)
 
         self._lock = threading.Lock()
         self._health: Dict[str, AgentHealth] = {}
-        self._failures: Dict[str, List[FailureRecord]] = {}
+        # H-11 fix: bounded ring buffer per agent so a quiet agent's old
+        # failures don't linger in memory forever. Capacity is sized so
+        # failure_threshold's worth of events always fits, with headroom.
+        self._failures_cap = max(failure_threshold * 4, 32)
+        self._failures: Dict[str, Deque[FailureRecord]] = {}
+        # H-1 fix: events to emit AFTER releasing the lock. Holding the
+        # lock across EventBus.emit() (which takes its own file lock + fsync)
+        # serialises all fault recording across the team and risks deadlock
+        # if a future EventBus consumer ever calls back into us.
+        self._pending_events: List[Tuple[str, Dict[str, Any]]] = []
+        # H-10 fix: dirty flag — persist only on STATE TRANSITIONS, not on
+        # every record_*. Transitions are the audit-meaningful events;
+        # per-record stats can rebuild from the event stream if we crash.
+        self._dirty = False
         self._loaded = False
 
         self._state_dir = self._workspace / storage_dir
@@ -159,15 +176,28 @@ class FaultIsolator:
             self._health = {}
             valid_fields = {f.name for f in fields(AgentHealth)}
             for agent_id, raw in data.get("health", {}).items():
+                if not isinstance(raw, dict):
+                    continue
                 # Filter unknown keys so a future schema bump can't crash a
                 # reload from an older state file.
                 filtered = {k: v for k, v in raw.items() if k in valid_fields}
-                self._health[agent_id] = AgentHealth(**filtered)
+                try:
+                    self._health[agent_id] = AgentHealth(**filtered)
+                except TypeError as exc:
+                    logger.warning("dropping corrupt health entry %r: %s", agent_id, exc)
             self._failures = {}
             for agent_id, raw_list in data.get("failures", {}).items():
-                self._failures[agent_id] = [
-                    FailureRecord(**r) for r in raw_list
-                ]
+                if not isinstance(raw_list, list):
+                    continue
+                dq: Deque[FailureRecord] = deque(maxlen=self._failures_cap)
+                for r in raw_list:
+                    if not isinstance(r, dict):
+                        continue
+                    try:
+                        dq.append(FailureRecord(**r))
+                    except TypeError:
+                        continue
+                self._failures[agent_id] = dq
         self._loaded = True
 
     def _state_path(self) -> Path:
@@ -185,6 +215,15 @@ class FaultIsolator:
             },
         }
         atomic_write_json(self._state_path(), data)
+        self._dirty = False
+
+    def _persist_if_dirty(self) -> None:
+        """H-10 fix: only write to disk when something audit-meaningful
+        changed (a state transition, a manual reset). Per-record stats
+        are kept in memory; on crash they rebuild from the EventBus
+        stream's signed circuit.* events."""
+        if self._dirty:
+            self._persist()
 
     # ── Recording ─────────────────────────────────────────
 
@@ -195,7 +234,7 @@ class FaultIsolator:
         with self._lock:
             self._ensure_loaded()
             h = self._get_or_create_health(agent_id)
-            now = datetime.now().isoformat()
+            now = now_iso()
 
             h.success_count += 1
             h.last_success = now
@@ -207,6 +246,9 @@ class FaultIsolator:
             if h.circuit_state == CircuitState.HALF_OPEN.value:
                 h.consecutive_failures = 0
                 h.half_open_successes += 1
+                # Recovery progress IS audit-meaningful; persist each step
+                # so a crash mid-recovery doesn't reset the probe counter.
+                self._dirty = True
                 if h.half_open_successes >= self._success_threshold:
                     prev = h.circuit_state
                     h.circuit_state = CircuitState.CLOSED.value
@@ -216,14 +258,17 @@ class FaultIsolator:
                     h.consecutive_failures = 0
                     h.health_score = min(1.0, h.health_score + 0.2)
                     logger.info("circuit CLOSED for %r (recovered)", agent_id)
-                    self._emit_event("circuit.closed", {
+                    self._defer_event("circuit.closed", {
                         "agent_id": agent_id,
                         "prev_state": prev,
                         "reason": "half_open_probes_succeeded",
                     })
+                    self._dirty = True
 
             self._update_health_score(h)
-            self._persist()
+            self._persist_if_dirty()
+        # H-1 fix: emit OUTSIDE the lock.
+        self._drain_pending_events()
 
     def record_failure(
         self, agent_id: str, action_type: str = "", error: str = ""
@@ -234,14 +279,16 @@ class FaultIsolator:
         with self._lock:
             self._ensure_loaded()
             h = self._get_or_create_health(agent_id)
-            now = datetime.now().isoformat()
+            now = now_iso()
 
             h.failure_count += 1
             h.consecutive_failures += 1
             h.last_failure = now
             h.last_failure_error = error[:500]
 
-            self._failures.setdefault(agent_id, []).append(
+            self._failures.setdefault(
+                agent_id, deque(maxlen=self._failures_cap),
+            ).append(
                 FailureRecord(
                     agent_id=agent_id,
                     action_type=action_type,
@@ -256,11 +303,12 @@ class FaultIsolator:
                     h.circuit_state = CircuitState.OPEN.value
                     h.opened_at = now
                     h.half_open_successes = 0
+                    self._dirty = True
                     logger.warning(
                         "circuit OPEN for %r (%d failures in %.0fs)",
                         agent_id, len(recent), self._failure_window,
                     )
-                    self._emit_event("circuit.opened", {
+                    self._defer_event("circuit.opened", {
                         "agent_id": agent_id,
                         "prev_state": CircuitState.CLOSED.value,
                         "failure_count": len(recent),
@@ -272,18 +320,21 @@ class FaultIsolator:
                     h.opened_at = now
                     h.half_open_at = ""
                     h.half_open_successes = 0
+                    self._dirty = True
                     logger.warning(
                         "circuit re-OPEN for %r (half-open probe failed)",
                         agent_id,
                     )
-                    self._emit_event("circuit.opened", {
+                    self._defer_event("circuit.opened", {
                         "agent_id": agent_id,
                         "prev_state": CircuitState.HALF_OPEN.value,
                         "reason": "half_open_probe_failed",
                     })
 
             self._update_health_score(h)
-            self._persist()
+            self._persist_if_dirty()
+        # H-1 fix: emit OUTSIDE the lock.
+        self._drain_pending_events()
 
     # ── Queries ───────────────────────────────────────────
 
@@ -292,14 +343,18 @@ class FaultIsolator:
             self._ensure_loaded()
             self._maybe_transition(agent_id)
             h = self._health.get(agent_id)
-            return bool(h and h.circuit_state == CircuitState.OPEN.value)
+            result = bool(h and h.circuit_state == CircuitState.OPEN.value)
+        self._drain_pending_events()
+        return result
 
     def circuit_state(self, agent_id: str) -> str:
         with self._lock:
             self._ensure_loaded()
             self._maybe_transition(agent_id)
             h = self._health.get(agent_id)
-            return h.circuit_state if h else CircuitState.CLOSED.value
+            result = h.circuit_state if h else CircuitState.CLOSED.value
+        self._drain_pending_events()
+        return result
 
     def health_score(self, agent_id: str) -> float:
         with self._lock:
@@ -311,25 +366,30 @@ class FaultIsolator:
         with self._lock:
             self._ensure_loaded()
             self._maybe_transition(agent_id)
-            return self._get_or_create_health(agent_id)
+            result = self._get_or_create_health(agent_id)
+        self._drain_pending_events()
+        return result
 
     def healthy_agents(self, agent_ids: List[str]) -> List[str]:
         with self._lock:
             self._ensure_loaded()
-            result = []
+            out = []
             for aid in agent_ids:
                 self._maybe_transition(aid)
                 h = self._health.get(aid)
                 if h is None or h.circuit_state != CircuitState.OPEN.value:
-                    result.append(aid)
-            return result
+                    out.append(aid)
+        self._drain_pending_events()
+        return out
 
     def all_health(self) -> Dict[str, AgentHealth]:
         with self._lock:
             self._ensure_loaded()
             for aid in list(self._health):
                 self._maybe_transition(aid)
-            return dict(self._health)
+            out = dict(self._health)
+        self._drain_pending_events()
+        return out
 
     # ── Management ────────────────────────────────────────
 
@@ -352,14 +412,16 @@ class FaultIsolator:
             h.half_open_at = ""
             h.health_score = 1.0
             self._failures.pop(agent_id, None)
+            self._dirty = True
             self._persist()
             logger.info("circuit RESET for %r", agent_id)
             if prev != CircuitState.CLOSED.value:
-                self._emit_event("circuit.closed", {
+                self._defer_event("circuit.closed", {
                     "agent_id": agent_id,
                     "prev_state": prev,
                     "reason": "manual_reset",
                 })
+        self._drain_pending_events()
 
     def reset_all(self) -> None:
         with self._lock:
@@ -376,14 +438,16 @@ class FaultIsolator:
                 h.half_open_at = ""
                 h.health_score = 1.0
                 if prev != CircuitState.CLOSED.value:
-                    self._emit_event("circuit.closed", {
+                    self._defer_event("circuit.closed", {
                         "agent_id": aid,
                         "prev_state": prev,
                         "reason": "reset_all",
                     })
             self._failures.clear()
+            self._dirty = True
             self._persist()
             logger.info("all circuits RESET")
+        self._drain_pending_events()
 
     # ── Internals ─────────────────────────────────────────
 
@@ -403,35 +467,44 @@ class FaultIsolator:
             opened = datetime.fromisoformat(h.opened_at)
         except (ValueError, TypeError):
             return
-        elapsed = (datetime.now() - opened).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - opened).total_seconds()
         if elapsed < self._cooldown:
             return
         h.circuit_state = CircuitState.HALF_OPEN.value
-        h.half_open_at = datetime.now().isoformat()
+        h.half_open_at = now_iso()
         h.half_open_successes = 0
         h.consecutive_failures = 0
+        self._dirty = True
         logger.info("circuit HALF_OPEN for %r (cooldown elapsed)", agent_id)
-        self._persist()
-        self._emit_event("circuit.half_opened", {
+        self._persist_if_dirty()
+        self._defer_event("circuit.half_opened", {
             "agent_id": agent_id,
             "opened_for_seconds": round(elapsed, 1),
         })
 
     def _recent_failures(self, agent_id: str) -> List[FailureRecord]:
-        failures = self._failures.get(agent_id, [])
+        """Return failures inside the time window, pruning expired ones.
+
+        H-11 fix: backing store is a deque(maxlen=...) so a flood of
+        failures can never grow memory unbounded; expired entries are
+        also drained from the left here on each call so a quiet agent
+        doesn't keep ancient failures around forever."""
+        failures = self._failures.get(agent_id)
         if not failures:
             return []
-        cutoff = datetime.now().timestamp() - self._failure_window
-        recent = []
-        for f in failures:
+        cutoff = datetime.now(timezone.utc).timestamp() - self._failure_window
+        # Pop expired from the LEFT of the deque (O(1) per pop).
+        while failures:
             try:
-                ts = datetime.fromisoformat(f.timestamp).timestamp()
+                ts = datetime.fromisoformat(failures[0].timestamp).timestamp()
             except (ValueError, TypeError):
+                failures.popleft()
                 continue
-            if ts >= cutoff:
-                recent.append(f)
-        self._failures[agent_id] = recent
-        return recent
+            if ts < cutoff:
+                failures.popleft()
+            else:
+                break
+        return list(failures)
 
     def _update_health_score(self, h: AgentHealth) -> None:
         total = h.success_count + h.failure_count
@@ -445,15 +518,47 @@ class FaultIsolator:
             ratio *= 0.6
         h.health_score = round(max(0.0, min(1.0, ratio)), 3)
 
-    def _emit_event(self, event_type: str, payload: Dict[str, Any]) -> None:
-        """Audit-trail emit. Swallows EventBus errors so a downed bus
-        cannot freeze the fault path itself — defence in depth."""
+    def _defer_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Queue an audit event for emission AFTER the lock is released.
+
+        H-1 fix: holding ``self._lock`` across ``EventBus.emit()`` would
+        serialise the fault path against the EventBus's own file lock
+        and fsync — terrible throughput, possible deadlock if a future
+        EventBus consumer ever calls back into FaultIsolator. Queue
+        here while holding the lock; flush in ``_drain_pending_events``
+        after release."""
+        self._pending_events.append((event_type, dict(payload)))
+
+    def _drain_pending_events(self) -> None:
+        """Emit queued audit events. MUST be called outside ``self._lock``.
+
+        Swallows per-event OSErrors (file lock contention, disk full) so
+        a downed EventBus cannot freeze the fault path. Wider exceptions
+        (M-6 fix) are NOT swallowed — those are programmer bugs that
+        should surface, not crash audit silently."""
         if self._event_bus is None:
+            self._pending_events.clear()
             return
-        try:
-            self._event_bus.emit(event_type, payload)
-        except Exception as exc:   # noqa: BLE001
-            logger.warning("fault_isolation EventBus emit failed: %s", exc)
+        # Snapshot under a separate brief lock then clear.
+        pending = list(self._pending_events)
+        self._pending_events.clear()
+        for event_type, payload in pending:
+            try:
+                self._event_bus.emit(event_type, payload)
+            except (OSError, RuntimeError) as exc:
+                # M-6: scope of swallow is I/O errors (OSError) AND
+                # generic runtime failures from the bus (RuntimeError),
+                # but NOT programmer errors (TypeError, AttributeError,
+                # NameError) which should propagate so bugs surface.
+                logger.warning("fault_isolation EventBus emit failed: %s", exc)
+
+    def flush(self) -> None:
+        """Force-persist any dirty in-memory state. Useful at shutdown
+        when H-10's lazy persistence might otherwise lose recent stats."""
+        with self._lock:
+            if self._dirty:
+                self._persist()
+        self._drain_pending_events()
 
     def __repr__(self) -> str:
         with self._lock:
