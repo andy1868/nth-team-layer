@@ -1,4 +1,4 @@
-"""Action Router — signed cross-agent action dispatch.
+"""Action Router - signed cross-agent action dispatch.
 
 Each agent registers handlers for the action types it can serve. An
 incoming ``ActionRequest`` is signature-verified against the *claimed*
@@ -11,7 +11,7 @@ Two-way trust contract
 ----------------------
 The router's security model is "signatures, not trust assertions"
 (NTH DAO operating principle P4). To enforce it correctly the router
-needs *external* knowledge of who each agent's pubkey is — otherwise
+needs *external* knowledge of who each agent's pubkey is - otherwise
 ``from_agent = "alice"`` is just a string anyone can write. That
 mapping comes from ``pubkey_lookup``, a callable ``str -> str | None``
 the integrator wires up. Typical implementations:
@@ -40,12 +40,12 @@ rejects:
 - requests whose claimed ``from_agent`` has no registered pubkey
 - requests whose signature does not verify under the claimed pubkey
 - (implicitly) requests where an attacker forges ``from_agent="alice"``
-  but signs with their own key — the lookup yields alice's pubkey,
+  but signs with their own key - the lookup yields alice's pubkey,
   the attacker's signature fails to verify
 
 This is the fix for the critical security bug in the original
 @andy1868 submission, which called ``verify_json(payload, sig)``
-without passing ``from_agent``'s pubkey — falling back to the
+without passing ``from_agent``'s pubkey - falling back to the
 router's own pubkey and accidentally rejecting every legitimate
 cross-agent request.
 
@@ -104,7 +104,7 @@ def _truncate(value: str, max_len: int) -> str:
     or echoing them in responses (H-6 amplification mitigation)."""
     if not value:
         return ""
-    return value if len(value) <= max_len else value[:max_len] + "…"
+    return value if len(value) <= max_len else value[:max_len] + "..."
 
 
 def _dm_scope(a: str, b: str) -> str:
@@ -120,7 +120,7 @@ def _dm_scope(a: str, b: str) -> str:
     return "dm:" + hashlib.sha256(payload).hexdigest()[:16]
 
 
-# ─────────────────────────── enums ──────────────────────────
+# --------------------------- enums --------------------------
 
 
 class ActionStatus(str, Enum):
@@ -140,7 +140,7 @@ class RouteStrategy(str, Enum):
     ROUND_ROBIN = "round_robin"
 
 
-# ─────────────────────────── dataclasses ──────────────────────────
+# --------------------------- dataclasses --------------------------
 
 
 @dataclass
@@ -233,7 +233,7 @@ class ActionResponse:
         return self.status == ActionStatus.COMPLETED.value
 
 
-# ─────────────────────────── router ──────────────────────────
+# --------------------------- router --------------------------
 
 
 class ActionRouter:
@@ -346,13 +346,13 @@ class ActionRouter:
         self._nonce_ledger_path = self._log_dir / DEFAULT_NONCE_LEDGER_NAME
         self._nonce_lock_path = self._nonce_ledger_path.with_suffix(".json.lock")
 
-    # ── verification (the critical path) ──────────────────
+    # -- verification (the critical path) ------------------
 
     @property
     def _verify_enabled(self) -> bool:
         """Production mode requires BOTH a local identity (to know who
         we are) AND a pubkey_lookup (to know who the sender is).
-        Either alone is insufficient — running with identity-only would
+        Either alone is insufficient - running with identity-only would
         let an attacker forge from_agent and have us accept it because
         we'd have no way to refute."""
         return (
@@ -366,10 +366,10 @@ class ActionRouter:
 
         Dev mode (no identity OR no pubkey_lookup): accept unconditionally.
         Production mode:
-          - unsigned request → reject
-          - from_agent unknown to lookup → reject
-          - signature does not verify under the looked-up pubkey → reject
-          - same lookup but attacker signed with their own key → reject
+          - unsigned request -> reject
+          - from_agent unknown to lookup -> reject
+          - signature does not verify under the looked-up pubkey -> reject
+          - same lookup but attacker signed with their own key -> reject
             (because the lookup returns the *claimed* agent's pubkey,
             not the attacker's)
         """
@@ -380,7 +380,7 @@ class ActionRouter:
         assert self._pubkey_lookup is not None
         # C-9 fix: pubkey_lookup is an arbitrary integrator-provided callable.
         # If it raises (network error, malformed registry record, ...) we
-        # must NOT let the exception propagate out of the handle() path —
+        # must NOT let the exception propagate out of the handle() path -
         # the request just gets rejected with no oracle leakage.
         try:
             sender_pubkey = self._pubkey_lookup(request.from_agent)
@@ -410,7 +410,7 @@ class ActionRouter:
             )
             return False
 
-    # ── handler registry ──────────────────────────────────
+    # -- handler registry ----------------------------------
 
     def register(
         self,
@@ -422,7 +422,7 @@ class ActionRouter:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         if action_type in self._handlers:
-            logger.warning("action_type %r already registered — overwriting", action_type)
+            logger.warning("action_type %r already registered - overwriting", action_type)
         self._handlers[action_type] = handler
         # M-8 fix: defensive copies so a mutation by the registrant after
         # register() doesn't leak into the registry.
@@ -453,7 +453,7 @@ class ActionRouter:
     def handler_info(self, action_type: str) -> Optional[HandlerInfo]:
         return self._handler_info.get(action_type)
 
-    # ── execution ─────────────────────────────────────────
+    # -- execution -----------------------------------------
 
     def handle(self, request: ActionRequest) -> ActionResponse:
         """verify -> target gate -> dedup -> dispatch -> sign -> log.
@@ -491,7 +491,7 @@ class ActionRouter:
                 to_agent=_truncate(request.from_agent, MAX_LOG_TO_AGENT_LEN),
                 status=ActionStatus.REJECTED.value,
                 error="signature verification failed",
-                # NOT signed — see H-6. Caller cannot replay this as an oracle.
+                # NOT signed - see H-6. Caller cannot replay this as an oracle.
                 sig="",
             )
             # NB: rejected responses are also NOT logged or cached. They
@@ -542,7 +542,7 @@ class ActionRouter:
                 self._seen.move_to_end(key)
                 return cached
 
-            # H-4 fix: monotonic clock — never goes backward under NTP jumps.
+            # H-4 fix: monotonic clock - never goes backward under NTP jumps.
             start_ms = monotonic_ms()
             handler = self._handlers.get(request.action_type)
             if handler is None:
@@ -583,7 +583,7 @@ class ActionRouter:
             self._cache(key, response)
             return response
 
-    # ── outbound routing ──────────────────────────────────
+    # -- outbound routing ----------------------------------
 
     def route(
         self,
@@ -665,7 +665,7 @@ class ActionRouter:
     def _dispatch_best_match(self, action_type, params, finder, exclude, correlation_id):
         # H-5 fix: introspect best_match's signature ONCE and remember which
         # calling convention this PeerFinder uses. The original code caught
-        # TypeError per call to discover the shape — which silently swallowed
+        # TypeError per call to discover the shape - which silently swallowed
         # any UNRELATED TypeError raised inside best_match (e.g. a bug in the
         # PeerFinder itself), retrying with different args and producing
         # confused error messages.
@@ -674,7 +674,7 @@ class ActionRouter:
                 sig = inspect.signature(finder.best_match)
                 self._best_match_uses_prefer_status = "prefer_status" in sig.parameters
             except (TypeError, ValueError):
-                # C-extension or unintrospectable callable — default to the
+                # C-extension or unintrospectable callable - default to the
                 # newer convention and let any failure surface honestly.
                 self._best_match_uses_prefer_status = True
         if self._best_match_uses_prefer_status:
@@ -729,7 +729,7 @@ class ActionRouter:
                 first = sent
         return first
 
-    # ── inbound parsing ───────────────────────────────────
+    # -- inbound parsing -----------------------------------
 
     def parse_incoming(self, message_data: dict) -> Optional[ActionRequest]:
         """Parse a ChannelMessage envelope OR a flat ActionRequest dict.
@@ -798,7 +798,7 @@ class ActionRouter:
             return None
         return self.handle(request)
 
-    # ── history ───────────────────────────────────────────
+    # -- history -------------------------------------------
 
     def requests_sent(self, limit: int = 50) -> List[ActionRequest]:
         return list(self._read_log("requests_sent", ActionRequest, limit))
@@ -809,7 +809,7 @@ class ActionRouter:
     def requests_received(self, limit: int = 50) -> List[ActionRequest]:
         return list(self._read_log("requests_received", ActionRequest, limit))
 
-    # ── signing ───────────────────────────────────────────
+    # -- signing -------------------------------------------
 
     def _sign_request(self, request: ActionRequest) -> None:
         if self._identity and self._identity.can_sign:
@@ -819,7 +819,7 @@ class ActionRouter:
         if self._identity and self._identity.can_sign:
             response.sig = self._identity.sign_json(response.signable_dict())
 
-    # ── cache / logging ───────────────────────────────────
+    # -- cache / logging -----------------------------------
 
     def _cache(self, key: CacheKey, response: ActionResponse) -> None:
         """LRU cache write (C-3). Caller MUST hold self._lock."""
@@ -931,7 +931,7 @@ class ActionRouter:
     def _append_log(self, name: str, data: dict) -> None:
         """H-3 fix: serialise append across processes.
 
-        POSIX O_APPEND atomicity only holds for writes ≤ PIPE_BUF (~4KB);
+        POSIX O_APPEND atomicity only holds for writes <= PIPE_BUF (~4KB);
         JSON lines easily exceed that. Without a lock, two concurrent
         writers can interleave bytes and yield a corrupt JSONL line that
         _read_log silently skips (audit loss). InterProcessLock here

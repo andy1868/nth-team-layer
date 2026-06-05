@@ -1,4 +1,4 @@
-"""AgentProfile — aggregated read-time view of one agent for UI display.
+"""AgentProfile - aggregated read-time view of one agent for UI display.
 
 A consolidated snapshot of an agent's identity, capabilities, health,
 reputation and contribution data, suitable for showing as a "business
@@ -13,16 +13,16 @@ namespace clean, this UI-side view is called ``AgentProfile``.
 
 Design
 ------
-- **Pure read aggregation** — no persistence, no state. Built on
+- **Pure read aggregation** - no persistence, no state. Built on
   demand from the existing subsystem APIs.
-- **Composable** — each data source is optional via a typed Protocol.
+- **Composable** - each data source is optional via a typed Protocol.
   Missing sources do not crash; they leave the corresponding fields
   at their dataclass defaults.
-- **Display-only** — NOT signed, NOT exchanged across trust
+- **Display-only** - NOT signed, NOT exchanged across trust
   boundaries. Producing a profile is a local view operation; if you
   need to attest to an agent's reputation, mint an
   ``AchievementCredential`` instead.
-- **CJK-safe output** — instead of fixed-width ASCII art (which
+- **CJK-safe output** - instead of fixed-width ASCII art (which
   breaks on wide characters), the renderer emits Markdown which the
   UI renders correctly regardless of glyph width.
 
@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 logger = logging.getLogger("nth_dao.agent_profile")
 
 
-# ─────────────────────── Source contracts (typed) ───────────────────────
+# ----------------------- Source contracts (typed) -----------------------
 
 
 @runtime_checkable
@@ -92,7 +92,7 @@ class LedgerSource(Protocol):
     def stats(self) -> Dict[str, Any]: ...
 
 
-# ─────────────────────────── Data ────────────────────────────
+# --------------------------- Data ----------------------------
 
 
 @dataclass
@@ -138,7 +138,7 @@ class AgentProfile:
 
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # ── Builder ───────────────────────────────────────────
+    # -- Builder -------------------------------------------
 
     @classmethod
     def build(
@@ -157,7 +157,7 @@ class AgentProfile:
         at their dataclass defaults. Sources are duck-typed against the
         ``Protocol`` definitions above; passing an object that lacks a
         declared attribute is a *bug in the caller*, not a soft failure
-        — it propagates the AttributeError so the test suite catches it.
+        - it propagates the AttributeError so the test suite catches it.
         """
         profile = cls(agent_id=agent_id)
 
@@ -166,7 +166,7 @@ class AgentProfile:
             profile.pubkey_fingerprint = identity.pubkey_hex or ""
             if identity.pubkey_hex:
                 # H-9 fix: as_did() may raise on a non-Ed25519 key (RSA,
-                # secp256k1, ...) — perfectly valid identities NTH DAO
+                # secp256k1, ...) - perfectly valid identities NTH DAO
                 # itself happens not to know how to turn into a did:key.
                 # Soft-fail to did="" with a debug log; the rest of the
                 # profile is still useful.
@@ -211,7 +211,7 @@ class AgentProfile:
 
         return profile
 
-    # ── Rendering ─────────────────────────────────────────
+    # -- Rendering -----------------------------------------
 
     def render_markdown(self) -> str:
         """CJK-safe Markdown rendering.
@@ -236,7 +236,7 @@ class AgentProfile:
             f"| Field | Value |",
             f"|---|---|",
             f"| Code | `{_escape_md_code(self.agent_id)}` |",
-            f"| Status | {alive_glyph} · {_escape_md(self.status) or 'n/a'} |",
+            f"| Status | {alive_glyph} . {_escape_md(self.status) or 'n/a'} |",
             f"| Health | {bar} ({self.health_score:.2f}) |",
             f"| DID | `{_escape_md_code(self.did) or 'n/a'}` |",
             f"| Backend | {_escape_md(self.backend_id) or 'n/a'} |",
@@ -248,7 +248,7 @@ class AgentProfile:
         if self.missions_completed or self.missions_owned:
             lines.append(
                 f"| Missions | {self.missions_completed} done / "
-                f"{self.missions_owned} owned · success {self.success_rate:.0%} |"
+                f"{self.missions_owned} owned . success {self.success_rate:.0%} |"
             )
         return "\n".join(lines)
 
@@ -267,7 +267,7 @@ class AgentProfile:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
 
 
-# ─────────────────────────── Helpers ────────────────────────────
+# --------------------------- Helpers ----------------------------
 
 
 def _markdown_bar(score: float, width: int = 10) -> str:
@@ -290,11 +290,16 @@ def _escape_md(value: str) -> str:
 def _escape_md_code(value: str) -> str:
     """Inline-code cells use backticks as delimiters; ANY backtick inside
     the value breaks them. Replace with a visually-similar marker that
-    survives Markdown parsing."""
+    survives Markdown parsing.
+
+    Implementation note: the replacement char is U+02CB MODIFIER LETTER
+    GRAVE ACCENT - looks like a backtick but isn't one, so Markdown
+    doesn't close the inline code on it. Spelled via \\u escape so the
+    source stays ASCII-only per the protocol-layer policy (some Windows
+    + GBK environments mangle raw U+02CB on round-trip).
+    """
     if not value:
         return ""
-    # U+02CB MODIFIER LETTER GRAVE ACCENT looks like a backtick but
-    # isn't one, so Markdown doesn't close the inline code on it.
     return value.replace("`", "ˋ").replace("|", "\\|")
 
 

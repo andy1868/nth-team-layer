@@ -92,17 +92,17 @@ _EVENT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 class CorrectionType(str, Enum):
     """Standard semantic types for event corrections.
 
-    These are agent-first error patterns — not human social UX (message
+    These are agent-first error patterns - not human social UX (message
     recall / typo edits). Agents don't make typos; they make deterministic
     mistakes (wrong port, stale URL, compromised credential). Corrections
     are append-only events that reference the original; the original is
     NEVER deleted or mutated so the audit chain stays whole.
 
-    - ``DEPRECATED`` — the event was valid when emitted but is no longer
+    - ``DEPRECATED`` - the event was valid when emitted but is no longer
       actionable (e.g. a deployment URL that has since rotated).
-    - ``CORRECTED`` — the event carried wrong data; the correction
+    - ``CORRECTED`` - the event carried wrong data; the correction
       carries ``corrected_payload`` with the right values.
-    - ``RETRACTED`` — the event should not have been emitted at all
+    - ``RETRACTED`` - the event should not have been emitted at all
       (e.g. produced by a compromised credential). Consumers MUST
       treat it as void.
 
@@ -334,7 +334,7 @@ class EventBus:
 
         return event
 
-    # ─── corrections (append-only error patterns) ───
+    # --- corrections (append-only error patterns) ---
 
     def correct(
         self,
@@ -347,22 +347,22 @@ class EventBus:
     ) -> "BusEvent":
         """Emit an ``event.correction`` that references a prior event.
 
-        The original event is NEVER deleted or mutated — it stays in the
+        The original event is NEVER deleted or mutated - it stays in the
         stream as an auditable record. Consumers reading the stream should
         check ``get_corrections_for()`` to discover whether an event they
         are about to act on has been superseded.
 
         **Authorisation:** only the original emitter (matched by Ed25519
         pubkey) may correct a *signed* event. An unsigned original may be
-        corrected by any signing identity — there was no original author
+        corrected by any signing identity - there was no original author
         to protect. Raises ``ValueError`` on a pubkey mismatch.
 
         ``correction_type`` is one of ``CorrectionType``:
 
-        - ``DEPRECATED`` — still true but no longer actionable.
-        - ``CORRECTED`` — the original data was wrong; see
+        - ``DEPRECATED`` - still true but no longer actionable.
+        - ``CORRECTED`` - the original data was wrong; see
           ``corrected_payload`` for the right version.
-        - ``RETRACTED`` — the original event MUST be treated as void.
+        - ``RETRACTED`` - the original event MUST be treated as void.
 
         ``corrected_payload`` is only accepted with ``CORRECTED``;
         passing it with DEPRECATED / RETRACTED raises ``ValueError``.
@@ -392,7 +392,7 @@ class EventBus:
         if original is None:
             original = self._scan_for_event(original_event_id)
             if original is None:
-                # Genuinely absent — refuse rather than silently allowing any
+                # Genuinely absent - refuse rather than silently allowing any
                 # signer to "correct" a non-existent event.
                 raise ValueError(
                     f"cannot correct event {original_event_id}: not found in stream"
@@ -415,7 +415,7 @@ class EventBus:
             if verification == VerificationResult.INVALID:
                 raise ValueError(
                     f"cannot correct event {original_event_id}: its own "
-                    "signature does not verify — refusing to trust its "
+                    "signature does not verify - refusing to trust its "
                     "actor_pubkey for authorisation"
                 )
             # UNSIGNED is unreachable here (we're inside the actor_pubkey
@@ -436,8 +436,8 @@ class EventBus:
             if signer.pubkey_hex != original.actor_pubkey:
                 raise ValueError(
                     f"cannot correct event {original_event_id}: emitter "
-                    f"pubkey {signer.pubkey_hex[:16]}… does not match "
-                    f"original author {original.actor_pubkey[:16]}…"
+                    f"pubkey {signer.pubkey_hex[:16]}... does not match "
+                    f"original author {original.actor_pubkey[:16]}..."
                 )
 
         payload: Dict[str, Any] = {
@@ -467,7 +467,7 @@ class EventBus:
         return event
 
     def _scan_for_event(self, event_id: str) -> Optional["BusEvent"]:
-        """Full-stream scan for an event by id. O(n) — only used to confirm
+        """Full-stream scan for an event by id. O(n) - only used to confirm
         absence after a fast-path miss, never on the hot path."""
         for event in self.replay():
             if event.event_id == event_id:
@@ -479,7 +479,7 @@ class EventBus:
 
         Uses the O(1) secondary index when present; falls back to a full
         stream scan when the index file is missing or corrupt. The stream
-        MAY carry multiple corrections per event (DEPRECATED → RETRACTED);
+        MAY carry multiple corrections per event (DEPRECATED -> RETRACTED);
         consumers should normally act on the *last* one.
 
         M-7 fix: after the slow path runs once, the full corrections index
@@ -513,7 +513,7 @@ class EventBus:
         if rebuilt:
             try:
                 with InterProcessLock(self.corrections_index_path.with_suffix(".json.lock")):
-                    # Merge instead of overwrite — another writer may have
+                    # Merge instead of overwrite - another writer may have
                     # raced ahead and added a newer entry while we scanned.
                     on_disk = self._load_corrections_index()
                     for k, v in rebuilt.items():

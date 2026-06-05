@@ -1,4 +1,4 @@
-"""FaultIsolator — circuit breaker + health tracking for multi-agent systems.
+"""FaultIsolator - circuit breaker + health tracking for multi-agent systems.
 
 Prevents cascading failures by detecting unhealthy agents and temporarily
 removing them from the routing pool. Three-state circuit breaker with
@@ -9,10 +9,10 @@ actor can't silently weaponise the breaker to censor a peer.
 States
 ------
 
-    CLOSED ──(failure_threshold reached)──→ OPEN
-    OPEN   ──(cooldown elapsed)──────────→ HALF_OPEN
-    HALF_OPEN ──(probe succeeds)──────────→ CLOSED
-    HALF_OPEN ──(probe fails)─────────────→ OPEN
+    CLOSED --(failure_threshold reached)---> OPEN
+    OPEN   --(cooldown elapsed)-----------> HALF_OPEN
+    HALF_OPEN --(probe succeeds)-----------> CLOSED
+    HALF_OPEN --(probe fails)--------------> OPEN
 
 Usage::
 
@@ -23,7 +23,7 @@ Usage::
     isolator.record_failure("agent-carol", "deploy", "timeout")
 
     if isolator.is_circuit_open("agent-carol"):
-        ...  # circuit is open — don't route
+        ...  # circuit is open - don't route
 
     healthy = isolator.healthy_agents(["bob", "carol", "dave"])
 
@@ -42,7 +42,7 @@ time-windowed failure counting and persistence model, while fixing
 two issues from the original:
 
 1. Original set ``_half_open_successes`` as a dynamic attribute on the
-   ``AgentHealth`` dataclass — it didn't survive across process
+   ``AgentHealth`` dataclass - it didn't survive across process
    reload because the serialised dict had no key for it. Promoted
    here to a real dataclass field.
 
@@ -74,9 +74,9 @@ logger = logging.getLogger("nth_dao.fault_isolation")
 
 
 class CircuitState(str, Enum):
-    CLOSED = "closed"          # healthy — route normally
-    OPEN = "open"              # failing — do NOT route
-    HALF_OPEN = "half_open"    # testing — allow probes
+    CLOSED = "closed"          # healthy - route normally
+    OPEN = "open"              # failing - do NOT route
+    HALF_OPEN = "half_open"    # testing - allow probes
 
 
 @dataclass
@@ -92,9 +92,9 @@ class AgentHealth:
     """Aggregate health information for one agent.
 
     All fields are declared on the dataclass so they survive
-    persist → reload round trips. The previous design stored
+    persist -> reload round trips. The previous design stored
     ``_half_open_successes`` as a dynamic attribute, which evaporated
-    on reload — promoted here to a real field.
+    on reload - promoted here to a real field.
     """
 
     agent_id: str
@@ -156,7 +156,7 @@ class FaultIsolator:
         # serialises all fault recording across the team and risks deadlock
         # if a future EventBus consumer ever calls back into us.
         self._pending_events: List[Tuple[str, Dict[str, Any]]] = []
-        # H-10 fix: dirty flag — persist only on STATE TRANSITIONS, not on
+        # H-10 fix: dirty flag - persist only on STATE TRANSITIONS, not on
         # every record_*. Transitions are the audit-meaningful events;
         # per-record stats can rebuild from the event stream if we crash.
         self._dirty = False
@@ -165,7 +165,7 @@ class FaultIsolator:
         self._state_dir = self._workspace / storage_dir
         self._state_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Persistence ───────────────────────────────────────
+    # -- Persistence ---------------------------------------
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -225,12 +225,12 @@ class FaultIsolator:
         if self._dirty:
             self._persist()
 
-    # ── Recording ─────────────────────────────────────────
+    # -- Recording -----------------------------------------
 
     def record_success(self, agent_id: str, action_type: str = "") -> None:
         """Record a successful interaction with *agent_id*.
 
-        May transition HALF_OPEN → CLOSED if enough consecutive successes."""
+        May transition HALF_OPEN -> CLOSED if enough consecutive successes."""
         with self._lock:
             self._ensure_loaded()
             h = self._get_or_create_health(agent_id)
@@ -239,7 +239,7 @@ class FaultIsolator:
             h.success_count += 1
             h.last_success = now
 
-            # Auto-transition OPEN → HALF_OPEN (if cooldown elapsed)
+            # Auto-transition OPEN -> HALF_OPEN (if cooldown elapsed)
             # *before* processing the success so it can close the circuit.
             self._maybe_transition(agent_id)
 
@@ -275,7 +275,7 @@ class FaultIsolator:
     ) -> None:
         """Record a failed interaction with *agent_id*.
 
-        May transition CLOSED → OPEN or HALF_OPEN → OPEN."""
+        May transition CLOSED -> OPEN or HALF_OPEN -> OPEN."""
         with self._lock:
             self._ensure_loaded()
             h = self._get_or_create_health(agent_id)
@@ -348,7 +348,7 @@ class FaultIsolator:
         # H-1 fix: emit OUTSIDE the lock.
         self._drain_pending_events()
 
-    # ── Queries ───────────────────────────────────────────
+    # -- Queries -------------------------------------------
 
     def is_circuit_open(self, agent_id: str) -> bool:
         with self._lock:
@@ -403,7 +403,7 @@ class FaultIsolator:
         self._drain_pending_events()
         return out
 
-    # ── Management ────────────────────────────────────────
+    # -- Management ----------------------------------------
 
     def reset(self, agent_id: str) -> None:
         """Manually reset circuit for *agent_id* to CLOSED.
@@ -461,7 +461,7 @@ class FaultIsolator:
             logger.info("all circuits RESET")
         self._drain_pending_events()
 
-    # ── Internals ─────────────────────────────────────────
+    # -- Internals -----------------------------------------
 
     def _get_or_create_health(self, agent_id: str) -> AgentHealth:
         if agent_id not in self._health:
@@ -469,7 +469,7 @@ class FaultIsolator:
         return self._health[agent_id]
 
     def _maybe_transition(self, agent_id: str) -> None:
-        """OPEN → HALF_OPEN once cooldown elapsed; emits the audit event."""
+        """OPEN -> HALF_OPEN once cooldown elapsed; emits the audit event."""
         h = self._health.get(agent_id)
         if h is None or h.circuit_state != CircuitState.OPEN.value:
             return
@@ -535,7 +535,7 @@ class FaultIsolator:
 
         H-1 fix: holding ``self._lock`` across ``EventBus.emit()`` would
         serialise the fault path against the EventBus's own file lock
-        and fsync — terrible throughput, possible deadlock if a future
+        and fsync - terrible throughput, possible deadlock if a future
         EventBus consumer ever calls back into FaultIsolator. Queue
         here while holding the lock; flush in ``_drain_pending_events``
         after release."""

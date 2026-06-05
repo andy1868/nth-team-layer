@@ -1,4 +1,4 @@
-"""SubscriptionManager — thin pub/sub layer on top of ``EventBus.replay()``.
+"""SubscriptionManager - thin pub/sub layer on top of ``EventBus.replay()``.
 
 Polling-based: callers invoke ``poll()`` (or a long-running loop in a
 worker thread); each subscription tracks its own cursor in memory so
@@ -50,7 +50,7 @@ _GLOB_META = set("*?[]")
 
 @dataclass
 class Subscription:
-    """One in-memory subscription. Tracks its OWN cursor — narrow
+    """One in-memory subscription. Tracks its OWN cursor - narrow
     subscriptions never stall on unrelated traffic."""
 
     subscription_id: str
@@ -64,7 +64,7 @@ class Subscription:
     def matches(self, event_type: str) -> bool:
         # C-7 fix: fnmatch.fnmatch is case-insensitive on Windows but
         # case-sensitive on POSIX. Using fnmatchcase guarantees identical
-        # behaviour on every host — critical for cross-platform NTH DAO.
+        # behaviour on every host - critical for cross-platform NTH DAO.
         return fnmatch.fnmatchcase(event_type, self.pattern)
 
 
@@ -87,7 +87,7 @@ class SubscriptionManager:
         # start from the stale cursor and double-deliver events.
         self._polling: Set[str] = set()
 
-    # ── registry ───────────────────────────────────────────
+    # -- registry -------------------------------------------
 
     def subscribe(
         self,
@@ -131,7 +131,7 @@ class SubscriptionManager:
         with self._lock:
             return self._subs.get(subscription_id)
 
-    # ── delivery ───────────────────────────────────────────
+    # -- delivery -------------------------------------------
 
     def poll(self) -> int:
         """Deliver new events to matching subscriptions.
@@ -139,7 +139,7 @@ class SubscriptionManager:
         Returns the *total* number of deliveries across all
         subscriptions. NB: ``max_deliveries_per_poll`` caps EACH
         subscription independently; a single poll() with N matching
-        subscriptions can deliver up to N × cap (M-1 clarification).
+        subscriptions can deliver up to N x cap (M-1 clarification).
 
         Per-subscription cursors advance independently so a narrow
         pattern never stalls when a wildcard subscription races
@@ -170,7 +170,7 @@ class SubscriptionManager:
         try:
             # H-7 fix: if the pattern has no glob meta-characters we know
             # it's an EXACT event_type and we can push the filter down
-            # into the bus replay path — avoiding the per-event fnmatch
+            # into the bus replay path - avoiding the per-event fnmatch
             # call AND letting any future replay-side optimisation cut
             # the scan early.
             event_types = None
@@ -195,7 +195,7 @@ class SubscriptionManager:
                     logger.warning("subscription %s callback failed: %s", sub_id, exc)
                 last_event_id = event.event_id
                 n += 1
-            # Persist the advanced cursor under the lock — only mutate if
+            # Persist the advanced cursor under the lock - only mutate if
             # the subscription still exists (unsubscribe may have raced).
             if last_event_id != cursor:
                 with self._lock:

@@ -273,7 +273,7 @@ def test_H6_rejected_response_to_agent_is_bounded(tmp_path: Path, alice):
         request_id="r1", action_type="ping",
         from_agent=huge, to_agent="alice", sig="ff" * 64,
     ))
-    assert len(resp.to_agent) <= MAX_LOG_TO_AGENT_LEN + 1   # +1 for ellipsis
+    assert len(resp.to_agent) <= MAX_LOG_TO_AGENT_LEN + 3   # +3 for "..."
 
 
 # ─── M-3: DM scope is collision-resistant ─────────────────────────────
@@ -314,4 +314,4 @@ def test_M8_handler_metadata_is_defensive_copied(tmp_path: Path):
 def test_truncate_bounds_and_marks():
     assert _truncate("", 10) == ""
     assert _truncate("short", 10) == "short"
-    assert _truncate("x" * 1000, 10) == "x" * 10 + "…"
+    assert _truncate("x" * 1000, 10) == "x" * 10 + "..."
