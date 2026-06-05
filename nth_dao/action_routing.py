@@ -70,7 +70,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from .util import InterProcessLock, monotonic_ms, now_iso
+from datetime import datetime, timezone
+
+from .util import InterProcessLock, atomic_write_json, monotonic_ms, now_iso, safe_load_json
 
 if TYPE_CHECKING:
     from .channel import TeamChannel
@@ -82,6 +84,13 @@ logger = logging.getLogger("nth_dao.action_routing")
 # Cache key is namespaced by sender to fix C-2 (cross-sender collision).
 CacheKey = Tuple[str, str]    # (from_agent, request_id)
 MAX_LOG_TO_AGENT_LEN = 128    # H-6: bound attacker-controlled echo
+
+# P2 anti-replay defaults. Production deployments should configure
+# these based on the actual network latency tolerance + how long they
+# want the nonce ledger to absorb retries.
+DEFAULT_REQUEST_TTL_SECONDS = 300.0        # 5 minutes is generous for an action
+DEFAULT_CLOCK_SKEW_SECONDS = 60.0          # forward-skew tolerance
+DEFAULT_NONCE_LEDGER_NAME = "nonces.json"  # in storage_dir
 
 
 PubkeyLookup = Callable[[str], Optional[str]]
@@ -259,6 +268,9 @@ class ActionRouter:
         storage_dir: str = DEFAULT_STORAGE_DIR,
         max_dedup_entries: int = DEFAULT_DEDUP_SIZE,
         allow_unsigned_dev: bool = False,
+        request_ttl_seconds: float = DEFAULT_REQUEST_TTL_SECONDS,
+        clock_skew_seconds: float = DEFAULT_CLOCK_SKEW_SECONDS,
+        enable_nonce_ledger: Optional[bool] = None,
     ):
         """Construct an ActionRouter.
 
@@ -314,6 +326,25 @@ class ActionRouter:
         # H-5 fix: introspect best_match signature once so per-call dispatch
         # never has to swallow a TypeError to discover the calling convention.
         self._best_match_uses_prefer_status: Optional[bool] = None
+
+        # P2 anti-replay state. Two layers of defence:
+        #   1. TTL: reject requests whose timestamp is older than now -
+        #      ttl, OR more than skew seconds in the future.
+        #   2. Persistent nonce ledger: every successfully-verified
+        #      (from_agent, request_id) is recorded on disk; a second
+        #      delivery of the SAME pair is rejected even after the
+        #      in-memory cache evicts it AND across process restarts.
+        # The ledger is opt-in for dev mode (where it would just add
+        # disk churn for smoke tests); production mode turns it on by
+        # default unless the caller explicitly opts out.
+        self._request_ttl_seconds = max(0.0, request_ttl_seconds)
+        self._clock_skew_seconds = max(0.0, clock_skew_seconds)
+        if enable_nonce_ledger is None:
+            self._enable_nonce_ledger = not allow_unsigned_dev
+        else:
+            self._enable_nonce_ledger = bool(enable_nonce_ledger)
+        self._nonce_ledger_path = self._log_dir / DEFAULT_NONCE_LEDGER_NAME
+        self._nonce_lock_path = self._nonce_ledger_path.with_suffix(".json.lock")
 
     # ── verification (the critical path) ──────────────────
 
@@ -466,6 +497,37 @@ class ActionRouter:
             # NB: rejected responses are also NOT logged or cached. They
             # never reached an authenticated state; pretending otherwise
             # would fill the log with attacker-controlled garbage (H-6).
+
+        # P2 anti-replay gate (#1 of 2): TTL window. Only applies in
+        # verified mode; dev mode and the no-TTL configuration skip.
+        if self._verify_enabled and self._request_ttl_seconds > 0:
+            ttl_error = self._check_request_freshness(request)
+            if ttl_error is not None:
+                return ActionResponse(
+                    request_id=request.request_id,
+                    action_type=request.action_type,
+                    from_agent=self.agent_id,
+                    to_agent=_truncate(request.from_agent, MAX_LOG_TO_AGENT_LEN),
+                    status=ActionStatus.REJECTED.value,
+                    error=ttl_error,
+                    sig="",
+                )
+
+        # P2 anti-replay gate (#2 of 2): persistent nonce ledger,
+        # survives process restarts so the same signed request can't
+        # be replayed after _seen evicts the in-memory entry.
+        if self._enable_nonce_ledger and self._verify_enabled:
+            if self._nonce_already_consumed(request):
+                return ActionResponse(
+                    request_id=request.request_id,
+                    action_type=request.action_type,
+                    from_agent=self.agent_id,
+                    to_agent=_truncate(request.from_agent, MAX_LOG_TO_AGENT_LEN),
+                    status=ActionStatus.REJECTED.value,
+                    error="replay detected: (from_agent, request_id) "
+                          "already processed",
+                    sig="",
+                )
 
         # C-2 fix: cache key is (sender, request_id). Two different agents
         # using request_id="r1" will not collide.
@@ -766,6 +828,98 @@ class ActionRouter:
         self._seen[key] = response
         while len(self._seen) > self._max_dedup:
             self._seen.popitem(last=False)   # evict least-recently used
+        # P2: also record on the persistent nonce ledger so a restart
+        # plus cache-eviction can't re-execute the request.
+        if self._enable_nonce_ledger and self._verify_enabled:
+            self._record_nonce(key, response)
+
+    # ===== P2 anti-replay helpers =====
+
+    def _check_request_freshness(self, request: ActionRequest) -> Optional[str]:
+        """Return None if request is within the TTL+skew window, else
+        a human-readable rejection reason. Skips when timestamp is
+        empty (back-compat, but logs)."""
+        if not request.timestamp:
+            logger.warning(
+                "verified request %s has empty timestamp; skipping TTL check",
+                request.short_id,
+            )
+            return None
+        try:
+            ts = datetime.fromisoformat(request.timestamp)
+        except (ValueError, TypeError):
+            return f"malformed timestamp: {request.timestamp!r}"
+        # Normalise to aware UTC; reject naive timestamps in production
+        # (they could be intentionally ambiguous across timezones to
+        # widen the TTL window).
+        if ts.tzinfo is None:
+            return "naive timestamp rejected; must carry timezone marker"
+        now = datetime.now(timezone.utc)
+        age = (now - ts).total_seconds()
+        if age > self._request_ttl_seconds:
+            return (
+                f"request expired: age={age:.1f}s "
+                f"> ttl={self._request_ttl_seconds:.0f}s"
+            )
+        if age < -self._clock_skew_seconds:
+            return (
+                f"request from the future: skew={-age:.1f}s "
+                f"> allowed={self._clock_skew_seconds:.0f}s"
+            )
+        return None
+
+    def _load_nonce_ledger(self) -> Dict[str, float]:
+        """Load the persisted nonce ledger ({key: epoch_seconds}).
+        Caller MUST hold the inter-process lock."""
+        raw = safe_load_json(self._nonce_ledger_path, fallback=None)
+        if not isinstance(raw, dict):
+            return {}
+        # Sweep stale entries while we have the file open: anything older
+        # than ttl + skew has its slot recovered for the next emit.
+        cutoff = (
+            datetime.now(timezone.utc).timestamp()
+            - self._request_ttl_seconds
+            - self._clock_skew_seconds
+        )
+        out: Dict[str, float] = {}
+        for k, v in raw.items():
+            if isinstance(v, (int, float)) and float(v) >= cutoff:
+                out[str(k)] = float(v)
+        return out
+
+    @staticmethod
+    def _nonce_key(from_agent: str, request_id: str) -> str:
+        """Flat string key for the JSON ledger. Pipe is forbidden by the
+        cache key invariant; using it as separator keeps the file small."""
+        return f"{from_agent}|{request_id}"
+
+    def _nonce_already_consumed(self, request: ActionRequest) -> bool:
+        try:
+            with InterProcessLock(self._nonce_lock_path):
+                ledger = self._load_nonce_ledger()
+                return self._nonce_key(request.from_agent, request.request_id) in ledger
+        except OSError as exc:
+            # If the ledger can't be opened, fail CLOSED: better to
+            # reject than to silently allow a replay.
+            logger.warning("nonce ledger read failed: %s; failing closed", exc)
+            return True
+
+    def _record_nonce(self, key: CacheKey, response: ActionResponse) -> None:
+        """Add (from_agent, request_id) to the persistent ledger after
+        the request was actually processed. Only completed and failed
+        statuses qualify - rejections are NOT recorded (they didn't
+        truly execute)."""
+        if response.status == ActionStatus.REJECTED.value:
+            return
+        try:
+            with InterProcessLock(self._nonce_lock_path):
+                ledger = self._load_nonce_ledger()
+                ledger[self._nonce_key(key[0], key[1])] = datetime.now(
+                    timezone.utc,
+                ).timestamp()
+                atomic_write_json(self._nonce_ledger_path, ledger)
+        except OSError as exc:
+            logger.warning("nonce ledger write failed: %s", exc)
 
     def _log(self, request: ActionRequest, response: ActionResponse) -> None:
         self._append_log("requests_received", request.to_dict())
