@@ -48,6 +48,7 @@ from .discovery import AgentRegistry, PeerFinder
 from .orchestration import Mission, MissionRunner, MissionStore
 from .membership import MembershipManager
 from .identity import AgentIdentity
+from .groups import GroupManager
 
 logger = logging.getLogger("nth_dao.attach")
 
@@ -115,11 +116,21 @@ class TeamSession:
     mission_store: MissionStore
     runner: MissionRunner
     membership: MembershipManager
+    group_manager: GroupManager
     identity: Optional[AgentIdentity] = None
     backend: Optional[AgentBackend] = None
     capabilities: List[str] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
     _detached: bool = False
+
+    # v0.9.8 (P4): lazily-constructed agent collaboration primitives.
+    # Built on first access via the methods below so attach() stays
+    # fast for callers that only need discovery / blackboard.
+    _action_router: Any = field(default=None, repr=False)
+    _subscriptions: Any = field(default=None, repr=False)
+    _fault_isolator: Any = field(default=None, repr=False)
+    _event_bus: Any = field(default=None, repr=False)
+    _profile: Any = field(default=None, repr=False)
 
     #
 
@@ -130,6 +141,104 @@ class TeamSession:
     def discover_others(self) -> List:
         """List currently alive agents excluding self."""
         return [r for r in self.registry.list_alive() if r.agent_id != self.agent_id]
+
+    # ====================================================================
+    # v0.9.8 (P4): agent collaboration primitives, lazily constructed.
+    # The first call instantiates and caches; subsequent calls return the
+    # cached instance. attach() does NOT eagerly build these because most
+    # callers (discover-only, blackboard-only, mission-only) don't need
+    # them and we want attach to stay cheap.
+    # ====================================================================
+
+    def event_bus(self):
+        """Get the team-level signed EventBus.
+
+        Used by FaultIsolator, SubscriptionManager, and any caller who
+        wants to publish or replay team-wide audit events. The bus is
+        shared across this TeamSession so all primitives see the same
+        chain.
+        """
+        if self._event_bus is None:
+            from .event_bus import EventBus
+            self._event_bus = EventBus(self.workspace, identity=self.identity)
+        return self._event_bus
+
+    def subscriptions(self):
+        """Per-cursor pub/sub over the EventBus.
+
+        Subscribers register a glob pattern + callback; poll() delivers
+        every new matching event since the last call.
+        """
+        if self._subscriptions is None:
+            from .event_subscriptions import SubscriptionManager
+            self._subscriptions = SubscriptionManager(self.event_bus())
+        return self._subscriptions
+
+    def fault_isolator(self):
+        """Circuit breaker + signed audit events for cross-agent
+        interactions.
+
+        Failures and state transitions emit signed events to the team
+        EventBus so an auditor can detect a peer being repeatedly
+        forced into OPEN state (potential censorship).
+        """
+        if self._fault_isolator is None:
+            from .fault_isolation import FaultIsolator
+            self._fault_isolator = FaultIsolator(
+                workspace=self.workspace, event_bus=self.event_bus(),
+            )
+        return self._fault_isolator
+
+    def action_router(self, *, allow_unsigned_dev: bool = False):
+        """Signed cross-agent action dispatch with TTL + nonce replay
+        protection.
+
+        Construction REFUSES unless either (identity AND a pubkey
+        lookup are wired up) OR allow_unsigned_dev=True is set
+        explicitly. The default routes the pubkey lookup through
+        AgentRegistry's records.
+        """
+        if self._action_router is not None:
+            return self._action_router
+
+        from .action_routing import ActionRouter
+
+        def lookup(aid: str):
+            record = self.registry.get(aid)
+            if record is None:
+                return None
+            # AgentRegistry stores the pubkey in record.metadata or as
+            # an attribute depending on version; tolerate both.
+            return (
+                getattr(record, "pubkey_hex", "")
+                or (record.metadata or {}).get("pubkey_hex", "")
+            ) or None
+
+        if allow_unsigned_dev or self.identity is None or not self.identity.can_sign:
+            self._action_router = ActionRouter(
+                agent_id=self.agent_id,
+                workspace=self.workspace,
+                allow_unsigned_dev=True,
+            )
+        else:
+            self._action_router = ActionRouter(
+                agent_id=self.agent_id,
+                identity=self.identity,
+                pubkey_lookup=lookup,
+                workspace=self.workspace,
+            )
+        return self._action_router
+
+    def profile(self):
+        """Read-time aggregated view of this agent for UI display."""
+        from .agent_profile import AgentProfile
+        record = self.registry.get(self.agent_id)
+        return AgentProfile.build(
+            self.agent_id,
+            identity=self.identity if (self.identity and self.identity.pubkey_hex) else None,
+            record=record if record is not None else None,
+            health=self._fault_isolator,
+        )
 
     def find_teammate(
         self,
@@ -162,6 +271,36 @@ class TeamSession:
             )
             return results[0] if results else None
         return None
+
+    def send_message(
+        self,
+        channel_id: str,
+        body: str,
+        kind: Union[str, "MessageKind"] = "text",
+        reply_to: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "Message":
+        """Post a message to a channel via GroupManager."""
+        return self.group_manager.post_message(
+            channel_id=channel_id,
+            sender_id=self.agent_id,
+            body=body,
+            kind=kind,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    def read_messages(
+        self,
+        channel_id: str = "general",
+        limit: Optional[int] = 50,
+    ) -> list:
+        """Read recent messages from a channel."""
+        return self.group_manager.list_messages(
+            channel_id=channel_id,
+            actor_id=self.agent_id,
+            limit=limit,
+        )
 
     def start_mission(
         self,
@@ -366,6 +505,9 @@ def attach(
         registry=registry,  # 让 handoff 能检查目标 alive
     )
 
+    # Group layer — channels, messages, tasks
+    group_mgr = GroupManager(workspace, membership=membership)
+
     return TeamSession(
         agent_id=agent_id,
         backend_id=backend_id_str,
@@ -378,6 +520,7 @@ def attach(
         mission_store=mission_store,
         runner=runner,
         membership=membership,
+        group_manager=group_mgr,
         identity=agent_identity,
         backend=backend_instance,
         capabilities=capabilities,

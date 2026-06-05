@@ -204,6 +204,29 @@ from .event_bus import (
     EventBus,
     VerificationResult as EventBusVerificationResult,
 )
+# v0.9.8: Agent collaboration primitives (P4 facade entry points).
+# These five modules together form the cross-agent dispatch layer:
+#   - AgentProfile     read-time aggregated view for UI
+#   - ActionRouter     signed dispatch with TTL + nonce + target gate
+#   - SubscriptionManager  per-cursor pub/sub on the EventBus
+#   - FaultIsolator    circuit breaker with signed audit events
+from .agent_profile import AgentProfile
+from .action_routing import (
+    ActionRequest,
+    ActionResponse,
+    ActionRouter,
+    ActionStatus,
+    HandlerInfo,
+    PubkeyLookup,
+    RouteStrategy,
+)
+from .event_subscriptions import Subscription, SubscriptionManager
+from .fault_isolation import (
+    AgentHealth,
+    CircuitState,
+    FailureRecord,
+    FaultIsolator,
+)
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
     build_credential as build_achievement_credential,
@@ -370,6 +393,21 @@ __all__ = [
     "EventBus",
     "EventBusVerificationResult",
     "CorrectionType",
+    # v0.9.8 Agent collaboration primitives (P4 facade)
+    "AgentProfile",
+    "ActionRequest",
+    "ActionResponse",
+    "ActionRouter",
+    "ActionStatus",
+    "HandlerInfo",
+    "PubkeyLookup",
+    "RouteStrategy",
+    "Subscription",
+    "SubscriptionManager",
+    "AgentHealth",
+    "CircuitState",
+    "FailureRecord",
+    "FaultIsolator",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",
