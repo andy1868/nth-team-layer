@@ -274,6 +274,84 @@ def check_replay_window(vectors: List[dict]) -> List[ConformanceFailure]:
 # ─────────────────── orchestration ───────────────────
 
 
+def check_mandate_canonical(category_label: str):
+    """Factory for the three mandate canonical-JSON checkers
+    (intent / cart / payment). All three share the same shape:
+    canonical_json(input) must equal expected_bytes_hex."""
+    def _check(vectors: List[dict]) -> List[ConformanceFailure]:
+        failures = []
+        for v in vectors:
+            expected = bytes.fromhex(v["expected_bytes_hex"])
+            actual = canonical_json(v["input"])
+            if actual != expected:
+                failures.append(ConformanceFailure(
+                    vector_id=v["id"],
+                    category=category_label,
+                    description=v.get("description", ""),
+                    expected=expected.hex(),
+                    actual=actual.hex(),
+                ))
+        return failures
+    return _check
+
+
+def check_mandate_negative_binding(vectors: List[dict]) -> List[ConformanceFailure]:
+    """Each vector pairs a cart with an intent (or a payment with a
+    cart) that MUST be rejected by the appropriate binding check, with
+    a reason string that contains a fixed substring."""
+    from ..mandate.cart import cart_satisfies_intent
+    from ..mandate.payment import payment_satisfies_cart
+
+    failures: List[ConformanceFailure] = []
+    for v in vectors:
+        inp = v["input"]
+        expected_ok = v["expected_ok"]
+        expected_reason_contains = v["expected_reason_contains"]
+
+        if "cart" in inp and "intent" in inp:
+            ok, reason = cart_satisfies_intent(inp["cart"], inp["intent"])
+        elif "payment" in inp and "cart_presented" in inp:
+            ok, reason = payment_satisfies_cart(inp["payment"], inp["cart_presented"])
+        else:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="mandate_negative_binding",
+                description=v.get("description", ""),
+                expected="known input shape",
+                actual=f"unknown input keys: {sorted(inp)}",
+            ))
+            continue
+
+        if ok != expected_ok or expected_reason_contains not in reason:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="mandate_negative_binding",
+                description=v.get("description", ""),
+                expected=f"ok={expected_ok}, reason~='{expected_reason_contains}'",
+                actual=f"ok={ok}, reason={reason!r}",
+            ))
+    return failures
+
+
+def check_mandate_negative_expiry(vectors: List[dict]) -> List[ConformanceFailure]:
+    """is_intent_expired called with fixed `now` must return the
+    expected bool."""
+    from datetime import datetime
+    from ..mandate.intent import is_intent_expired
+
+    failures: List[ConformanceFailure] = []
+    for v in vectors:
+        intent = v["input"]["intent"]
+        now = datetime.fromisoformat(v["input"]["now"])
+        actual = is_intent_expired(intent, now=now)
+        expected = v["expected_expired"]
+        if actual != expected:
+            failures.append(ConformanceFailure(
+                vector_id=v["id"], category="mandate_negative_expiry",
+                description=v.get("description", ""),
+                expected=str(expected), actual=str(actual),
+            ))
+    return failures
+
+
 _CHECKERS: Dict[str, Callable[[List[dict]], List[ConformanceFailure]]] = {
     "canonical_json":              check_canonical_json,
     "fingerprint":                 check_fingerprint,
@@ -286,6 +364,12 @@ _CHECKERS: Dict[str, Callable[[List[dict]], List[ConformanceFailure]]] = {
     "did_key_encoding":            check_did_key_encoding,
     "lan_psk_tag":                 check_lan_psk_tag,
     "replay_window":               check_replay_window,
+    # v0.10 T-4 Mandate vectors
+    "mandate_intent_canonical":    check_mandate_canonical("mandate_intent_canonical"),
+    "mandate_cart_canonical":      check_mandate_canonical("mandate_cart_canonical"),
+    "mandate_payment_canonical":   check_mandate_canonical("mandate_payment_canonical"),
+    "mandate_negative_binding":    check_mandate_negative_binding,
+    "mandate_negative_expiry":     check_mandate_negative_expiry,
 }
 
 
