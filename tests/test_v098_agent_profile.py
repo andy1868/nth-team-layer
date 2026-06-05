@@ -88,7 +88,10 @@ def test_defaults():
     p = AgentProfile(agent_id="alice")
     assert p.agent_id == "alice"
     assert p.health_score == 1.0
-    assert p.is_alive is True
+    # M-4 fix: unknown agents (no record source) default to OFFLINE,
+    # not online. The previous default of True silently asserted
+    # liveness it had no data to support.
+    assert p.is_alive is False
     assert p.reputation_count == 0
 
 

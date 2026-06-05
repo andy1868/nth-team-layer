@@ -116,7 +116,10 @@ class AgentProfile:
     roles: List[str] = field(default_factory=list)
 
     health_score: float = 1.0
-    is_alive: bool = True
+    # M-4 fix: an empty profile (no record source attached) should NOT
+    # claim the agent is online. False is the safe default; the record
+    # path overrides it when there's real liveness data.
+    is_alive: bool = False
 
     reputation_score: float = 0.0
     reputation_count: int = 0
@@ -162,8 +165,16 @@ class AgentProfile:
             profile.label = identity.label
             profile.pubkey_fingerprint = identity.pubkey_hex or ""
             if identity.pubkey_hex:
-                # Plain (non-crypto) identities have no DID; check before calling.
-                profile.did = identity.as_did()
+                # H-9 fix: as_did() may raise on a non-Ed25519 key (RSA,
+                # secp256k1, ...) — perfectly valid identities NTH DAO
+                # itself happens not to know how to turn into a did:key.
+                # Soft-fail to did="" with a debug log; the rest of the
+                # profile is still useful.
+                try:
+                    profile.did = identity.as_did()
+                except (ValueError, NotImplementedError, AttributeError) as exc:
+                    logger.debug("as_did() failed for %s: %s", agent_id, exc)
+                    profile.did = ""
 
         if record is not None:
             profile.capabilities = list(record.capabilities or [])
@@ -207,9 +218,12 @@ class AgentProfile:
 
         Markdown renderers handle character width correctly, so this
         avoids the box-drawing alignment bugs the original ASCII renderer
-        exhibited with wide glyphs in ``label`` / ``groups``.
+        exhibited with wide glyphs in ``label`` / ``groups``. All
+        attacker-or-user-controlled strings are escaped (M-2) so
+        backticks or pipes in agent_id / label / groups can't break the
+        table or inject inline-code formatting.
         """
-        label = self.label or self.agent_id
+        label = _escape_md(self.label or self.agent_id)
         alive_glyph = "🟢 online" if self.is_alive else "⚫ offline"
         bar = _markdown_bar(self.health_score)
         rep_str = (
@@ -221,14 +235,14 @@ class AgentProfile:
             "",
             f"| Field | Value |",
             f"|---|---|",
-            f"| Code | `{self.agent_id}` |",
-            f"| Status | {alive_glyph} · {self.status or 'n/a'} |",
+            f"| Code | `{_escape_md_code(self.agent_id)}` |",
+            f"| Status | {alive_glyph} · {_escape_md(self.status) or 'n/a'} |",
             f"| Health | {bar} ({self.health_score:.2f}) |",
-            f"| DID | `{self.did or 'n/a'}` |",
-            f"| Backend | {self.backend_id or 'n/a'} |",
-            f"| Capabilities | {', '.join(self.capabilities) or 'n/a'} |",
-            f"| Groups | {', '.join(self.groups) or 'n/a'} |",
-            f"| Roles | {', '.join(self.roles) or 'n/a'} |",
+            f"| DID | `{_escape_md_code(self.did) or 'n/a'}` |",
+            f"| Backend | {_escape_md(self.backend_id) or 'n/a'} |",
+            f"| Capabilities | {', '.join(_escape_md(c) for c in self.capabilities) or 'n/a'} |",
+            f"| Groups | {', '.join(_escape_md(g) for g in self.groups) or 'n/a'} |",
+            f"| Roles | {', '.join(_escape_md(r) for r in self.roles) or 'n/a'} |",
             f"| Reputation | {rep_str} |",
         ]
         if self.missions_completed or self.missions_owned:
@@ -261,6 +275,27 @@ def _markdown_bar(score: float, width: int = 10) -> str:
     score = max(0.0, min(1.0, score))
     filled = int(score * width)
     return "▰" * filled + "▱" * (width - filled)
+
+
+def _escape_md(value: str) -> str:
+    """Escape characters that would break a Markdown table cell or
+    inject inline formatting. Conservative: handles | and backtick;
+    leaves underscores / asterisks alone because they're frequent in
+    legitimate agent_ids and would noisy-escape every row."""
+    if not value:
+        return ""
+    return value.replace("|", "\\|").replace("`", "\\`")
+
+
+def _escape_md_code(value: str) -> str:
+    """Inline-code cells use backticks as delimiters; ANY backtick inside
+    the value breaks them. Replace with a visually-similar marker that
+    survives Markdown parsing."""
+    if not value:
+        return ""
+    # U+02CB MODIFIER LETTER GRAVE ACCENT looks like a backtick but
+    # isn't one, so Markdown doesn't close the inline code on it.
+    return value.replace("`", "ˋ").replace("|", "\\|")
 
 
 __all__ = [
