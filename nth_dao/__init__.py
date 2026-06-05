@@ -242,6 +242,14 @@ from .mandate import (
     is_cart_expired,
     sign_cart_mandate,
     verify_cart_mandate,
+    # T-3 PaymentMandate primitives + end-to-end triad gate
+    build_payment_mandate,
+    complete_triad_chain,
+    is_payment_expired,
+    payment_mandate_digest,
+    payment_satisfies_cart,
+    sign_payment_mandate,
+    verify_payment_mandate,
 )
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
@@ -437,6 +445,14 @@ __all__ = [
     "is_cart_expired",
     "sign_cart_mandate",
     "verify_cart_mandate",
+    # v0.10 T-3 PaymentMandate primitives + end-to-end gate
+    "build_payment_mandate",
+    "complete_triad_chain",
+    "is_payment_expired",
+    "payment_mandate_digest",
+    "payment_satisfies_cart",
+    "sign_payment_mandate",
+    "verify_payment_mandate",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",

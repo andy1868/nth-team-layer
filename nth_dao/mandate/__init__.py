@@ -47,6 +47,18 @@ from .cart import (
     sign_cart_mandate,
     verify_cart_mandate,
 )
+from .payment import (
+    PAYMENT_CONTEXT,
+    PAYMENT_TYPE,
+    PROOF_PURPOSE as PAYMENT_PROOF_PURPOSE,
+    build_payment_mandate,
+    complete_triad_chain,
+    is_payment_expired,
+    payment_mandate_digest,
+    payment_satisfies_cart,
+    sign_payment_mandate,
+    verify_payment_mandate,
+)
 
 __all__ = [
     # IntentMandate (T-1)
@@ -69,4 +81,15 @@ __all__ = [
     "is_cart_expired",
     "sign_cart_mandate",
     "verify_cart_mandate",
+    # PaymentMandate (T-3)
+    "PAYMENT_CONTEXT",
+    "PAYMENT_TYPE",
+    "PAYMENT_PROOF_PURPOSE",
+    "build_payment_mandate",
+    "complete_triad_chain",
+    "is_payment_expired",
+    "payment_mandate_digest",
+    "payment_satisfies_cart",
+    "sign_payment_mandate",
+    "verify_payment_mandate",
 ]
