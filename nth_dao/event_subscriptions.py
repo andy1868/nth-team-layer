@@ -33,13 +33,19 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
+
+from .util import now_iso
 
 if TYPE_CHECKING:
     from .event_bus import EventBus, BusEvent
 
 logger = logging.getLogger("nth_dao.event_subscriptions")
+
+# Characters that turn an fnmatch pattern into a glob (vs exact match).
+# If a pattern has none of these, we can push it down into EventBus.replay's
+# event_types filter and skip the full-stream scan (H-7 fast path).
+_GLOB_META = set("*?[]")
 
 
 @dataclass
@@ -52,11 +58,14 @@ class Subscription:
     subscriber_id: str
     callback: Callable[["BusEvent"], Any] = field(repr=False)
     cursor: str = ""    # last delivered event_id; "" means "from start"
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    created_at: str = field(default_factory=now_iso)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def matches(self, event_type: str) -> bool:
-        return fnmatch.fnmatch(event_type, self.pattern)
+        # C-7 fix: fnmatch.fnmatch is case-insensitive on Windows but
+        # case-sensitive on POSIX. Using fnmatchcase guarantees identical
+        # behaviour on every host — critical for cross-platform NTH DAO.
+        return fnmatch.fnmatchcase(event_type, self.pattern)
 
 
 class SubscriptionManager:
@@ -72,6 +81,11 @@ class SubscriptionManager:
         self._max_deliveries = max(1, max_deliveries_per_poll)
         self._lock = threading.Lock()
         self._subs: Dict[str, Subscription] = {}
+        # H-8 fix: per-subscription "currently polling" sentinel. Without
+        # this, a release-then-reacquire window between reading cursor and
+        # writing it back let a SECOND concurrent poll for the same sub
+        # start from the stale cursor and double-deliver events.
+        self._polling: Set[str] = set()
 
     # ── registry ───────────────────────────────────────────
 
@@ -122,9 +136,16 @@ class SubscriptionManager:
     def poll(self) -> int:
         """Deliver new events to matching subscriptions.
 
-        Returns the total number of deliveries. Per-subscription
-        cursors are advanced independently so a narrow pattern never
-        misses an event because a broader pattern raced ahead.
+        Returns the *total* number of deliveries across all
+        subscriptions. NB: ``max_deliveries_per_poll`` caps EACH
+        subscription independently; a single poll() with N matching
+        subscriptions can deliver up to N × cap (M-1 clarification).
+
+        Per-subscription cursors advance independently so a narrow
+        pattern never stalls when a wildcard subscription races
+        ahead. Concurrent poll() calls for the same subscription are
+        serialised by a polling sentinel (H-8) so events are never
+        double-delivered.
         """
         delivered = 0
         with self._lock:
@@ -134,39 +155,57 @@ class SubscriptionManager:
         return delivered
 
     def _deliver_one(self, sub_id: str) -> int:
+        # H-8 fix: claim the polling sentinel under the lock; if a
+        # concurrent poll is already in flight for this sub, skip it
+        # rather than starting a second walk from a stale cursor.
         with self._lock:
             sub = self._subs.get(sub_id)
-            if sub is None:
+            if sub is None or sub_id in self._polling:
                 return 0
+            self._polling.add(sub_id)
             cursor = sub.cursor
             pattern = sub.pattern
             callback = sub.callback
-        n = 0
-        last_event_id = cursor
-        # replay(from_id=cursor) yields events AFTER `cursor`. When cursor
-        # is "" we get the whole stream from the start, which is what a
-        # fresh subscription wants.
-        for event in self._bus.replay(from_id=cursor or None):
-            if n >= self._max_deliveries:
-                break
-            if not fnmatch.fnmatch(event.event_type, pattern):
-                last_event_id = event.event_id    # advance even if skipped
-                continue
-            try:
-                callback(event)
-            except Exception as exc:   # noqa: BLE001
-                # A misbehaving subscriber MUST NOT freeze the others.
-                logger.warning("subscription %s callback failed: %s", sub_id, exc)
-            last_event_id = event.event_id
-            n += 1
-        # Persist the advanced cursor under the lock so two pollers
-        # don't both replay the same window.
-        if last_event_id != cursor:
+
+        try:
+            # H-7 fix: if the pattern has no glob meta-characters we know
+            # it's an EXACT event_type and we can push the filter down
+            # into the bus replay path — avoiding the per-event fnmatch
+            # call AND letting any future replay-side optimisation cut
+            # the scan early.
+            event_types = None
+            if not any(c in _GLOB_META for c in pattern):
+                event_types = [pattern]
+
+            n = 0
+            last_event_id = cursor
+            for event in self._bus.replay(
+                from_id=cursor or None,
+                event_types=event_types,
+            ):
+                if n >= self._max_deliveries:
+                    break
+                if event_types is None and not fnmatch.fnmatchcase(event.event_type, pattern):
+                    last_event_id = event.event_id    # advance even if skipped
+                    continue
+                try:
+                    callback(event)
+                except Exception as exc:   # noqa: BLE001
+                    # A misbehaving subscriber MUST NOT freeze the others.
+                    logger.warning("subscription %s callback failed: %s", sub_id, exc)
+                last_event_id = event.event_id
+                n += 1
+            # Persist the advanced cursor under the lock — only mutate if
+            # the subscription still exists (unsubscribe may have raced).
+            if last_event_id != cursor:
+                with self._lock:
+                    sub = self._subs.get(sub_id)
+                    if sub is not None:
+                        sub.cursor = last_event_id
+            return n
+        finally:
             with self._lock:
-                sub = self._subs.get(sub_id)
-                if sub is not None:
-                    sub.cursor = last_event_id
-        return n
+                self._polling.discard(sub_id)
 
 
 __all__ = ["Subscription", "SubscriptionManager"]
