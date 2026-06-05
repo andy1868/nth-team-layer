@@ -297,6 +297,18 @@ class FaultIsolator:
                 )
             )
 
+            # P3: emit every failure as a signed audit event so that on
+            # process restart the counter can be reconstructed from the
+            # EventBus stream. Without this, an attacker could repeatedly
+            # crash the service to evade the threshold (H-10 deferred
+            # persist only writes on transitions).
+            self._defer_event("failure.observed", {
+                "agent_id": agent_id,
+                "action_type": action_type,
+                "error": error[:500],
+                "timestamp": now,
+            })
+
             recent = self._recent_failures(agent_id)
             if len(recent) >= self._failure_threshold:
                 if h.circuit_state == CircuitState.CLOSED.value:
@@ -569,6 +581,57 @@ class FaultIsolator:
             if self._dirty:
                 self._persist()
         self._drain_pending_events()
+
+    def replay_from_event_bus(self) -> int:
+        """P3: rebuild in-memory failure deques from signed
+        ``failure.observed`` events on the bus.
+
+        Called at startup so an attacker who crashes the process to
+        evade the threshold counter has the counter reconstructed from
+        the audit stream rather than reset to zero. Returns the number
+        of failure events replayed. Safe to call multiple times - it
+        clears the in-memory deques first to avoid double-counting.
+
+        Production-mode-only: if no event_bus is configured this is a
+        no-op (the audit feed isn't there to read).
+        """
+        if self._event_bus is None:
+            return 0
+        with self._lock:
+            self._ensure_loaded()
+            # Clear in-memory failures first so a re-call doesn't
+            # double-count. Persisted health (transition counters,
+            # circuit states) remains from disk - those came from
+            # _persist on transitions and are authoritative.
+            self._failures.clear()
+            cutoff_ts = (
+                datetime.now(timezone.utc).timestamp() - self._failure_window
+            )
+            count = 0
+            for event in self._event_bus.replay(event_types=["failure.observed"]):
+                payload = event.payload or {}
+                aid = payload.get("agent_id", "")
+                ts_str = payload.get("timestamp", "")
+                if not aid or not ts_str:
+                    continue
+                try:
+                    ts_epoch = datetime.fromisoformat(ts_str).timestamp()
+                except (ValueError, TypeError):
+                    continue
+                if ts_epoch < cutoff_ts:
+                    continue   # outside the failure window
+                self._failures.setdefault(
+                    aid, deque(maxlen=self._failures_cap),
+                ).append(
+                    FailureRecord(
+                        agent_id=aid,
+                        action_type=str(payload.get("action_type", "")),
+                        error=str(payload.get("error", ""))[:500],
+                        timestamp=ts_str,
+                    )
+                )
+                count += 1
+            return count
 
     def __repr__(self) -> str:
         with self._lock:
