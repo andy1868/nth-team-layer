@@ -235,6 +235,13 @@ from .mandate import (
     is_intent_expired,
     sign_intent_mandate,
     verify_intent_mandate,
+    # T-2 CartMandate primitives
+    build_cart_mandate,
+    cart_mandate_digest,
+    cart_satisfies_intent,
+    is_cart_expired,
+    sign_cart_mandate,
+    verify_cart_mandate,
 )
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
@@ -423,6 +430,13 @@ __all__ = [
     "is_intent_expired",
     "sign_intent_mandate",
     "verify_intent_mandate",
+    # v0.10 T-2 CartMandate primitives
+    "build_cart_mandate",
+    "cart_mandate_digest",
+    "cart_satisfies_intent",
+    "is_cart_expired",
+    "sign_cart_mandate",
+    "verify_cart_mandate",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",

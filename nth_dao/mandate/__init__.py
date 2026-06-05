@@ -29,22 +29,44 @@ from .intent import (
     INTENT_CONTEXT,
     INTENT_TYPE,
     PROOF_TYPE,
-    PROOF_PURPOSE,
+    PROOF_PURPOSE as INTENT_PROOF_PURPOSE,
     build_intent_mandate,
     intent_mandate_digest,
     is_intent_expired,
     sign_intent_mandate,
     verify_intent_mandate,
 )
+from .cart import (
+    CART_CONTEXT,
+    CART_TYPE,
+    PROOF_PURPOSE as CART_PROOF_PURPOSE,
+    build_cart_mandate,
+    cart_mandate_digest,
+    cart_satisfies_intent,
+    is_cart_expired,
+    sign_cart_mandate,
+    verify_cart_mandate,
+)
 
 __all__ = [
+    # IntentMandate (T-1)
     "INTENT_CONTEXT",
     "INTENT_TYPE",
+    "INTENT_PROOF_PURPOSE",
     "PROOF_TYPE",
-    "PROOF_PURPOSE",
     "build_intent_mandate",
     "intent_mandate_digest",
     "is_intent_expired",
     "sign_intent_mandate",
     "verify_intent_mandate",
+    # CartMandate (T-2)
+    "CART_CONTEXT",
+    "CART_TYPE",
+    "CART_PROOF_PURPOSE",
+    "build_cart_mandate",
+    "cart_mandate_digest",
+    "cart_satisfies_intent",
+    "is_cart_expired",
+    "sign_cart_mandate",
+    "verify_cart_mandate",
 ]
