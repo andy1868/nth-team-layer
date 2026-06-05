@@ -39,10 +39,27 @@ from .translate import (
     mission_inputs_from_a2a_message,
     template_to_a2a_skill,
 )
+# v0.10 T-7: capabilities-list-shaped Agent Card builder + validator
+from .agent_card import (
+    A2A_PROTOCOL_VERSION,
+    A2A_WELL_KNOWN_PATH,
+    build_agent_card,
+    build_agent_card_from_session,
+    validate_agent_card,
+    write_agent_card,
+)
 
 __all__ = [
+    # v0.9.5 translation primitives
     "template_to_a2a_skill",
     "agent_card_from",
     "a2a_task_from_mission",
     "mission_inputs_from_a2a_message",
+    # v0.10 T-7 Agent Card generator
+    "A2A_PROTOCOL_VERSION",
+    "A2A_WELL_KNOWN_PATH",
+    "build_agent_card",
+    "build_agent_card_from_session",
+    "validate_agent_card",
+    "write_agent_card",
 ]

@@ -262,6 +262,15 @@ from .mandate import (
     emit_payment_authorised,
     emit_settlement_completed,
 )
+# v0.10 T-7: A2A Agent Card generator (well-known/agent.json)
+from .a2a import (
+    A2A_PROTOCOL_VERSION,
+    A2A_WELL_KNOWN_PATH,
+    build_agent_card,
+    build_agent_card_from_session,
+    validate_agent_card,
+    write_agent_card,
+)
 # v0.9.6: AchievementCredential reducer — month-folded W3C VC over the ledger
 from .achievement import (
     build_credential as build_achievement_credential,
@@ -474,6 +483,13 @@ __all__ = [
     "emit_cart_received",
     "emit_payment_authorised",
     "emit_settlement_completed",
+    # v0.10 T-7 A2A Agent Card generator
+    "A2A_PROTOCOL_VERSION",
+    "A2A_WELL_KNOWN_PATH",
+    "build_agent_card",
+    "build_agent_card_from_session",
+    "validate_agent_card",
+    "write_agent_card",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",
