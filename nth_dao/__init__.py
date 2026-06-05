@@ -263,11 +263,17 @@ from .mandate import (
     emit_settlement_completed,
 )
 # v0.10 T-7: A2A Agent Card generator (well-known/agent.json)
+# v0.10 T-8: A2A JSON-RPC 2.0 server skeleton
 from .a2a import (
+    A2A_METHODS_IMPLEMENTED,
+    A2A_METHODS_PLANNED,
     A2A_PROTOCOL_VERSION,
+    A2A_TASK_NOT_FOUND,
     A2A_WELL_KNOWN_PATH,
+    JsonRpcError,
     build_agent_card,
     build_agent_card_from_session,
+    create_a2a_app,
     validate_agent_card,
     write_agent_card,
 )
@@ -490,6 +496,12 @@ __all__ = [
     "build_agent_card_from_session",
     "validate_agent_card",
     "write_agent_card",
+    # v0.10 T-8 A2A JSON-RPC 2.0 server
+    "A2A_METHODS_IMPLEMENTED",
+    "A2A_METHODS_PLANNED",
+    "A2A_TASK_NOT_FOUND",
+    "JsonRpcError",
+    "create_a2a_app",
     # AchievementCredential (v0.9.6) — monthly W3C VC reducer over ledger
     "build_achievement_credential",
     "achievement_credential_digest",

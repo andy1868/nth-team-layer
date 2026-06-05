@@ -48,6 +48,15 @@ from .agent_card import (
     validate_agent_card,
     write_agent_card,
 )
+# v0.10 T-8: JSON-RPC 2.0 server skeleton (tasks/get implemented,
+# rest return -32601 with planned-release hint)
+from .server import (
+    A2A_METHODS_IMPLEMENTED,
+    A2A_METHODS_PLANNED,
+    A2A_TASK_NOT_FOUND,
+    JsonRpcError,
+    create_a2a_app,
+)
 
 __all__ = [
     # v0.9.5 translation primitives
@@ -62,4 +71,10 @@ __all__ = [
     "build_agent_card_from_session",
     "validate_agent_card",
     "write_agent_card",
+    # v0.10 T-8 JSON-RPC server skeleton
+    "A2A_METHODS_IMPLEMENTED",
+    "A2A_METHODS_PLANNED",
+    "A2A_TASK_NOT_FOUND",
+    "JsonRpcError",
+    "create_a2a_app",
 ]
