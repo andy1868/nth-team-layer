@@ -59,15 +59,18 @@ sender's pubkey via the new ``pubkey_lookup`` injection point.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
+import threading
 import uuid
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+from .util import InterProcessLock, monotonic_ms, now_iso
 
 if TYPE_CHECKING:
     from .channel import TeamChannel
@@ -76,11 +79,36 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("nth_dao.action_routing")
 
+# Cache key is namespaced by sender to fix C-2 (cross-sender collision).
+CacheKey = Tuple[str, str]    # (from_agent, request_id)
+MAX_LOG_TO_AGENT_LEN = 128    # H-6: bound attacker-controlled echo
+
 
 PubkeyLookup = Callable[[str], Optional[str]]
 """Resolve an agent_id to its hex-encoded Ed25519 pubkey, or None when
 the agent is not known. Wired by the integrator to AgentRegistry,
 GroupRegistry, or any custom directory."""
+
+
+def _truncate(value: str, max_len: int) -> str:
+    """Bound the length of attacker-controlled strings before logging
+    or echoing them in responses (H-6 amplification mitigation)."""
+    if not value:
+        return ""
+    return value if len(value) <= max_len else value[:max_len] + "…"
+
+
+def _dm_scope(a: str, b: str) -> str:
+    """Stable, collision-resistant DM scope id.
+
+    M-3 fix: the original ``f"dm:{min(a,b)}--{max(a,b)}"`` collided
+    when an agent_id contained the ``--`` separator. SHA-256 over the
+    canonical-JSON of the sorted pair is opaque, bounded length, and
+    immune to separator-injection."""
+    import hashlib
+    pair = sorted((a or "", b or ""))
+    payload = json.dumps(pair, separators=(",", ":")).encode("utf-8")
+    return "dm:" + hashlib.sha256(payload).hexdigest()[:16]
 
 
 # ─────────────────────────── enums ──────────────────────────
@@ -124,7 +152,7 @@ class ActionRequest:
     strategy: str = RouteStrategy.DIRECT.value
     correlation_id: str = ""
     reply_to: str = ""
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=now_iso)
     sig: str = ""
 
     def to_dict(self) -> dict:
@@ -165,7 +193,7 @@ class ActionResponse:
     result: Any = None
     error: str = ""
     elapsed_ms: float = 0.0
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=now_iso)
     sig: str = ""
 
     def to_dict(self) -> dict:
@@ -240,9 +268,15 @@ class ActionRouter:
         self._handler_info: Dict[str, HandlerInfo] = {}
         self._round_robin_index: Dict[str, int] = {}
         self._max_dedup = max(1, max_dedup_entries)
-        self._seen: "OrderedDict[str, ActionResponse]" = OrderedDict()
+        # C-3 fix: keyed on (from_agent, request_id) per C-2; LRU eviction
+        # via move_to_end on access. C-1 fix: all reads/writes under _lock.
+        self._seen: "OrderedDict[CacheKey, ActionResponse]" = OrderedDict()
+        self._lock = threading.RLock()
         self._log_dir = self._workspace / storage_dir
         self._log_dir.mkdir(parents=True, exist_ok=True)
+        # H-5 fix: introspect best_match signature once so per-call dispatch
+        # never has to swallow a TypeError to discover the calling convention.
+        self._best_match_uses_prefer_status: Optional[bool] = None
 
     # ── verification (the critical path) ──────────────────
 
@@ -276,7 +310,18 @@ class ActionRouter:
         if not request.sig:
             return False
         assert self._pubkey_lookup is not None
-        sender_pubkey = self._pubkey_lookup(request.from_agent)
+        # C-9 fix: pubkey_lookup is an arbitrary integrator-provided callable.
+        # If it raises (network error, malformed registry record, ...) we
+        # must NOT let the exception propagate out of the handle() path —
+        # the request just gets rejected with no oracle leakage.
+        try:
+            sender_pubkey = self._pubkey_lookup(request.from_agent)
+        except Exception as exc:   # noqa: BLE001
+            logger.warning(
+                "verify reject %s: pubkey_lookup raised: %s",
+                request.short_id, exc,
+            )
+            return False
         if not sender_pubkey:
             logger.warning(
                 "verify reject %s: from_agent %r not in directory",
@@ -311,11 +356,13 @@ class ActionRouter:
         if action_type in self._handlers:
             logger.warning("action_type %r already registered — overwriting", action_type)
         self._handlers[action_type] = handler
+        # M-8 fix: defensive copies so a mutation by the registrant after
+        # register() doesn't leak into the registry.
         self._handler_info[action_type] = HandlerInfo(
             action_type=action_type,
             description=description,
-            input_schema=input_schema or {},
-            metadata=metadata or {},
+            input_schema=dict(input_schema) if input_schema else {},
+            metadata=dict(metadata) if metadata else {},
         )
 
     def unregister(self, action_type: str) -> bool:
@@ -341,65 +388,84 @@ class ActionRouter:
     # ── execution ─────────────────────────────────────────
 
     def handle(self, request: ActionRequest) -> ActionResponse:
-        """verify → dedup → dispatch → sign → log."""
+        """verify → dedup → dispatch → sign → log.
+
+        C-1 fix: the entire critical section is under ``self._lock``.
+        Concurrent handle() calls with the same request_id will serialise,
+        the second one will hit the dedup cache, and the handler will
+        execute exactly once. Without the lock, idempotency was a hope.
+        """
+        # H-6 fix: H-6 amplification mitigation — reject early WITHOUT
+        # signing the response and with a bounded echo of the attacker
+        # input. Verification doesn't need the lock; it's pure.
         if not self._verify_request(request):
-            response = ActionResponse(
+            return ActionResponse(
                 request_id=request.request_id,
                 action_type=request.action_type,
                 from_agent=self.agent_id,
-                to_agent=request.from_agent,
+                to_agent=_truncate(request.from_agent, MAX_LOG_TO_AGENT_LEN),
                 status=ActionStatus.REJECTED.value,
                 error="signature verification failed",
+                # NOT signed — see H-6. Caller cannot replay this as an oracle.
+                sig="",
             )
-            self._sign_response(response)
-            self._log(request, response)
-            return response
+            # NB: rejected responses are also NOT logged or cached. They
+            # never reached an authenticated state; pretending otherwise
+            # would fill the log with attacker-controlled garbage (H-6).
 
-        cached = self._seen.get(request.request_id)
-        if cached is not None:
-            return cached
+        # C-2 fix: cache key is (sender, request_id). Two different agents
+        # using request_id="r1" will not collide.
+        key: CacheKey = (request.from_agent, request.request_id)
 
-        start = datetime.now()
-        handler = self._handlers.get(request.action_type)
-        if handler is None:
-            response = ActionResponse(
-                request_id=request.request_id,
-                action_type=request.action_type,
-                from_agent=self.agent_id,
-                to_agent=request.from_agent,
-                status=ActionStatus.FAILED.value,
-                error=f"no handler registered for action_type {request.action_type!r}",
-            )
-        else:
-            try:
-                result = handler(request)
-                elapsed = (datetime.now() - start).total_seconds() * 1000
-                response = ActionResponse(
-                    request_id=request.request_id,
-                    action_type=request.action_type,
-                    from_agent=self.agent_id,
-                    to_agent=request.from_agent,
-                    status=ActionStatus.COMPLETED.value,
-                    result=result,
-                    elapsed_ms=round(elapsed, 1),
-                )
-            except Exception as exc:   # noqa: BLE001
-                elapsed = (datetime.now() - start).total_seconds() * 1000
+        with self._lock:
+            cached = self._seen.get(key)
+            if cached is not None:
+                # C-3 fix: LRU touch on hit so the eviction policy actually
+                # keeps the *recently used* entries, not the recently
+                # inserted ones.
+                self._seen.move_to_end(key)
+                return cached
+
+            # H-4 fix: monotonic clock — never goes backward under NTP jumps.
+            start_ms = monotonic_ms()
+            handler = self._handlers.get(request.action_type)
+            if handler is None:
                 response = ActionResponse(
                     request_id=request.request_id,
                     action_type=request.action_type,
                     from_agent=self.agent_id,
                     to_agent=request.from_agent,
                     status=ActionStatus.FAILED.value,
-                    error=f"{type(exc).__name__}: {exc}",
-                    elapsed_ms=round(elapsed, 1),
+                    error=f"no handler registered for action_type {request.action_type!r}",
                 )
-                logger.exception("handler %r raised", request.action_type)
+            else:
+                try:
+                    result = handler(request)
+                    response = ActionResponse(
+                        request_id=request.request_id,
+                        action_type=request.action_type,
+                        from_agent=self.agent_id,
+                        to_agent=request.from_agent,
+                        status=ActionStatus.COMPLETED.value,
+                        result=result,
+                        elapsed_ms=round(monotonic_ms() - start_ms, 1),
+                    )
+                except Exception as exc:   # noqa: BLE001
+                    response = ActionResponse(
+                        request_id=request.request_id,
+                        action_type=request.action_type,
+                        from_agent=self.agent_id,
+                        to_agent=request.from_agent,
+                        status=ActionStatus.FAILED.value,
+                        error=f"{type(exc).__name__}: {exc}",
+                        elapsed_ms=round(monotonic_ms() - start_ms, 1),
+                    )
+                    logger.exception("handler %r raised", request.action_type)
 
-        self._sign_response(response)
-        self._log(request, response)
-        self._cache(request.request_id, response)
-        return response
+            self._sign_response(response)
+            self._log(request, response)
+            self._cache(key, response)
+            return response
 
     # ── outbound routing ──────────────────────────────────
 
@@ -427,7 +493,12 @@ class ActionRouter:
             reply_to=reply_to,
         )
         self._sign_request(request)
-        scope = f"dm:{min(self.agent_id, target_agent)}--{max(self.agent_id, target_agent)}"
+        # M-3 fix: SHA-256 fingerprint of the sorted (a, b) pair, so an
+        # agent_id containing the literal `--` separator can't collide
+        # with another (a, b) pair. URL-quoting would also work, but
+        # hashing keeps the scope key bounded length AND opaque to log
+        # scrapers that don't need to know the participants.
+        scope = _dm_scope(self.agent_id, target_agent)
         self._channel.send(
             content=json.dumps(request.to_dict(), ensure_ascii=False),
             scope=scope,
@@ -476,13 +547,27 @@ class ActionRouter:
         )
 
     def _dispatch_best_match(self, action_type, params, finder, exclude, correlation_id):
-        try:
+        # H-5 fix: introspect best_match's signature ONCE and remember which
+        # calling convention this PeerFinder uses. The original code caught
+        # TypeError per call to discover the shape — which silently swallowed
+        # any UNRELATED TypeError raised inside best_match (e.g. a bug in the
+        # PeerFinder itself), retrying with different args and producing
+        # confused error messages.
+        if self._best_match_uses_prefer_status is None:
+            try:
+                sig = inspect.signature(finder.best_match)
+                self._best_match_uses_prefer_status = "prefer_status" in sig.parameters
+            except (TypeError, ValueError):
+                # C-extension or unintrospectable callable — default to the
+                # newer convention and let any failure surface honestly.
+                self._best_match_uses_prefer_status = True
+        if self._best_match_uses_prefer_status:
             match = finder.best_match(
                 needed_capabilities=[action_type],
                 prefer_status="idle",
                 exclude_agent_ids=exclude,
             )
-        except TypeError:
+        else:
             match = finder.best_match(
                 needed_capabilities=[action_type],
                 prefer_idle=True,
@@ -568,10 +653,13 @@ class ActionRouter:
 
     # ── cache / logging ───────────────────────────────────
 
-    def _cache(self, request_id: str, response: ActionResponse) -> None:
-        self._seen[request_id] = response
+    def _cache(self, key: CacheKey, response: ActionResponse) -> None:
+        """LRU cache write (C-3). Caller MUST hold self._lock."""
+        if key in self._seen:
+            self._seen.move_to_end(key)
+        self._seen[key] = response
         while len(self._seen) > self._max_dedup:
-            self._seen.popitem(last=False)
+            self._seen.popitem(last=False)   # evict least-recently used
 
     def _log(self, request: ActionRequest, response: ActionResponse) -> None:
         self._append_log("requests_received", request.to_dict())
@@ -581,9 +669,19 @@ class ActionRouter:
         return self._log_dir / f"{self.agent_id}_{name}.jsonl"
 
     def _append_log(self, name: str, data: dict) -> None:
+        """H-3 fix: serialise append across processes.
+
+        POSIX O_APPEND atomicity only holds for writes ≤ PIPE_BUF (~4KB);
+        JSON lines easily exceed that. Without a lock, two concurrent
+        writers can interleave bytes and yield a corrupt JSONL line that
+        _read_log silently skips (audit loss). InterProcessLock here
+        keeps appends serial across processes on Windows AND POSIX."""
+        path = self._log_path(name)
+        lock_path = path.with_suffix(path.suffix + ".lock")
         try:
-            with open(self._log_path(name), "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(data, ensure_ascii=False) + "\n")
+            with InterProcessLock(lock_path):
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(data, ensure_ascii=False) + "\n")
         except OSError as exc:
             logger.warning("action log append failed: %s", exc)
 
