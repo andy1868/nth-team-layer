@@ -261,3 +261,197 @@
   color: var(--qq-accent);
   border-bottom-color: var(--qq-accent);
 }
+
+/* v0.10 T-9: Mandate sidebar
+ * Three stacked sections (Intents / Carts / Payments), each with a
+ * collapsible row layout. Per-row Verify control inlines the result
+ * badge so users see ok/fail without leaving the sidebar. */
+
+.mandate-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mandate-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mandate-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.mandate-header button {
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--qq-accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.mandate-header button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.mandate-section {
+  border: 1px solid var(--qq-border);
+  border-radius: 6px;
+  background: var(--qq-bg);
+  padding: 10px 12px;
+}
+
+.mandate-section h4 {
+  margin: 0 0 8px 0;
+  font-size: 13px;
+  color: var(--qq-text);
+}
+
+.mandate-count {
+  color: var(--qq-text-muted);
+  font-weight: normal;
+  font-size: 12px;
+}
+
+.mandate-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mandate-row {
+  background: var(--qq-surface);
+  border: 1px solid var(--qq-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.mandate-row.mandate-expired {
+  border-left: 3px solid var(--qq-status-blocked);
+  opacity: 0.85;
+}
+
+.mandate-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mandate-headline {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.mandate-digest {
+  font-family: monospace;
+  background: var(--qq-bg);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--qq-text-muted);
+}
+
+.mandate-tag {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: white;
+}
+
+.mandate-tag-expired {
+  background: var(--qq-status-blocked);
+}
+
+.mandate-row-body p {
+  margin: 0;
+  color: var(--qq-text-muted);
+  font-size: 11px;
+}
+
+.mandate-purpose {
+  color: var(--qq-text) !important;
+  font-size: 12px !important;
+}
+
+.mandate-meta {
+  font-size: 11px;
+}
+
+.mandate-empty {
+  font-size: 12px;
+  color: var(--qq-text-muted);
+  font-style: italic;
+  margin: 0;
+}
+
+.mandate-verify {
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 3px;
+}
+
+.mandate-verify-btn {
+  align-self: flex-start;
+  padding: 3px 10px;
+  background: var(--qq-accent);
+  color: white;
+  border: none;
+  border-radius: 3px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.mandate-verify-running {
+  color: var(--qq-text-muted);
+  font-style: italic;
+}
+
+.mandate-verify-ok {
+  background: rgba(21, 196, 107, 0.12);
+  color: var(--qq-status-idle);
+  border-left: 3px solid var(--qq-status-idle);
+}
+
+.mandate-verify-bad {
+  background: rgba(237, 64, 20, 0.12);
+  color: var(--qq-error);
+  border-left: 3px solid var(--qq-status-blocked);
+}
+
+.mandate-verify-detail {
+  margin-top: 4px;
+}
+
+.mandate-verify-detail summary {
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.mandate-verify-detail ul {
+  margin: 4px 0 0 0;
+  padding-left: 16px;
+}
+
+.mandate-verify button {
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  cursor: pointer;
+  color: inherit;
+}

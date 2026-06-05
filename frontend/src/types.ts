@@ -139,3 +139,70 @@ export type DaoMeta = {
   admin_count?: number;
   founder_pubkey?: string;
 };
+
+// v0.10 T-9: Mandate sidebar shapes. These mirror the JSON returned
+// by `_summarise_*` in nth_dao/web/__init__.py. Keep field names in
+// sync - the sidebar parses the JSON as `MandateListing` directly
+// (no client-side normalisation layer).
+
+export type MandateKind = "intent" | "cart" | "payment";
+
+export type MandateAmount = {
+  currency: string;
+  value: string;
+};
+
+export type IntentMandateSummary = {
+  kind: "intent";
+  digest: string;
+  issuer: string;
+  agent: string;
+  purpose: string;
+  max_amount: MandateAmount;
+  expires_at: string;
+  expired: boolean;
+  allowed_counterparties: string[];
+  allowed_settlement_methods: string[];
+};
+
+export type CartMandateSummary = {
+  kind: "cart";
+  digest: string;
+  issuer: string;
+  intent_digest: string;
+  total: MandateAmount;
+  settlement_methods: string[];
+  expires_at: string;
+  expired: boolean;
+  line_item_count: number;
+};
+
+export type PaymentMandateSummary = {
+  kind: "payment";
+  digest: string;
+  issuer: string;
+  cart_digest: string;
+  payee: string;
+  settlement_choice: string;
+  issued_at: string;
+  expires_at: string;
+  expired: boolean;
+};
+
+export type MandateListing = {
+  intents: IntentMandateSummary[];
+  carts: CartMandateSummary[];
+  payments: PaymentMandateSummary[];
+};
+
+export type MandateVerifyCheck = {
+  name: string;
+  ok: boolean;
+  reason?: string;
+};
+
+export type MandateVerifyResult = {
+  ok: boolean;
+  reason: string;
+  checks: MandateVerifyCheck[];
+};

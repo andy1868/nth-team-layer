@@ -66,6 +66,14 @@ from .events import (
     emit_payment_authorised,
     emit_settlement_completed,
 )
+# T-9: File-backed store for the full Mandate bodies
+from .store import (
+    KIND_CART,
+    KIND_INTENT,
+    KIND_PAYMENT,
+    KINDS,
+    MandateStore,
+)
 
 __all__ = [
     # IntentMandate (T-1)
@@ -104,4 +112,10 @@ __all__ = [
     "emit_cart_received",
     "emit_payment_authorised",
     "emit_settlement_completed",
+    # T-9 store
+    "MandateStore",
+    "KIND_INTENT",
+    "KIND_CART",
+    "KIND_PAYMENT",
+    "KINDS",
 ]

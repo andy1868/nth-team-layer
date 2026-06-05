@@ -1,15 +1,16 @@
 // QQ-style panel shell. Drop into App.tsx as <ContactShell ... /> to get the
-// 4 sidebar tabs:  Contacts · Nearby · Groups · Governance.
+// 5 sidebar tabs: Contacts · Nearby · Groups · Governance · Mandates.
 
 import { useState } from "react";
 import type { UniqueGroup } from "../contacts";
 import { ContactsPanel } from "./ContactsPanel";
 import { GovernancePanel } from "./GovernancePanel";
 import { GroupsPanel } from "./GroupsPanel";
+import { MandatesPanel } from "./MandatesPanel";
 import { NearbyPanel } from "./NearbyPanel";
 import "./qq-style.css";
 
-type Tab = "contacts" | "nearby" | "groups" | "governance";
+type Tab = "contacts" | "nearby" | "groups" | "governance" | "mandates";
 
 interface Props {
   actorId: string;
@@ -67,6 +68,12 @@ export function ContactShell({ actorId, actorPubkeyHex = "", sign }: Props) {
         >
           Governance{selectedGroup ? ` (@${selectedGroup.slug})` : ""}
         </button>
+        <button
+          className={`qq-tab ${tab === "mandates" ? "active" : ""}`}
+          onClick={() => setTab("mandates")}
+        >
+          Mandates
+        </button>
       </nav>
 
       {noSignWarning}
@@ -101,6 +108,9 @@ export function ContactShell({ actorId, actorPubkeyHex = "", sign }: Props) {
           sign={sign}
         />
       )}
+      {tab === "mandates" && (
+        <MandatesPanel walletDid={actorPubkeyHex ? `did:key:${actorPubkeyHex}` : undefined} />
+      )}
     </div>
   );
 }
@@ -108,4 +118,5 @@ export function ContactShell({ actorId, actorPubkeyHex = "", sign }: Props) {
 export { ContactsPanel } from "./ContactsPanel";
 export { GovernancePanel } from "./GovernancePanel";
 export { GroupsPanel } from "./GroupsPanel";
+export { MandatesPanel } from "./MandatesPanel";
 export { NearbyPanel } from "./NearbyPanel";

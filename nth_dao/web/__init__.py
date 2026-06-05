@@ -33,6 +33,24 @@ from nth_dao.group_registry import (
     resolve_proposal,
 )
 from nth_dao.identity import AgentID
+from nth_dao.mandate import (
+    KIND_CART,
+    KIND_INTENT,
+    KIND_PAYMENT,
+    KINDS as MANDATE_KINDS,
+    MandateStore,
+    cart_mandate_digest,
+    cart_satisfies_intent,
+    intent_mandate_digest,
+    is_cart_expired,
+    is_intent_expired,
+    is_payment_expired,
+    payment_mandate_digest,
+    payment_satisfies_cart,
+    verify_cart_mandate,
+    verify_intent_mandate,
+    verify_payment_mandate,
+)
 from nth_dao.membership import MembershipManager, TeamConfig, TeamRole
 from nth_dao.orchestration import MissionStore
 from team_layer.blackboard import Blackboard
@@ -53,6 +71,8 @@ class WebState:
         # v0.9.6: cross-workspace-unique group registry + governance
         self.group_registry = GroupRegistry(workspace)
         self.peer_finder = PeerFinder(self.registry)
+        # v0.10 T-9: Mandate triad file-backed store, sidebar reads from this
+        self.mandates = MandateStore(workspace)
 
 
 class JoinPayload(BaseModel):
@@ -155,6 +175,36 @@ class ProposalPublishPayload(BaseModel):
 
 class SignedVotePayload(BaseModel):
     vote: dict[str, Any]
+
+
+# v0.10 T-9: Mandate sidebar
+
+
+class MandateStorePayload(BaseModel):
+    """Persist a signed mandate body into the workspace store.
+
+    The sidebar issues this after the browser wallet has signed an
+    IntentMandate; settlement adapters issue this after receiving carts
+    or completing payments. Server determines digest from the body so
+    callers cannot forge an inconsistent index entry.
+    """
+
+    kind: str                    # "intent" | "cart" | "payment"
+    mandate: dict[str, Any]
+
+
+class MandateVerifyPayload(BaseModel):
+    """Verify a mandate's Ed25519 signature against its canonical JSON.
+
+    For carts, optionally bind-check against an intent by passing
+    ``against_intent``; for payments, pass ``against_cart``. When both
+    bind targets are passed, the full triad gate runs.
+    """
+
+    kind: str                    # "intent" | "cart" | "payment"
+    mandate: dict[str, Any]
+    against_intent: Optional[dict[str, Any]] = None
+    against_cart: Optional[dict[str, Any]] = None
 
 
 def create_app(workspace: str | Path | None = None) -> FastAPI:
@@ -725,6 +775,146 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             "resolved": {"passed": passed, "reason": reason},
         }
 
+    # v0.10 T-9: Mandate sidebar - read-only listings + verify + store
+
+    @app.get("/api/mandates")
+    def list_mandates() -> dict[str, Any]:
+        """List all mandates with summary rows for the sidebar.
+
+        The sidebar renders three sections (intents / carts / payments).
+        Each row carries enough fields to display without re-fetching
+        the full body: digest, issuer, the headline amount/choice, and
+        a precomputed ``expired`` flag so the UI doesn't have to know
+        the clock semantics.
+        """
+        return {
+            "intents": [_summarise_intent(m) for m in state.mandates.list_intents()],
+            "carts": [_summarise_cart(m) for m in state.mandates.list_carts()],
+            "payments": [
+                _summarise_payment(m) for m in state.mandates.list_payments()
+            ],
+        }
+
+    @app.get("/api/mandates/{kind}/{digest}")
+    def get_mandate(kind: str, digest: str) -> dict[str, Any]:
+        """Return the full mandate body for a digest.
+
+        Used by the [Verify] button to fetch the canonical JSON that
+        the browser then re-verifies, and by adapters that already
+        have the digest from an EventBus event.
+        """
+        if kind not in MANDATE_KINDS:
+            raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
+        try:
+            body = state.mandates.get(kind, digest)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if body is None:
+            raise HTTPException(status_code=404, detail="mandate not found")
+        return body
+
+    @app.post("/api/mandates/store")
+    def store_mandate(payload: MandateStorePayload) -> dict[str, Any]:
+        """Persist a signed mandate; returns the canonical digest.
+
+        Server re-derives the digest from the body so the index
+        filename is authoritative. Callers cannot pin a wrong digest.
+
+        Shape-checks the body before saving so a junk payload doesn't
+        produce a worthless hash file on disk: the W3C VC ``type``
+        array must contain the expected mandate type for the kind.
+        """
+        kind = payload.kind
+        if kind not in MANDATE_KINDS:
+            raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
+        body = payload.mandate
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="mandate must be a JSON object")
+        if not _looks_like_mandate(kind, body):
+            raise HTTPException(
+                status_code=400,
+                detail=f"body does not look like a {kind} mandate "
+                "(missing @context / type / credentialSubject)",
+            )
+        try:
+            if kind == KIND_INTENT:
+                digest = state.mandates.save_intent(body)
+            elif kind == KIND_CART:
+                digest = state.mandates.save_cart(body)
+            else:
+                digest = state.mandates.save_payment(body)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=f"invalid {kind}: {exc}") from exc
+        return {"ok": True, "kind": kind, "digest": digest}
+
+    @app.post("/api/mandates/verify")
+    def verify_mandate_route(payload: MandateVerifyPayload) -> dict[str, Any]:
+        """Verify signature and (optionally) binding constraints.
+
+        The sidebar's per-row [Verify] button calls this for a quick
+        green/red badge; adapters call it before settlement. The
+        binding fields (``against_intent`` / ``against_cart``) extend
+        the check upward through the triad without forcing a separate
+        round-trip per layer.
+        """
+        kind = payload.kind
+        if kind not in MANDATE_KINDS:
+            raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
+        body = payload.mandate
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="mandate must be a JSON object")
+
+        # Reject obviously-non-mandate shapes early so the verify
+        # tuple's "missing proof" branch doesn't get reported as a
+        # signature failure. Without this gate, ``{"junk": True}``
+        # would render as a generic signature error which is less
+        # useful in the UI than a clear "malformed" badge.
+        if not _looks_like_mandate(kind, body):
+            return {"ok": False, "reason": f"malformed {kind}: not a W3C VC body"}
+
+        # Layer 1: signature verification.
+        # The mandate.verify_*_mandate helpers return (ok, reason)
+        # tuples, NOT bare booleans - unpacking them avoids the trap
+        # where a truthy tuple gets treated as success.
+        try:
+            if kind == KIND_INTENT:
+                sig_ok, sig_reason = verify_intent_mandate(body)
+                expired = is_intent_expired(body)
+            elif kind == KIND_CART:
+                sig_ok, sig_reason = verify_cart_mandate(body)
+                expired = is_cart_expired(body)
+            else:
+                sig_ok, sig_reason = verify_payment_mandate(body)
+                expired = is_payment_expired(body)
+        except (ValueError, KeyError, TypeError) as exc:
+            return {"ok": False, "reason": f"malformed {kind}: {exc}"}
+
+        if not sig_ok:
+            return {
+                "ok": False,
+                "reason": f"signature verification failed: {sig_reason}",
+            }
+
+        checks: list[dict[str, Any]] = [{"name": "signature", "ok": True}]
+        if expired:
+            checks.append({"name": "expiry", "ok": False, "reason": "expired"})
+            return {"ok": False, "reason": "expired", "checks": checks}
+        checks.append({"name": "expiry", "ok": True})
+
+        # Layer 2: optional binding constraints
+        if kind == KIND_CART and payload.against_intent is not None:
+            ok, reason = cart_satisfies_intent(body, payload.against_intent)
+            checks.append({"name": "binds_intent", "ok": ok, "reason": reason})
+            if not ok:
+                return {"ok": False, "reason": reason, "checks": checks}
+        if kind == KIND_PAYMENT and payload.against_cart is not None:
+            ok, reason = payment_satisfies_cart(body, payload.against_cart)
+            checks.append({"name": "binds_cart", "ok": ok, "reason": reason})
+            if not ok:
+                return {"ok": False, "reason": reason, "checks": checks}
+
+        return {"ok": True, "reason": "", "checks": checks}
+
     assets_dir = STATIC_DIR / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
@@ -962,6 +1152,167 @@ def _dao_meta_dict(slug: str, kind: str, record: Any, *, member_count: int) -> d
         "admin_count": len(record.admin_pubkeys),
         "founder_pubkey": record.founder_pubkey if hasattr(record, "founder_pubkey") else "",
     }
+
+
+# v0.10 T-9: cheap shape check for the Mandate routes. We compare
+# against the W3C VC ``type`` array set by ``build_*_mandate`` rather
+# than parsing the body, so a draft body the wallet has not yet
+# signed still passes (the sidebar saves drafts) while obvious junk
+# is rejected before it produces a useless digest file on disk.
+
+_EXPECTED_TYPE_TOKEN = {
+    KIND_INTENT: "IntentMandate",
+    KIND_CART: "CartMandate",
+    KIND_PAYMENT: "PaymentMandate",
+}
+
+
+def _looks_like_mandate(kind: str, body: dict[str, Any]) -> bool:
+    """True if ``body`` is W3C VC shaped and tagged for the kind.
+
+    The check is intentionally minimal - it must accept any well
+    formed mandate the build_*_mandate functions produce, including
+    pre-signing drafts (no proof block yet). It must reject:
+
+      * non-dicts and dicts missing the W3C VC backbone,
+      * mandates of one kind being saved under another kind's slot.
+
+    Anything stricter belongs in ``verify_*_mandate``.
+    """
+    if not isinstance(body, dict):
+        return False
+    if "@context" not in body or "credentialSubject" not in body:
+        return False
+    expected = _EXPECTED_TYPE_TOKEN.get(kind)
+    if expected is None:
+        return False
+    type_field = body.get("type")
+    if isinstance(type_field, str):
+        return type_field == expected
+    if isinstance(type_field, list):
+        return expected in type_field
+    return False
+
+
+# v0.10 T-9: sidebar row summarisers - extract only the fields the
+# UI displays, so the JSON over the wire stays small even when carts
+# carry rich line-item arrays. Each summariser tolerates missing
+# fields (the store may hold a draft mandate the UI saved before
+# signing) and falls back to empty strings rather than raising.
+
+
+def _summarise_intent(mandate: dict[str, Any]) -> dict[str, Any]:
+    """Project an IntentMandate to its sidebar row.
+
+    Field map per ``nth_dao.mandate.intent.build_intent_mandate``:
+
+      - top-level ``issuer`` is the DAO did:key
+      - top-level ``validUntil`` is the expiry timestamp
+      - ``credentialSubject.id`` is the agent_did being authorised
+      - ``credentialSubject.purpose`` is the human label
+      - constraints sit under ``credentialSubject.constraints.*``
+    """
+    subject = mandate.get("credentialSubject") or {}
+    constraints = subject.get("constraints") or {}
+    max_amount = constraints.get("max_amount") or {}
+    try:
+        digest = intent_mandate_digest(mandate)
+    except Exception:  # pragma: no cover - malformed body in store
+        digest = ""
+    return {
+        "kind": KIND_INTENT,
+        "digest": digest,
+        "issuer": mandate.get("issuer", ""),
+        "agent": subject.get("id", ""),
+        "purpose": subject.get("purpose", ""),
+        "max_amount": {
+            "currency": max_amount.get("currency", ""),
+            "value": str(max_amount.get("value", "")),
+        },
+        "expires_at": mandate.get("validUntil", ""),
+        "expired": _safe_is_expired(is_intent_expired, mandate),
+        "allowed_counterparties": list(
+            constraints.get("allowed_counterparties") or []
+        ),
+        "allowed_settlement_methods": list(
+            constraints.get("allowed_settlement_methods") or []
+        ),
+    }
+
+
+def _summarise_cart(mandate: dict[str, Any]) -> dict[str, Any]:
+    """Project a CartMandate to its sidebar row.
+
+    Field map per ``nth_dao.mandate.cart.build_cart_mandate``:
+
+      - top-level ``issuer`` is the seller did:key
+      - top-level ``validUntil`` is the offer-window expiry
+      - ``credentialSubject.id`` is the BUYER did (not surfaced -
+        the sidebar groups by issuer instead)
+      - ``credentialSubject.intent_mandate_digest`` is the binding
+      - line items live under ``credentialSubject.items``
+    """
+    subject = mandate.get("credentialSubject") or {}
+    total = subject.get("total") or {}
+    try:
+        digest = cart_mandate_digest(mandate)
+    except Exception:  # pragma: no cover - malformed body in store
+        digest = ""
+    return {
+        "kind": KIND_CART,
+        "digest": digest,
+        "issuer": mandate.get("issuer", ""),
+        "intent_digest": subject.get("intent_mandate_digest", ""),
+        "total": {
+            "currency": total.get("currency", ""),
+            "value": str(total.get("value", "")),
+        },
+        "settlement_methods": list(subject.get("settlement_methods") or []),
+        "expires_at": mandate.get("validUntil", ""),
+        "expired": _safe_is_expired(is_cart_expired, mandate),
+        "line_item_count": len(subject.get("items") or []),
+    }
+
+
+def _summarise_payment(mandate: dict[str, Any]) -> dict[str, Any]:
+    """Project a PaymentMandate to its sidebar row.
+
+    Field map per ``nth_dao.mandate.payment.build_payment_mandate``:
+
+      - top-level ``issuer`` is the DAO authorising settlement
+      - top-level ``validUntil`` is the settlement-authority window
+      - ``credentialSubject.id`` is the PAYEE did:key
+      - ``credentialSubject.cart_mandate_digest`` is the binding
+      - ``credentialSubject.settlement_choice`` is the chosen rail
+    """
+    subject = mandate.get("credentialSubject") or {}
+    try:
+        digest = payment_mandate_digest(mandate)
+    except Exception:  # pragma: no cover - malformed body in store
+        digest = ""
+    return {
+        "kind": KIND_PAYMENT,
+        "digest": digest,
+        "issuer": mandate.get("issuer", ""),
+        "cart_digest": subject.get("cart_mandate_digest", ""),
+        "payee": subject.get("id", ""),
+        "settlement_choice": subject.get("settlement_choice", ""),
+        "issued_at": mandate.get("issuanceDate", ""),
+        "expires_at": mandate.get("validUntil", ""),
+        "expired": _safe_is_expired(is_payment_expired, mandate),
+    }
+
+
+def _safe_is_expired(checker, mandate: dict[str, Any]) -> bool:
+    """Best-effort expiry check; malformed timestamps -> False.
+
+    The store may hold drafts during sidebar editing; surface them as
+    not-expired rather than 500-ing the whole listing route.
+    """
+    try:
+        return bool(checker(mandate))
+    except Exception:
+        return False
 
 
 def _frontend_missing_html() -> str:

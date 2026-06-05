@@ -1,4 +1,15 @@
-import type { CodeLookupResult, DaoState, DaoSummary, DaoTask, Message, Summary, TaskStatus } from "./types";
+import type {
+  CodeLookupResult,
+  DaoState,
+  DaoSummary,
+  DaoTask,
+  MandateKind,
+  MandateListing,
+  MandateVerifyResult,
+  Message,
+  Summary,
+  TaskStatus
+} from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -136,6 +147,63 @@ export function updateTaskStatus(input: {
     body: JSON.stringify({
       actor_id: input.actorId,
       status: input.status
+    })
+  });
+}
+
+// v0.10 T-9: Mandate sidebar API. Backend lives at `nth_dao/web/__init__.py`;
+// see the `_summarise_*` helpers for field semantics. The four calls form
+// the entire surface the sidebar needs: list, fetch one, persist, verify.
+
+/** Read the three mandate kinds for sidebar rendering. */
+export function listMandates(): Promise<MandateListing> {
+  return request<MandateListing>("/api/mandates");
+}
+
+/** Fetch the full canonical mandate body (e.g. for a wallet-side re-verify). */
+export function getMandate(kind: MandateKind, digest: string): Promise<unknown> {
+  return request<unknown>(`/api/mandates/${kind}/${encodeURIComponent(digest)}`);
+}
+
+/**
+ * Persist a signed mandate so it appears in the sidebar.
+ *
+ * Server re-derives the digest from the canonical JSON of the body,
+ * so callers cannot pin a wrong digest. The returned `digest` is the
+ * authoritative key the sidebar uses in subsequent /verify and /get
+ * calls.
+ */
+export function storeMandate(
+  kind: MandateKind,
+  mandate: unknown
+): Promise<{ ok: boolean; kind: MandateKind; digest: string }> {
+  return request("/api/mandates/store", {
+    method: "POST",
+    body: JSON.stringify({ kind, mandate })
+  });
+}
+
+/**
+ * Run server-side signature + expiry + (optional) binding checks.
+ *
+ * When verifying a Cart, pass the Intent it claims to bind to via
+ * `againstIntent` to also gate the digest-binding and constraint
+ * checks. Similarly pass `againstCart` when verifying a Payment.
+ * Without those, only the signature + expiry are checked.
+ */
+export function verifyMandate(input: {
+  kind: MandateKind;
+  mandate: unknown;
+  againstIntent?: unknown;
+  againstCart?: unknown;
+}): Promise<MandateVerifyResult> {
+  return request<MandateVerifyResult>("/api/mandates/verify", {
+    method: "POST",
+    body: JSON.stringify({
+      kind: input.kind,
+      mandate: input.mandate,
+      against_intent: input.againstIntent,
+      against_cart: input.againstCart
     })
   });
 }
