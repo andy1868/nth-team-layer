@@ -717,11 +717,13 @@ class TaskMarketplace:
         finder: Any = None,
         channel: Any = None,
     ) -> TaskOrder:
-        """Create an order and broadcast it to capable agents via channel.
+        """Create an order and fanout to capable agents via channel.
 
         When *finder* and *channel* are provided, finds agents with
         ``accepting_tasks=True`` and the required *capability*, then
-        DMs each one about the new task.
+        DMs each one.  Messages are signed when the channel has an
+        identity configured.  The order is stored with ``creator``
+        set to this agent for auditability.
 
         Usage::
 

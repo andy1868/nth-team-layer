@@ -144,23 +144,23 @@ class TestFindComplements:
         finder = PeerFinder(multi_agent_registry)
         assert finder.find_complements("nobody") == []
 
-    # ── H1: available_for filtering ──
+    # ── available_for is metadata only (not used for filtering) ──
 
-    def test_available_for_filters(self, multi_agent_registry):
-        """Eve accepts tasks for 'audit' only. Alice seeks 'solidity'.
-        Eve has solidity, but not in available_for → no match for solidity."""
+    def test_available_for_is_metadata_only(self, multi_agent_registry):
+        """Eve accepts tasks for 'audit' only, but Alice seeks 'solidity'.
+        Eve HAS solidity → should match regardless of available_for."""
         finder = PeerFinder(multi_agent_registry)
         results = finder.find_complements("alice")
         eve = [m for m in results if m.record.agent_id == "eve"]
-        assert len(eve) == 0  # solidity not in eve's available_for
+        assert len(eve) == 1  # matches on solidity, available_for ignored
 
-    def test_available_for_allows_match(self, multi_agent_registry):
-        """Bob seeks python. Carol has python and available_for=['code_review'].
-        'python' is not in available_for → should NOT match."""
+    def test_complement_match_ignores_available_for(self, multi_agent_registry):
+        """Bob seeks python. Carol has python. Should match even though
+        Carol's available_for=['code_review'] doesn't mention python."""
         finder = PeerFinder(multi_agent_registry)
         results = finder.find_complements("bob")
         carol = [m for m in results if m.record.agent_id == "carol"]
-        assert len(carol) == 0
+        assert len(carol) == 1  # matches on python, available_for ignored
 
     # ── M2: match_direction ──
 

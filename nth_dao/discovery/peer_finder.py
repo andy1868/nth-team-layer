@@ -231,18 +231,14 @@ class PeerFinder:
     def find_complements(self, agent_id: str) -> List[MatchResult]:
         """Find agents whose capabilities complement *agent_id*'s needs.
 
-        An agent is complementary if:
-        1. It has a capability that *agent_id* is ``seeking``, OR
-        2. *agent_id* has a capability that the other agent is ``seeking``.
+        Matching is purely based on ``seeking`` × ``capabilities``:
+        1. Other agent HAS a capability that *agent_id* is SEEKING, OR
+        2. *agent_id* HAS a capability that the other agent is SEEKING.
 
-        If the target agent has ``accepting_tasks=True`` and
-        ``available_for`` is set, only complementary capabilities
-        listed in ``available_for`` count.
-
-        Results are ranked by the number of complementary matches.
-        Agents with ``accepting_tasks=True`` get a score bonus.
-        Each ``MatchResult`` includes a ``match_kind`` in metadata:
-        ``\"they_have\"`` (I need, they have) or ``\"i_have\"`` (they need, I have).
+        ``accepting_tasks`` gives a score bonus but does NOT filter results.
+        ``available_for`` is metadata for consumers — it is NOT used for
+        complement filtering (it describes accepted action types, not
+        capabilities).
         """
         all_agents = self.registry.list_alive()
         my_record = None
@@ -266,12 +262,6 @@ class PeerFinder:
 
             they_have = list(my_seeking & other_caps)
             i_have = list(other_seeking & my_caps)
-
-            # H1: filter by available_for when agent is accepting tasks
-            if r.accepting_tasks and r.available_for:
-                allowed = set(r.available_for)
-                they_have = [c for c in they_have if c in allowed]
-                i_have = [c for c in i_have if c in allowed]
 
             all_matched = they_have + i_have
             if not all_matched:

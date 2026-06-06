@@ -52,7 +52,9 @@ class AgentRecord:
     # ── v0.9.8: Agent discovery enhancement ──
     seeking: List[str] = field(default_factory=list)          # capabilities this agent is looking for
     accepting_tasks: bool = False                               # actively accepting marketplace tasks
-    available_for: List[str] = field(default_factory=list)     # action types this agent will accept
+    available_for: List[str] = field(default_factory=list)     # action types accepted (e.g. code_review, deploy)
+                                                               # NOTE: distinct from capabilities — used by
+                                                               # consumers for routing, NOT by find_complements
     metadata: Dict[str, Any] = field(default_factory=dict)
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
