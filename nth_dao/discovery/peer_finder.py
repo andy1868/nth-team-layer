@@ -234,11 +234,18 @@ class PeerFinder:
         1. It has a capability that *agent_id* is ``seeking``, OR
         2. *agent_id* has a capability that the other agent is ``seeking``.
 
+        If the target agent has ``accepting_tasks=True`` and
+        ``available_for`` is set, only complementary capabilities
+        listed in ``available_for`` count.
+
         Results are ranked by the number of complementary matches.
         Agents with ``accepting_tasks=True`` get a score bonus.
+        Each ``MatchResult`` includes a ``match_kind`` in metadata:
+        ``\"they_have\"`` (I need, they have) or ``\"i_have\"`` (they need, I have).
         """
+        all_agents = self.registry.list_alive()
         my_record = None
-        for r in self.registry.list_alive():
+        for r in all_agents:
             if r.agent_id == agent_id:
                 my_record = r
                 break
@@ -249,31 +256,42 @@ class PeerFinder:
         my_seeking = set(my_record.seeking)
 
         results: List[MatchResult] = []
-        for r in self.registry.list_alive():
+        for r in all_agents:
             if r.agent_id == agent_id:
                 continue
 
             other_caps = set(r.capabilities)
             other_seeking = set(r.seeking)
 
-            # I need what they have
-            they_have_i_need = my_seeking & other_caps
-            # They need what I have
-            i_have_they_need = other_seeking & my_caps
+            they_have = list(my_seeking & other_caps)
+            i_have = list(other_seeking & my_caps)
 
-            matched = list(they_have_i_need | i_have_they_need)
-            if not matched:
+            # H1: filter by available_for when agent is accepting tasks
+            if r.accepting_tasks and r.available_for:
+                allowed = set(r.available_for)
+                they_have = [c for c in they_have if c in allowed]
+                i_have = [c for c in i_have if c in allowed]
+
+            all_matched = they_have + i_have
+            if not all_matched:
                 continue
 
-            score = float(len(matched)) * 1.0
+            score = float(len(all_matched)) * 1.0
             if r.accepting_tasks:
                 score += 0.5
 
-            results.append(MatchResult(
+            # M2: include match direction
+            result = MatchResult(
                 record=r,
                 score=score,
-                matched_capabilities=matched,
-            ))
+                matched_capabilities=all_matched,
+            )
+            result.record.metadata.setdefault("_match_kind", {
+                "they_have": they_have,
+                "i_have": i_have,
+            })
+
+            results.append(result)
 
         results.sort(key=lambda m: m.score, reverse=True)
         return results

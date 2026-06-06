@@ -78,9 +78,14 @@ class AgentRecord:
     def short(self) -> str:
         marker = "*" if self.is_alive() else "-"
         cap_str = ",".join(self.capabilities[:3]) or "-"
+        extra = ""
+        if self.seeking:
+            extra += f" seek=[{','.join(self.seeking[:2])}]"
+        if self.accepting_tasks:
+            extra += " accept"
         return (
             f"{marker} {self.agent_id:20s} backend={self.backend_id:12s} "
-            f"caps=[{cap_str}] status={self.status}"
+            f"caps=[{cap_str}] status={self.status}{extra}"
         )
 
 

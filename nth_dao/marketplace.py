@@ -713,28 +713,51 @@ class TaskMarketplace:
         *,
         context: str = "",
         reward: int = 0,
+        capability: str = "",
+        finder: Any = None,
+        channel: Any = None,
     ) -> TaskOrder:
-        """Create an order for broadcast to capable agents.
+        """Create an order and broadcast it to capable agents via channel.
 
-        Unlike ``create_order``, this signals intent to fanout:
-        the caller typically follows up with ``PeerFinder`` to find
-        available agents with ``accepting_tasks=True``.
+        When *finder* and *channel* are provided, finds agents with
+        ``accepting_tasks=True`` and the required *capability*, then
+        DMs each one about the new task.
 
         Usage::
 
             order = team.marketplace.broadcast_order(
-                title="code review PR #42", reward=5,
+                title="code review PR #42",
+                capability="code_review",
+                finder=team.finder,
+                channel=team.channel,
             )
-            for target in team.finder.find("code_review"):
-                if target.accepting_tasks:
-                    team.channel.dm(target.agent_id, f"New task: {order.title}")
         """
-        return self.create_order(
+        order = self.create_order(
             title=title,
             description=description,
             context=context,
             reward=reward,
         )
+
+        # Actual broadcast: fanout to accepting agents
+        if finder is not None and channel is not None and capability:
+            try:
+                targets = finder.find(capability=capability, only_alive=True)
+                for t in targets:
+                    if getattr(t, "accepting_tasks", False):
+                        try:
+                            channel.dm(
+                                t.agent_id,
+                                f"[New Task] {order.title}\n"
+                                f"Reward: {order.reward} credits\n"
+                                f"ID: {order.order_id}",
+                            )
+                        except Exception:
+                            logger.debug("broadcast dm to %s failed", t.agent_id)
+            except Exception:
+                logger.debug("broadcast find failed for %r", capability)
+
+        return order
 
     def get_order(self, order_id: str) -> Optional[TaskOrder]:
         return self._load(order_id)
