@@ -706,6 +706,36 @@ class TaskMarketplace:
         """"""
         return self.list_open(context=context)
 
+    def broadcast_order(
+        self,
+        title: str,
+        description: str = "",
+        *,
+        context: str = "",
+        reward: int = 0,
+    ) -> TaskOrder:
+        """Create an order for broadcast to capable agents.
+
+        Unlike ``create_order``, this signals intent to fanout:
+        the caller typically follows up with ``PeerFinder`` to find
+        available agents with ``accepting_tasks=True``.
+
+        Usage::
+
+            order = team.marketplace.broadcast_order(
+                title="code review PR #42", reward=5,
+            )
+            for target in team.finder.find("code_review"):
+                if target.accepting_tasks:
+                    team.channel.dm(target.agent_id, f"New task: {order.title}")
+        """
+        return self.create_order(
+            title=title,
+            description=description,
+            context=context,
+            reward=reward,
+        )
+
     def get_order(self, order_id: str) -> Optional[TaskOrder]:
         return self._load(order_id)
 

@@ -49,6 +49,10 @@ class AgentRecord:
     groups: List[str] = field(default_factory=list)        # e.g. ["frontend", "ops"]
     status: str = "idle"                # idle / busy / blocked / offline
     current_mission: Optional[str] = None
+    # ── v0.9.8: Agent discovery enhancement ──
+    seeking: List[str] = field(default_factory=list)          # capabilities this agent is looking for
+    accepting_tasks: bool = False                               # actively accepting marketplace tasks
+    available_for: List[str] = field(default_factory=list)     # action types this agent will accept
     metadata: Dict[str, Any] = field(default_factory=dict)
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -115,6 +119,9 @@ class AgentRegistry:
         capabilities: Optional[List[str]] = None,
         groups: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        seeking: Optional[List[str]] = None,
+        accepting_tasks: bool = False,
+        available_for: Optional[List[str]] = None,
         start_heartbeat: bool = True,
     ) -> AgentRecord:
         """Register this agent and (optionally) start a heartbeat thread."""
@@ -129,6 +136,9 @@ class AgentRegistry:
             backend_id=backend_id,
             capabilities=capabilities or [],
             groups=groups or [],
+            seeking=seeking or [],
+            accepting_tasks=accepting_tasks,
+            available_for=available_for or [],
             metadata=metadata or {},
         )
         self._write(self._record)

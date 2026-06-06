@@ -227,6 +227,57 @@ class PeerFinder:
                 idx.setdefault(cap, []).append(r.agent_id)
         return idx
 
+    def find_complements(self, agent_id: str) -> List[MatchResult]:
+        """Find agents whose capabilities complement *agent_id*'s needs.
+
+        An agent is complementary if:
+        1. It has a capability that *agent_id* is ``seeking``, OR
+        2. *agent_id* has a capability that the other agent is ``seeking``.
+
+        Results are ranked by the number of complementary matches.
+        Agents with ``accepting_tasks=True`` get a score bonus.
+        """
+        my_record = None
+        for r in self.registry.list_alive():
+            if r.agent_id == agent_id:
+                my_record = r
+                break
+        if my_record is None:
+            return []
+
+        my_caps = set(my_record.capabilities)
+        my_seeking = set(my_record.seeking)
+
+        results: List[MatchResult] = []
+        for r in self.registry.list_alive():
+            if r.agent_id == agent_id:
+                continue
+
+            other_caps = set(r.capabilities)
+            other_seeking = set(r.seeking)
+
+            # I need what they have
+            they_have_i_need = my_seeking & other_caps
+            # They need what I have
+            i_have_they_need = other_seeking & my_caps
+
+            matched = list(they_have_i_need | i_have_they_need)
+            if not matched:
+                continue
+
+            score = float(len(matched)) * 1.0
+            if r.accepting_tasks:
+                score += 0.5
+
+            results.append(MatchResult(
+                record=r,
+                score=score,
+                matched_capabilities=matched,
+            ))
+
+        results.sort(key=lambda m: m.score, reverse=True)
+        return results
+
     def summary_table(self) -> str:  # noqa: E303
         # placeholder anchor — actual definition below
         return _summary_table_impl(self.registry)
