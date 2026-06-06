@@ -209,11 +209,11 @@ def test_render_markdown_health_bar_bounded():
     """Health bar must handle scores outside [0,1] gracefully."""
     p = AgentProfile(agent_id="a", health_score=2.5)   # over 1.0
     md = p.render_markdown()
-    assert "▰" * 10 in md     # clamped to full bar
+    assert "#" * 10 in md     # clamped to full bar
 
     p = AgentProfile(agent_id="b", health_score=-1.0)  # under 0.0
     md = p.render_markdown()
-    assert "▱" * 10 in md     # clamped to empty bar
+    assert "-" * 10 in md     # clamped to empty bar
 
 
 def test_render_short_one_line():
@@ -227,7 +227,7 @@ def test_render_short_one_line():
         capabilities=["a", "b", "c", "d"],
     )
     s = p.render_short()
-    assert s.startswith("●")
+    assert s.startswith("*")
     assert "Alice" in s
     assert "h=0.85" in s
     # Only first 3 caps shown

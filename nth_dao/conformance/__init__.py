@@ -37,9 +37,17 @@ from .runner import (
     load_vectors,
     run_all_vectors,
 )
+from .external_vc import (
+    ExternalVCResult,
+    verify_with_didkit,
+    verify_with_vcjs,
+)
 
 __all__ = [
     "ConformanceFailure",
+    "ExternalVCResult",
     "load_vectors",
     "run_all_vectors",
+    "verify_with_didkit",
+    "verify_with_vcjs",
 ]

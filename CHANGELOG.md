@@ -5,6 +5,46 @@ All notable changes to **NTH DAO** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0b1] - 2026-06-07 - Beta release: signed mandates, A2A server, hardened collaboration runtime
+
+This beta is the first v0.10 preview. It is intended for testers and
+early integrators, not yet for a stable production deployment.
+
+### Added
+
+- Signed mandate primitives: `IntentMandate`, `CartMandate`, and
+  `PaymentMandate`, with Data Integrity style proof helpers and
+  conformance vectors.
+- Mandate EventBus event builders and a web console mandate sidebar.
+- A2A boundary server and Agent Card helpers for JSON-RPC style task
+  lookup and capability discovery.
+- Hardened action routing with explicit pubkey lookup, signed request /
+  response handling, TTL and persistent nonce replay protection.
+- EventBus correction events, event subscriptions, and fault isolation
+  integration with signed audit events.
+- Agent daemon support for background group-channel polling and replies.
+- Browser-side Ed25519 wallet helper and frontend Vitest coverage for
+  mandate UI verification.
+
+### Fixed
+
+- Canonical JSON and identity signing audit gaps, including stricter
+  numeric handling and key consistency checks.
+- Safer append-only JSONL writes and lock-timeout behavior for
+  concurrent local-first operation.
+- Web rate limiting and timing-floor behavior around sensitive mandate
+  store routes.
+- Packaging now includes newly added `nth_dao.mandate` modules and the
+  required `team_layer` runtime packages.
+
+### Validation
+
+- Python test suite: 1067 passed, 11 skipped.
+- Frontend Vitest suite: 2 passed.
+- Frontend production build: passed.
+- Pre-release secret/runtime scan: required before every commit, push,
+  and release.
+
 ## [0.9.6] — 2026-06-02 — Unique group names, governance votes, QQ-style UI
 
 User-facing layer: workspace-unique groups with policy votes, plus the

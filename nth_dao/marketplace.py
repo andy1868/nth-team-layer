@@ -61,7 +61,7 @@ from typing import Any, Dict, List, Optional
 from .identity import AgentIdentity
 from .channel import TeamChannel
 from .reputation import ReputationManager
-from .util import atomic_write_json, safe_load_json, safe_id as _safe_id_util
+from .util import atomic_write_json, file_lock, safe_append_jsonl, safe_load_json, safe_id as _safe_id_util
 
 logger = logging.getLogger("nth_dao.marketplace")
 
@@ -269,9 +269,17 @@ class TaskMarketplace:
                 "balance_after": round(balance, 2),
                 **txn,
             }
-            self._credit_ledger.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._credit_ledger, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            # PR-0 (audit CRITICAL #1) + G-6 (Voss audit): the
+            # ledger append happens INSIDE _transfer_credits' file
+            # lock (.credit.lock). Tell safe_append_jsonl not to
+            # take its own .jsonl.lock - otherwise the credit-file
+            # update and the ledger append are in two different
+            # transactions, and a crash in between leaves them
+            # inconsistent (the audit's reconstructability promise
+            # breaks).
+            safe_append_jsonl(
+                self._credit_ledger, entry, external_lock_held=True,
+            )
 
     def _transfer_credits(
         self,
@@ -281,12 +289,23 @@ class TaskMarketplace:
     ) -> float:
         """原子地 +/- 余额。delta<0 时检查不能透支。
 
+        PR-0 (audit CRITICAL #2 - double-spend race):
+            Previously the read-check-write was guarded only by an
+            in-process threading.RLock, so two processes that both
+            read balance=100 then debited 50 each ended at balance=50
+            but had actually spent 100. The InterProcessLock around
+            the whole read-check-write closes that window.
+
         Returns:
             新余额
         Raises:
             ValueError: 余额不足
         """
-        with self._credit_lock:
+        # Threading lock guards INTRA-process concurrency; file lock
+        # guards CROSS-process. Both are required.
+        with self._credit_lock, file_lock(
+            self._credit_file.with_suffix(".credit.lock"), timeout=10.0,
+        ):
             before = self._read_credits()
             after = round(before + delta, 2)
             if after < 0 - 1e-9:

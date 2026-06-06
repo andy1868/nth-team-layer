@@ -27,12 +27,14 @@ classic two failure modes of a thin Mandate dashboard:
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 
 from nth_dao.identity import AgentIdentity, crypto_available
+from nth_dao.membership import MembershipManager, TeamRole
 from nth_dao.mandate.cart import (
     build_cart_mandate,
     cart_mandate_digest,
@@ -55,6 +57,10 @@ from nth_dao.mandate.store import (
     MandateStore,
 )
 from nth_dao.web import create_app
+
+
+ACTOR_ID = "admin"
+ACTOR_QS = f"?actor_id={ACTOR_ID}"
 
 
 # ===== fixtures =====
@@ -95,9 +101,15 @@ def _past(seconds: int = 3600) -> str:
 
 
 def _signed_intent(dao: AgentIdentity, agent_did: str, **overrides) -> dict:
+    # Voss V-22: empty allowed_counterparties is fail-closed; the
+    # helper accepts an optional whitelist_counterparty kwarg to
+    # populate it.
+    whitelist_did = overrides.pop("whitelist_counterparty_did", None)
     constraints = overrides.pop("constraints", None) or {
         "max_amount": {"value": "100.00", "currency": "USDC"},
-        "allowed_counterparties": [],
+        "allowed_counterparties": (
+            [whitelist_did] if whitelist_did is not None else []
+        ),
         "allowed_settlement_methods": ["x402:usdc", "ap2:card"],
     }
     intent = build_intent_mandate(
@@ -177,6 +189,95 @@ def test_T9_03_store_save_idempotent_under_same_digest(tmp_path, dao, agent_did)
     assert len(files) == 1
 
 
+def test_T9_03b_store_save_same_digest_race_writes_once(
+    tmp_path, dao, agent_did, monkeypatch,
+):
+    """Same-digest mandates with different proof timestamps must not
+    race past path.exists() and overwrite each other."""
+    import nth_dao.mandate.store as store_module
+
+    store = MandateStore(tmp_path)
+    unsigned = build_intent_mandate(
+        issuer_did=dao.as_did(),
+        agent_did=agent_did,
+        purpose="buy code review",
+        constraints={
+            "max_amount": {"value": "100.00", "currency": "USDC"},
+            "allowed_counterparties": [],
+            "allowed_settlement_methods": ["x402:usdc"],
+        },
+        expires_at=_future(86400),
+    )
+    first = sign_intent_mandate(
+        unsigned, dao,
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    second = sign_intent_mandate(
+        unsigned, dao,
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    original_write = store_module.atomic_write_json
+    write_count = 0
+    write_entered = threading.Event()
+    release_first_write = threading.Event()
+    write_lock = threading.Lock()
+
+    def slow_write(path, data):
+        nonlocal write_count
+        with write_lock:
+            write_count += 1
+            current = write_count
+        if current == 1:
+            write_entered.set()
+            assert release_first_write.wait(timeout=5)
+        return original_write(path, data)
+
+    monkeypatch.setattr(store_module, "atomic_write_json", slow_write)
+
+    errors = []
+
+    def save(mandate):
+        try:
+            store.save_intent(mandate)
+        except Exception as exc:  # pragma: no cover - test diagnostic
+            errors.append(exc)
+
+    t1 = threading.Thread(target=save, args=(first,))
+    t2 = threading.Thread(target=save, args=(second,))
+    t1.start()
+    assert write_entered.wait(timeout=5)
+    t2.start()
+    release_first_write.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not errors
+    assert write_count == 1
+    digest = intent_mandate_digest(first)
+    saved = store.get(KIND_INTENT, digest)
+    assert saved["proof"]["created"] == first["proof"]["created"]
+
+
+def test_T9_03c_store_save_replaces_corrupt_same_digest_file(
+    tmp_path, dao, agent_did
+):
+    store = MandateStore(tmp_path)
+    intent = _signed_intent(dao, agent_did)
+    digest = intent_mandate_digest(intent)
+    path = tmp_path / "mandates" / KIND_INTENT / f"{digest}.json"
+    path.write_text("{ broken", encoding="utf-8")
+
+    assert store.save_intent(intent) == digest
+
+    saved = store.get(KIND_INTENT, digest)
+    assert saved == intent
+    relocated = list(
+        (tmp_path / "mandates" / KIND_INTENT).glob(f"{digest}.json.corrupt.*")
+    )
+    assert len(relocated) == 1
+    assert relocated[0].read_text(encoding="utf-8") == "{ broken"
+
+
 def test_T9_04_store_get_returns_full_body(tmp_path, dao, agent_did):
     store = MandateStore(tmp_path)
     intent = _signed_intent(dao, agent_did)
@@ -238,10 +339,37 @@ def test_T9_09_store_list_skips_corrupt_files(tmp_path, dao, agent_did):
 
 
 def test_T9_10_listing_returns_three_empty_arrays_when_no_mandates(client):
-    response = client.get("/api/mandates")
+    response = client.get(f"/api/mandates{ACTOR_QS}")
     assert response.status_code == 200
     body = response.json()
     assert body == {"intents": [], "carts": [], "payments": []}
+
+
+def test_T9_10b_listing_requires_explicit_actor(client):
+    response = client.get("/api/mandates")
+    assert response.status_code == 422
+
+
+def test_T9_10d_listing_rejects_non_member_without_auto_join(client, tmp_path):
+    response = client.get("/api/mandates?actor_id=stranger")
+    assert response.status_code == 403
+    config = MembershipManager(tmp_path).load_config()
+    assert config.role_for("stranger") == TeamRole.GUEST
+
+
+def test_T9_10c_all_mandate_routes_require_explicit_actor(client, dao, agent_did):
+    intent = _signed_intent(dao, agent_did)
+    digest = intent_mandate_digest(intent)
+
+    assert client.get(f"/api/mandates/{KIND_INTENT}/{digest}").status_code == 422
+    assert client.post(
+        "/api/mandates/store",
+        json={"kind": KIND_INTENT, "mandate": intent},
+    ).status_code == 422
+    assert client.post(
+        "/api/mandates/verify",
+        json={"kind": KIND_INTENT, "mandate": intent},
+    ).status_code == 422
 
 
 def test_T9_11_listing_includes_summary_fields_per_intent(
@@ -252,7 +380,7 @@ def test_T9_11_listing_includes_summary_fields_per_intent(
     # seed the store directly using the same workspace as the test client
     MandateStore(tmp_path).save_intent(intent)
 
-    response = client.get("/api/mandates")
+    response = client.get(f"/api/mandates{ACTOR_QS}")
     assert response.status_code == 200
     summaries = response.json()["intents"]
     assert len(summaries) == 1
@@ -269,7 +397,10 @@ def test_T9_11_listing_includes_summary_fields_per_intent(
 
 
 def test_T9_12_listing_flags_expired_intents(client, tmp_path, dao, agent_did):
-    # set a validUntil already in the past, then re-sign
+    # set a validUntil already in the past. The build-time gate
+    # rejects validUntil <= issuanceDate (Voss V-12), so the issuance
+    # has to be backdated even further to construct a legitimately
+    # issued-then-expired mandate.
     expired_intent_unsigned = build_intent_mandate(
         issuer_did=dao.as_did(),
         agent_did=agent_did,
@@ -280,11 +411,12 @@ def test_T9_12_listing_flags_expired_intents(client, tmp_path, dao, agent_did):
             "allowed_settlement_methods": ["x402:usdc"],
         },
         expires_at=_past(60),
+        issued_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
     intent = sign_intent_mandate(expired_intent_unsigned, dao)
     MandateStore(tmp_path).save_intent(intent)
 
-    summaries = client.get("/api/mandates").json()["intents"]
+    summaries = client.get(f"/api/mandates{ACTOR_QS}").json()["intents"]
     assert summaries[0]["expired"] is True
 
 
@@ -296,7 +428,7 @@ def test_T9_13_listing_summarises_cart_with_intent_binding(
     cart = _signed_cart(counterparty, agent_did, intent_digest)
     MandateStore(tmp_path).save_cart(cart)
 
-    summaries = client.get("/api/mandates").json()["carts"]
+    summaries = client.get(f"/api/mandates{ACTOR_QS}").json()["carts"]
     assert len(summaries) == 1
     row = summaries[0]
     assert row["kind"] == KIND_CART
@@ -318,7 +450,7 @@ def test_T9_14_listing_summarises_payment_with_cart_binding(
     payment = _signed_payment(dao, counterparty, cart_digest)
     MandateStore(tmp_path).save_payment(payment)
 
-    summaries = client.get("/api/mandates").json()["payments"]
+    summaries = client.get(f"/api/mandates{ACTOR_QS}").json()["payments"]
     assert len(summaries) == 1
     row = summaries[0]
     assert row["kind"] == KIND_PAYMENT
@@ -339,7 +471,7 @@ def test_T9_15_fetch_returns_full_body(client, tmp_path, dao, agent_did):
     digest = intent_mandate_digest(intent)
     MandateStore(tmp_path).save_intent(intent)
 
-    response = client.get(f"/api/mandates/{KIND_INTENT}/{digest}")
+    response = client.get(f"/api/mandates/{KIND_INTENT}/{digest}{ACTOR_QS}")
     assert response.status_code == 200
     body = response.json()
     assert body["@context"] == intent["@context"]
@@ -348,17 +480,17 @@ def test_T9_15_fetch_returns_full_body(client, tmp_path, dao, agent_did):
 
 def test_T9_16_fetch_404_when_missing(client):
     missing = "0" * 64
-    response = client.get(f"/api/mandates/{KIND_INTENT}/{missing}")
+    response = client.get(f"/api/mandates/{KIND_INTENT}/{missing}{ACTOR_QS}")
     assert response.status_code == 404
 
 
 def test_T9_17_fetch_400_when_bad_kind(client):
-    response = client.get(f"/api/mandates/settlement/{'0' * 64}")
+    response = client.get(f"/api/mandates/settlement/{'0' * 64}{ACTOR_QS}")
     assert response.status_code == 400
 
 
 def test_T9_18_fetch_400_when_bad_digest_shape(client):
-    response = client.get(f"/api/mandates/{KIND_INTENT}/abc")
+    response = client.get(f"/api/mandates/{KIND_INTENT}/abc{ACTOR_QS}")
     assert response.status_code == 400
 
 
@@ -370,7 +502,7 @@ def test_T9_19_store_route_persists_and_returns_digest(client, dao, agent_did):
     expected_digest = intent_mandate_digest(intent)
     response = client.post(
         "/api/mandates/store",
-        json={"kind": KIND_INTENT, "mandate": intent},
+        json={"kind": KIND_INTENT, "mandate": intent, "actor_id": ACTOR_ID},
     )
     assert response.status_code == 200
     body = response.json()
@@ -379,7 +511,7 @@ def test_T9_19_store_route_persists_and_returns_digest(client, dao, agent_did):
     assert body["digest"] == expected_digest
 
     # listing reflects the stored mandate
-    listing = client.get("/api/mandates").json()
+    listing = client.get(f"/api/mandates{ACTOR_QS}").json()
     assert len(listing["intents"]) == 1
     assert listing["intents"][0]["digest"] == expected_digest
 
@@ -388,7 +520,7 @@ def test_T9_20_store_route_rejects_unknown_kind(client, dao, agent_did):
     intent = _signed_intent(dao, agent_did)
     response = client.post(
         "/api/mandates/store",
-        json={"kind": "settlement", "mandate": intent},
+        json={"kind": "settlement", "mandate": intent, "actor_id": ACTOR_ID},
     )
     assert response.status_code == 400
 
@@ -396,7 +528,7 @@ def test_T9_20_store_route_rejects_unknown_kind(client, dao, agent_did):
 def test_T9_21_store_route_rejects_malformed_body(client):
     response = client.post(
         "/api/mandates/store",
-        json={"kind": KIND_INTENT, "mandate": {"junk": True}},
+        json={"kind": KIND_INTENT, "mandate": {"junk": True}, "actor_id": ACTOR_ID},
     )
     assert response.status_code == 400
 
@@ -408,7 +540,7 @@ def test_T9_22_verify_intent_happy_path(client, dao, agent_did):
     intent = _signed_intent(dao, agent_did)
     response = client.post(
         "/api/mandates/verify",
-        json={"kind": KIND_INTENT, "mandate": intent},
+        json={"kind": KIND_INTENT, "mandate": intent, "actor_id": ACTOR_ID},
     )
     assert response.status_code == 200
     body = response.json()
@@ -435,7 +567,7 @@ def test_T9_23_verify_intent_detects_tampering(client, dao, agent_did):
 
     response = client.post(
         "/api/mandates/verify",
-        json={"kind": KIND_INTENT, "mandate": tampered},
+        json={"kind": KIND_INTENT, "mandate": tampered, "actor_id": ACTOR_ID},
     )
     assert response.status_code == 200
     body = response.json()
@@ -454,11 +586,12 @@ def test_T9_24_verify_intent_flags_expired(client, dao, agent_did):
             "allowed_settlement_methods": ["x402:usdc"],
         },
         expires_at=_past(60),
+        issued_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
     expired = sign_intent_mandate(expired_unsigned, dao)
     response = client.post(
         "/api/mandates/verify",
-        json={"kind": KIND_INTENT, "mandate": expired},
+        json={"kind": KIND_INTENT, "mandate": expired, "actor_id": ACTOR_ID},
     )
     body = response.json()
     assert body["ok"] is False
@@ -468,7 +601,12 @@ def test_T9_24_verify_intent_flags_expired(client, dao, agent_did):
 def test_T9_25_verify_cart_with_intent_binding(
     client, dao, counterparty, agent_did
 ):
-    intent = _signed_intent(dao, agent_did)
+    # V-22: must whitelist the counterparty or cart_satisfies_intent
+    # fails closed on the empty list.
+    intent = _signed_intent(
+        dao, agent_did,
+        whitelist_counterparty_did=counterparty.as_did(),
+    )
     cart = _signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
 
     response = client.post(
@@ -477,6 +615,7 @@ def test_T9_25_verify_cart_with_intent_binding(
             "kind": KIND_CART,
             "mandate": cart,
             "against_intent": intent,
+            "actor_id": ACTOR_ID,
         },
     )
     body = response.json()
@@ -500,6 +639,7 @@ def test_T9_26_verify_cart_rejects_wrong_intent_binding(
             "kind": KIND_CART,
             "mandate": cart,
             "against_intent": intent_b,
+            "actor_id": ACTOR_ID,
         },
     )
     body = response.json()
@@ -510,7 +650,38 @@ def test_T9_26_verify_cart_rejects_wrong_intent_binding(
 def test_T9_27_verify_payment_with_cart_binding(
     client, dao, counterparty, agent_did
 ):
-    intent = _signed_intent(dao, agent_did)
+    intent = _signed_intent(
+        dao,
+        agent_did,
+        whitelist_counterparty_did=counterparty.as_did(),
+    )
+    cart = _signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
+    payment = _signed_payment(dao, counterparty, cart_mandate_digest(cart))
+
+    response = client.post(
+        "/api/mandates/verify",
+        json={
+            "kind": KIND_PAYMENT,
+            "mandate": payment,
+            "against_intent": intent,
+            "against_cart": cart,
+            "actor_id": ACTOR_ID,
+        },
+    )
+    body = response.json()
+    assert body["ok"] is True
+    names = {check["name"] for check in body["checks"]}
+    assert "complete_triad" in names
+
+
+def test_T9_27b_verify_payment_with_cart_requires_intent(
+    client, dao, counterparty, agent_did
+):
+    intent = _signed_intent(
+        dao,
+        agent_did,
+        whitelist_counterparty_did=counterparty.as_did(),
+    )
     cart = _signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
     payment = _signed_payment(dao, counterparty, cart_mandate_digest(cart))
 
@@ -520,19 +691,80 @@ def test_T9_27_verify_payment_with_cart_binding(
             "kind": KIND_PAYMENT,
             "mandate": payment,
             "against_cart": cart,
+            "actor_id": ACTOR_ID,
         },
     )
     body = response.json()
-    assert body["ok"] is True
+    assert body["ok"] is False
+    assert "against_intent" in body["reason"]
     names = {check["name"] for check in body["checks"]}
-    assert "binds_cart" in names
+    assert "complete_triad" in names
+
+
+def test_T9_27d_verify_payment_rejects_signature_only_request(
+    client, dao, counterparty, agent_did
+):
+    intent = _signed_intent(
+        dao,
+        agent_did,
+        whitelist_counterparty_did=counterparty.as_did(),
+    )
+    cart = _signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
+    payment = _signed_payment(dao, counterparty, cart_mandate_digest(cart))
+
+    response = client.post(
+        "/api/mandates/verify",
+        json={
+            "kind": KIND_PAYMENT,
+            "mandate": payment,
+            "actor_id": ACTOR_ID,
+        },
+    )
+    body = response.json()
+    assert body["ok"] is False
+    assert "against_intent" in body["reason"]
+    assert "against_cart" in body["reason"]
+
+
+def test_T9_27c_verify_payment_rejects_hijacked_triad(
+    client, dao, counterparty, agent_did
+):
+    hijacker = AgentIdentity.generate(label="t9-hijacker")
+    intent = _signed_intent(
+        dao,
+        agent_did,
+        whitelist_counterparty_did=counterparty.as_did(),
+    )
+    cart = _signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
+    payment = build_payment_mandate(
+        issuer_did=hijacker.as_did(),
+        payee_did=counterparty.as_did(),
+        cart_mandate_digest_hex=cart_mandate_digest(cart),
+        settlement_choice="x402:usdc",
+        expires_at=_future(900),
+    )
+    payment = sign_payment_mandate(payment, hijacker)
+
+    response = client.post(
+        "/api/mandates/verify",
+        json={
+            "kind": KIND_PAYMENT,
+            "mandate": payment,
+            "against_intent": intent,
+            "against_cart": cart,
+            "actor_id": ACTOR_ID,
+        },
+    )
+    body = response.json()
+    assert body["ok"] is False
+    assert "issuer continuity broken" in body["reason"]
 
 
 def test_T9_28_verify_route_rejects_unknown_kind(client, dao, agent_did):
     intent = _signed_intent(dao, agent_did)
     response = client.post(
         "/api/mandates/verify",
-        json={"kind": "settlement", "mandate": intent},
+        json={"kind": "settlement", "mandate": intent, "actor_id": ACTOR_ID},
     )
     assert response.status_code == 400
 
@@ -540,7 +772,7 @@ def test_T9_28_verify_route_rejects_unknown_kind(client, dao, agent_did):
 def test_T9_29_verify_route_returns_malformed_reason_for_garbage_body(client):
     response = client.post(
         "/api/mandates/verify",
-        json={"kind": KIND_INTENT, "mandate": {"junk": True}},
+        json={"kind": KIND_INTENT, "mandate": {"junk": True}, "actor_id": ACTOR_ID},
     )
     # malformed body is a soft fail (ok=false), not a 400 - the sidebar
     # surfaces the reason in the row badge rather than as an HTTP error

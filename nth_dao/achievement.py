@@ -74,7 +74,7 @@ from .agent_ledger import (
     AgentLedger,
     LedgerEvent,
 )
-from .identity import AgentIdentity, canonical_json
+from .identity import AgentIdentity, canonical_json, normalize_for_canonical_json
 
 logger = logging.getLogger("nth_dao.achievement")
 
@@ -262,7 +262,9 @@ def sign_credential(
             raise ValueError(
                 "credential issuer does not match signing identity DID"
             )
-    payload = {k: v for k, v in credential.items() if k != "proof"}
+    payload = normalize_for_canonical_json(
+        {k: v for k, v in credential.items() if k != "proof"}
+    )
     sig_hex = identity.sign_json(payload)
     created = (created_at or datetime.now(timezone.utc)).isoformat()
     proof = {
@@ -305,7 +307,9 @@ def verify_credential(credential: Dict[str, Any]) -> Tuple[bool, str]:
         from nacl.signing import VerifyKey
     except ImportError as e:
         return False, f"verification requires PyNaCl + did_key: {e}"
-    payload = {k: v for k, v in credential.items() if k != "proof"}
+    payload = normalize_for_canonical_json(
+        {k: v for k, v in credential.items() if k != "proof"}
+    )
     try:
         pubkey_bytes = decode_ed25519_did_key(issuer)
         expected_fragment = f"{issuer}#{pubkey_bytes.hex()}"
@@ -323,14 +327,14 @@ def credential_digest(credential: Dict[str, Any]) -> str:
     Useful for caching, deduplication, and as a content-addressable key
     when publishing credentials to an external index.
     """
-    payload = {
+    payload = normalize_for_canonical_json({
         "@context": credential.get("@context"),
         "type": credential.get("type"),
         "issuer": credential.get("issuer"),
         "validFrom": credential.get("validFrom"),
         "validUntil": credential.get("validUntil"),
         "credentialSubject": credential.get("credentialSubject"),
-    }
+    })
     return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 

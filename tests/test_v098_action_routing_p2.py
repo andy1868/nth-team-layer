@@ -15,6 +15,7 @@ Production cross-agent dispatch MUST defend all three. P2 introduces:
 from __future__ import annotations
 
 import json
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -271,3 +272,61 @@ def test_P2_NONCE_failed_handler_still_records_nonce(tmp_path: Path, alice, bob)
     router2.register("boom", boom)
     resp2 = router2.handle(req)
     assert resp2.status == ActionStatus.REJECTED.value   # replay block
+
+
+def test_P2_NONCE_atomic_reserve_blocks_parallel_router_replay(
+    tmp_path: Path, alice, bob,
+):
+    """Two router instances sharing a workspace must not both execute
+    the same verified request.
+
+    A check-then-execute-then-record nonce ledger blocks restart replay,
+    but still loses when two workers pass the check at the same time.
+    The ledger must reserve the nonce before handler execution.
+    """
+    def lookup(aid: str):
+        return bob.pubkey_hex if aid == "bob" else None
+
+    router1 = ActionRouter(
+        agent_id="alice", identity=alice, pubkey_lookup=lookup,
+        workspace=tmp_path,
+    )
+    router2 = ActionRouter(
+        agent_id="alice", identity=alice, pubkey_lookup=lookup,
+        workspace=tmp_path,
+    )
+    start = threading.Barrier(3)
+    invocations = []
+    inv_lock = threading.Lock()
+
+    def handler(_req):
+        with inv_lock:
+            invocations.append(threading.current_thread().name)
+        time.sleep(0.05)
+        return "ok"
+
+    router1.register("ping", handler)
+    router2.register("ping", handler)
+    req = _signed(bob, request_id="parallel-replay")
+    responses = []
+
+    def run(router: ActionRouter):
+        start.wait(timeout=5)
+        responses.append(router.handle(req))
+
+    threads = [
+        threading.Thread(target=run, name="router1", args=(router1,)),
+        threading.Thread(target=run, name="router2", args=(router2,)),
+    ]
+    for t in threads:
+        t.start()
+    start.wait(timeout=5)
+    for t in threads:
+        t.join(timeout=5)
+
+    statuses = sorted(r.status for r in responses)
+    assert statuses == sorted([
+        ActionStatus.COMPLETED.value,
+        ActionStatus.REJECTED.value,
+    ])
+    assert len(invocations) == 1

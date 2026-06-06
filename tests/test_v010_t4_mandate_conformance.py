@@ -142,6 +142,26 @@ def test_T4_canonical_bytes_match_freshly_computed():
             )
 
 
+def test_T4_mandate_ids_are_full_uuid4_hex_shape():
+    """Mandate IDs in conformance vectors must match the public wire
+    shape: 32 lowercase hex chars with UUID4 version/variant nibbles.
+    A 16-hex fixture would let non-Python ports accidentally implement
+    the wrong ID width."""
+    doc = _load_vectors()
+    fields = (
+        ("mandate_intent_canonical", "intent_id"),
+        ("mandate_cart_canonical", "cart_id"),
+        ("mandate_payment_canonical", "payment_id"),
+    )
+    for category, field in fields:
+        value = doc["vectors"][category][0]["input"]["credentialSubject"][field]
+        assert len(value) == 32
+        assert value.lower() == value
+        assert all(ch in "0123456789abcdef" for ch in value)
+        assert value[12] == "4"
+        assert value[16] in "89ab"
+
+
 # ===== binding semantics =====
 
 
@@ -155,10 +175,17 @@ def test_T4_negative_binding_vectors_match_their_documented_reasons():
     doc = _load_vectors()
     for v in doc["vectors"]["mandate_negative_binding"]:
         inp = v["input"]
+        # Vectors are structural fixtures (no proof block); pass
+        # require_signed=False so V-21's signature gate doesn't
+        # short-circuit the structural reason we're pinning here.
         if "cart" in inp and "intent" in inp:
-            ok, reason = cart_satisfies_intent(inp["cart"], inp["intent"])
+            ok, reason = cart_satisfies_intent(
+                inp["cart"], inp["intent"], require_signed=False,
+            )
         else:
-            ok, reason = payment_satisfies_cart(inp["payment"], inp["cart_presented"])
+            ok, reason = payment_satisfies_cart(
+                inp["payment"], inp["cart_presented"], require_signed=False,
+            )
         assert ok is False
         assert v["expected_reason_contains"] in reason, (
             f"vector {v['id']}: reason='{reason}' did not contain "

@@ -66,6 +66,7 @@ from .identity import (
     _NACL_AVAILABLE,
     _VerifyKey,
     canonical_json,
+    normalize_for_canonical_json,
 )
 from .util import (
     InterProcessLock,
@@ -218,7 +219,7 @@ class BusEvent:
             "event_type": self.event_type,
             "actor_id": self.actor_id,
             "actor_pubkey": self.actor_pubkey,
-            "payload": self.payload,
+            "payload": normalize_for_canonical_json(self.payload, "$.payload"),
             "timestamp": self.timestamp,
             "seq": self.seq,
             "prev_hash": self.prev_hash,

@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Optional
 
@@ -29,6 +30,7 @@ from .base import (
     AgentBackend,
     BackendCapabilities,
     BackendUnavailableError,
+    PreflightResult,
     SessionConfig,
     SessionSummary,
     TokenUsage,
@@ -71,6 +73,50 @@ class ClaudeCodeBackend(AgentBackend):
             if shutil.which(name):
                 return True
         return False
+
+    def preflight_check(self, *, timeout: float = 5.0):
+        """PR-1: real Claude auth check, not just binary presence.
+
+        Doc-level failure mode #1: claude auth login crashed but the
+        binary existed, so the previous ``is_available()`` returned
+        True and the attach proceeded. ``claude auth status`` is the
+        one-shot CLI call that surfaces the broken auth state.
+        """
+        # G-9 (Voss audit): imports promoted to module scope.
+        t0 = time.monotonic()
+        try:
+            cli = self._resolve_cli()
+        except BackendUnavailableError as exc:
+            return PreflightResult(
+                ok=False, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail=str(exc),
+            )
+        try:
+            result = subprocess.run(
+                [cli, "auth", "status"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            return PreflightResult(
+                ok=False, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail=f"claude auth status {type(exc).__name__}: {exc}",
+            )
+        ok = result.returncode == 0
+        detail = "" if ok else (result.stderr or result.stdout).strip()[:200]
+        return PreflightResult(
+            ok=ok, backend_id=self.backend_id,
+            checked_at=datetime.now(timezone.utc).isoformat(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            detail=detail,
+            structured={
+                "returncode": result.returncode,
+                "stdout_head": result.stdout[:500],
+            },
+        )
 
     def _resolve_cli(self) -> str:
         """ CLI """

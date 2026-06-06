@@ -50,7 +50,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .identity import AgentIdentity
+from .identity import AgentIdentity, normalize_for_canonical_json
 from .util import atomic_write_json, safe_load_json, safe_id
 
 logger = logging.getLogger("nth_dao.reputation")
@@ -305,7 +305,7 @@ class ReputationManager:
 
         if self.identity and self.identity.can_sign:
             payload = {k: v for k, v in entry.to_dict().items() if k != "sig"}
-            entry.sig = self.identity.sign_json(payload)
+            entry.sig = self.identity.sign_json(normalize_for_canonical_json(payload))
 
         if upsert and existing_mine:
             # Upsert：替换最新一条而非追加。这种情况下不扣 credit

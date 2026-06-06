@@ -30,9 +30,150 @@ Design:
 from __future__ import annotations
 
 import logging
+import os
+import platform as _platform
+import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Union, runtime_checkable
+
+
+def _detect_gpu() -> Dict[str, Any]:
+    """G-14 (Voss audit): best-effort GPU detection.
+
+    Strategy (in order):
+      1. ``pynvml`` if importable - the most reliable NVIDIA path
+      2. ``nvidia-smi`` binary on PATH - fallback for hosts without
+         the Python binding
+      3. Default to ``{"gpu_available": False, "gpu_name": None}``
+
+    NEVER raises - GPU detection is purely informational and must
+    not crash attach() on a CPU-only or sandboxed host. AMD / Intel
+    GPUs are not detected (returns False); upgrading this to use
+    ``rocm-smi`` etc. is a future deployment-specific concern.
+    """
+    # Path 1: pynvml
+    try:
+        import pynvml  # type: ignore
+        try:
+            pynvml.nvmlInit()
+            count = pynvml.nvmlDeviceGetCount()
+            if count > 0:
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                name = pynvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode("utf-8", errors="replace")
+                try:
+                    pynvml.nvmlShutdown()
+                except Exception:  # noqa: BLE001
+                    pass
+                return {
+                    "gpu_available": True,
+                    "gpu_name": name,
+                    "gpu_count": count,
+                    "gpu_source": "pynvml",
+                }
+        except Exception:  # noqa: BLE001
+            # nvml init failed (no driver, no GPU). Fall through.
+            pass
+    except ImportError:
+        pass
+
+    # Path 2: nvidia-smi
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            out = subprocess.run(
+                [nvidia_smi, "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                names = [
+                    line.strip()
+                    for line in out.stdout.splitlines()
+                    if line.strip()
+                ]
+                if names:
+                    return {
+                        "gpu_available": True,
+                        "gpu_name": names[0],
+                        "gpu_count": len(names),
+                        "gpu_source": "nvidia-smi",
+                    }
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+    return {
+        "gpu_available": False,
+        "gpu_name": None,
+        "gpu_count": 0,
+        "gpu_source": None,
+    }
+
+
+def _detect_memory_gb() -> Optional[float]:
+    """G-14: total system memory in GiB, or None if unavailable.
+
+    Uses ``psutil`` when available. Returns None silently otherwise -
+    memory is informational, not a gate.
+    """
+    try:
+        import psutil  # type: ignore
+        total_bytes = psutil.virtual_memory().total
+        return round(total_bytes / (1024 ** 3), 2)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _capture_env_metadata() -> Dict[str, Any]:
+    """PR-2: snapshot the agent's environment for mission filtering.
+
+    Mission steps with ``required_platform`` use this to refuse work
+    on incompatible agents (failure mode #1 in the COLLABORATION
+    doc: a Linux-only step landing on a Windows agent that the
+    orchestrator didn't know was Windows). Schema is intentionally
+    flat - the registry stores it under metadata.env without further
+    nesting so consumers can filter by single keys.
+
+    G-14 (Voss audit): the original PR-2 schema captured only
+    platform/architecture/python_version/runtime. That's enough for
+    OS-level filtering but not enough for GPU-required ML steps or
+    memory-bound large-context steps. We extend the schema with:
+
+      * cpu_count        always available via os.cpu_count()
+      * memory_gb        None if psutil missing
+      * gpu_available    bool, never raises
+      * gpu_name         GPU model name or None
+      * gpu_count        int, 0 when no GPU
+      * gpu_source       "pynvml" / "nvidia-smi" / None - lets a
+                         dashboard report HOW we detected
+
+      * runtime_key       G-15 OS+architecture key, e.g.
+                          linux-x86_64 or darwin-arm64
+
+    Adding keys is backward compatible: PR-2 callers using just the
+    original four keys still see them unchanged. New filtering
+    primitives can opt in.
+    """
+    platform = _platform.system().lower()
+    architecture = _platform.machine().lower()
+    env: Dict[str, Any] = {
+        "platform": platform,       # linux / darwin / windows
+        "architecture": architecture,  # x86_64 / arm64 / ...
+        "runtime_key": f"{platform}-{architecture}",
+        "python_version": ".".join(map(str, sys.version_info[:3])),
+        "runtime": (
+            "cpython" if sys.implementation.name == "cpython"
+            else sys.implementation.name
+        ),
+        # G-14 additions
+        "cpu_count": os.cpu_count() or 0,
+        "memory_gb": _detect_memory_gb(),
+    }
+    env.update(_detect_gpu())
+    return env
 
 from team_layer import TeamAgent, TeamMemoryManager
 from team_layer.backends import AgentBackend, default_registry
@@ -208,17 +349,33 @@ class TeamSession:
             if record is None:
                 return None
             # AgentRegistry stores the pubkey in record.metadata or as
-            # an attribute depending on version; tolerate both.
+            # an attribute depending on version; tolerate both. attach()
+            # stores AgentIdentity.public_dict() under metadata["identity"],
+            # whose field is named "pubkey".
+            metadata = record.metadata or {}
+            identity_meta = metadata.get("identity") or {}
+            if not isinstance(identity_meta, dict):
+                identity_meta = {}
             return (
                 getattr(record, "pubkey_hex", "")
-                or (record.metadata or {}).get("pubkey_hex", "")
+                or metadata.get("pubkey_hex", "")
+                or metadata.get("pubkey", "")
+                or identity_meta.get("pubkey_hex", "")
+                or identity_meta.get("pubkey", "")
             ) or None
 
-        if allow_unsigned_dev or self.identity is None or not self.identity.can_sign:
+        if allow_unsigned_dev:
             self._action_router = ActionRouter(
                 agent_id=self.agent_id,
                 workspace=self.workspace,
                 allow_unsigned_dev=True,
+            )
+        elif self.identity is None or not self.identity.can_sign:
+            raise ValueError(
+                "TeamSession.action_router() requires a signing identity. "
+                "Pass identity=AgentIdentity.generate(...) to attach(), or "
+                "call action_router(allow_unsigned_dev=True) for local smoke "
+                "tests only."
             )
         else:
             self._action_router = ActionRouter(
@@ -401,6 +558,8 @@ def attach(
     start_heartbeat: bool = True,
     join_token: str = "",
     identity: Optional[AgentIdentity] = None,
+    skip_preflight: bool = False,
+    preflight_timeout: float = 5.0,
 ) -> TeamSession:
     """One-line integration: wire up an agent's NTH DAO runtime.
 
@@ -454,6 +613,51 @@ def attach(
         backend_instance = default_registry.create(backend, **(backend_kwargs or {}))
         backend_id_str = backend
 
+    # PR-1 / G-1 (Voss audit): pre-flight check.
+    #
+    # Catches the "claude auth login crashed" / "codex hangs" failure
+    # modes BEFORE the agent commits to any work. The full lifecycle:
+    #   1. Run preflight_check on the backend.
+    #   2. Eagerly create the EventBus (skipping its lazy init in
+    #      TeamSession) and emit ``agent.preflight`` so the audit
+    #      chain captures the attempt regardless of outcome.
+    #   3. If preflight failed, raise BackendUnavailableError so the
+    #      caller can fall back to another backend or abort.
+    #
+    # The eager EventBus instantiation here is the fix for the G-1
+    # finding: previously the comment claimed the event would fire
+    # but the code never reached an emit() call before raising.
+    preflight = None
+    if backend_instance is not None and not skip_preflight:
+        preflight = backend_instance.preflight_check(timeout=preflight_timeout)
+
+        # Always emit, success or failure - the audit chain must show
+        # WHY the attach succeeded or refused, not just attaches that
+        # went through.
+        import dataclasses as _dc
+        from .event_bus import EventBus
+        _audit_bus = EventBus(workspace, identity=agent_identity)
+        _audit_bus.emit(
+            "agent.preflight",
+            {
+                "agent_id": agent_id,
+                "backend_id": preflight.backend_id,
+                "ok": preflight.ok,
+                "detail": preflight.detail[:500],
+                "duration_ms": preflight.duration_ms,
+                "checked_at": preflight.checked_at,
+                "structured": preflight.structured,
+            },
+            identity=agent_identity,
+        )
+
+        if not preflight.ok:
+            from team_layer.backends.base import BackendUnavailableError
+            raise BackendUnavailableError(
+                f"preflight failed for backend {preflight.backend_id!r}: "
+                f"{preflight.detail}"
+            )
+
     # 2. 4+1  Provider
     providers = [
         SoulProvider(str(workspace / soul_path)),
@@ -483,6 +687,11 @@ def attach(
     registry = AgentRegistry(agents_dir=str(workspace / agents_dir))
     registry_metadata = dict(metadata or {})
     registry_metadata.setdefault("identity", agent_identity.public_dict())
+    # PR-2: env metadata so the orchestrator can filter mission steps
+    # by required_platform. Stored under metadata["env"] so it stays
+    # alongside identity and other discovery-time facts without
+    # changing the registry schema.
+    registry_metadata.setdefault("env", _capture_env_metadata())
 
     registry.register(
         agent_id=agent_id,

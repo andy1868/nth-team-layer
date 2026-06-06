@@ -75,10 +75,10 @@ def test_M2_backticks_in_code_cell_neutralised():
     rest of the cell be parsed as Markdown — potential injection."""
     p = AgentProfile(agent_id="alice`echo hacked`")
     md = p.render_markdown()
-    # The dangerous backtick is replaced with the visually-similar
-    # modifier letter grave accent, which doesn't close `...` syntax
+    # The dangerous backtick is replaced before Markdown sees the
+    # inline-code cell, so it cannot close `...` syntax.
     assert "`echo hacked`" not in md
-    assert "ˋecho hackedˋ" in md
+    assert "'echo hacked'" in md
 
 
 def test_M2_backticks_in_cjk_label_handled():
@@ -124,6 +124,6 @@ def test_escape_md_handles_pipe():
 
 
 def test_escape_md_code_neutralises_backticks():
-    assert _escape_md_code("a`b") == "aˋb"
+    assert _escape_md_code("a`b") == "a'b"
     assert _escape_md_code("a|b") == "a\\|b"
     assert _escape_md_code("") == ""

@@ -88,6 +88,13 @@ class FakeMissionStore:
         return self._missions.get(mission_id)
 
 
+class FaultyMissionStore:
+    """MissionStore stub whose backend lookup fails unexpectedly."""
+
+    def get(self, mission_id: str) -> Optional[FakeMission]:
+        raise RuntimeError(f"backend exploded for {mission_id}")
+
+
 @pytest.fixture
 def store() -> FakeMissionStore:
     return FakeMissionStore([
@@ -98,7 +105,13 @@ def store() -> FakeMissionStore:
 
 @pytest.fixture
 def client(agent_card, store) -> TestClient:
-    app = create_a2a_app(agent_card=agent_card, mission_store=store)
+    # Voss V-25: tests use loopback so allow_unauthenticated=True is
+    # the right posture; production deployments must supply
+    # auth_callable instead.
+    app = create_a2a_app(
+        agent_card=agent_card, mission_store=store,
+        allow_unauthenticated=True,
+    )
     return TestClient(app)
 
 
@@ -124,7 +137,9 @@ def test_T8_01b_create_app_rejects_invalid_card():
     """The server should refuse to start with a malformed card -
     otherwise consumers fetch garbage from /.well-known/agent.json."""
     with pytest.raises(ValueError, match="invalid Agent Card"):
-        create_a2a_app(agent_card={"not": "a card"})
+        create_a2a_app(
+            agent_card={"not": "a card"}, allow_unauthenticated=True,
+        )
 
 
 # ===== T8-#2: JSON-RPC envelope validation =====
@@ -222,7 +237,10 @@ def test_T8_05_tasks_get_invalid_params(client):
 
 
 def test_T8_06_tasks_get_without_mission_store(agent_card):
-    app = create_a2a_app(agent_card=agent_card, mission_store=None)
+    app = create_a2a_app(
+        agent_card=agent_card, mission_store=None,
+        allow_unauthenticated=True,
+    )
     with TestClient(app) as c:
         body = _rpc(c, {
             "jsonrpc": "2.0", "id": 1,
@@ -230,6 +248,29 @@ def test_T8_06_tasks_get_without_mission_store(agent_card):
         }).json()
         assert body["error"]["code"] == JSONRPC_INTERNAL_ERROR
         assert "no mission store" in body["error"]["message"]
+
+
+def test_T8_06b_tasks_get_store_exception_is_opaque(agent_card):
+    app = create_a2a_app(
+        agent_card=agent_card, mission_store=FaultyMissionStore(),
+        allow_unauthenticated=True,
+    )
+    with TestClient(app) as c:
+        body = _rpc(c, {
+            "jsonrpc": "2.0", "id": 1,
+            "method": "tasks/get", "params": {"id": "secret-task"},
+        }).json()
+
+    err = body["error"]
+    assert err["code"] == JSONRPC_INTERNAL_ERROR
+    assert "RuntimeError" not in err["message"]
+    assert "backend exploded" not in err["message"]
+    assert "secret-task" not in err["message"]
+    assert err["message"].startswith("Mission store lookup failed (ref ")
+    assert set(err["data"]) == {"ref"}
+    assert isinstance(err["data"]["ref"], str)
+    assert len(err["data"]["ref"]) == 12
+    assert all(ch in "0123456789abcdef" for ch in err["data"]["ref"])
 
 
 # ===== T8-#7: stubbed methods =====

@@ -80,13 +80,28 @@ def test_P4_session_fault_isolator_wired_to_event_bus(tmp_path: Path):
     assert iso._event_bus is sess.event_bus()
 
 
-def test_P4_session_action_router_dev_mode(tmp_path: Path):
-    """Without signing identity, action_router falls into dev mode
-    (since attach() doesn't yet generate Ed25519 by default)."""
+def test_P4_session_action_router_fails_closed_without_signing_identity(tmp_path: Path):
+    """Without a signing identity, action_router must not silently
+    downgrade to unsigned dev mode."""
     sess = _make_session(tmp_path)
-    router = sess.action_router()
-    # Dev mode because no identity supplied; the call did NOT raise.
+    with pytest.raises(ValueError, match="allow_unsigned_dev=True"):
+        sess.action_router()
+
+
+def test_P4_session_action_router_dev_mode_is_explicit(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    router = sess.action_router(allow_unsigned_dev=True)
     assert router._verify_enabled is False
+
+
+def test_P4_session_action_router_prod_mode_with_signing_identity(tmp_path: Path):
+    from nth_dao.identity import AgentIdentity, crypto_available
+    if not crypto_available():
+        pytest.skip("PyNaCl required")
+    sess = _make_session(tmp_path)
+    sess.identity = AgentIdentity.generate(label="alice")
+    router = sess.action_router()
+    assert router._verify_enabled is True
 
 
 def test_P4_session_profile_aggregates_known_data(tmp_path: Path):

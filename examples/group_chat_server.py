@@ -127,8 +127,11 @@ async def api_join(payload: JoinIn):
     ensure_open_member(payload.agent_id)
     channel = GROUPS.get_channel(payload.channel_id)
     if channel and payload.agent_id not in channel.member_ids:
-        channel.member_ids.append(payload.agent_id)
-        GROUPS._write_json(GROUPS._channel_path(channel.channel_id), channel.to_dict())
+        GROUPS.add_channel_member(
+            channel_id=payload.channel_id,
+            agent_id=payload.agent_id,
+            added_by=payload.agent_id,
+        )
     return {"ok": True, "agent_id": payload.agent_id, "channel_id": payload.channel_id}
 
 

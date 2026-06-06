@@ -75,24 +75,39 @@ def _make_intent(
     max_amount=None,
     allowed_counterparties=None,
     allowed_settlement_methods=None,
+    counterparty_for_whitelist: AgentIdentity = None,
+    sign: bool = True,
 ):
-    """Build a representative IntentMandate; defaults to a generous
-    100 USDC budget over x402:usdc with no counterparty restriction."""
-    constraints = {}
-    if max_amount is None:
-        max_amount = {"value": "100.00", "currency": "USDC"}
-    constraints["max_amount"] = max_amount
-    constraints["allowed_counterparties"] = list(allowed_counterparties or [])
-    constraints["allowed_settlement_methods"] = list(
-        allowed_settlement_methods or ["x402:usdc"]
-    )
-    return build_intent_mandate(
+    """Build a representative IntentMandate.
+
+    Defaults reflect post-Voss-V22 fail-closed semantics: the test
+    counterparty is whitelisted by default (callers can override).
+    Signed by default so `cart_satisfies_intent` (Voss V-21) accepts
+    the fixture; pass ``sign=False`` to exercise unsigned paths.
+    """
+    constraints = {
+        "max_amount": max_amount or {"value": "100.00", "currency": "USDC"},
+        "allowed_counterparties": (
+            list(allowed_counterparties)
+            if allowed_counterparties is not None
+            else ([counterparty_for_whitelist.as_did()]
+                  if counterparty_for_whitelist is not None else [])
+        ),
+        "allowed_settlement_methods": list(
+            allowed_settlement_methods or ["x402:usdc"]
+        ),
+    }
+    mandate = build_intent_mandate(
         issuer_did=dao.as_did(),
         agent_did=agent_did,
         purpose="buy code review",
         constraints=constraints,
         expires_at=_future(86400),
     )
+    if sign:
+        from nth_dao.mandate.intent import sign_intent_mandate
+        return sign_intent_mandate(mandate, dao)
+    return mandate
 
 
 def _make_cart(
@@ -102,10 +117,11 @@ def _make_cart(
     *,
     total=None,
     settlement_methods=None,
+    sign: bool = True,
 ):
     if total is None:
         total = {"value": "50.00", "currency": "USDC"}
-    return build_cart_mandate(
+    cart = build_cart_mandate(
         issuer_did=counterparty.as_did(),
         buyer_did=buyer_did,
         intent_mandate_digest_hex=digest_hex,
@@ -114,17 +130,23 @@ def _make_cart(
         settlement_methods=settlement_methods or ["x402:usdc"],
         expires_at=_future(3600),
     )
+    if sign:
+        return sign_cart_mandate(cart, counterparty)
+    return cart
 
 
 # ===== 1. W3C VC shape =====
 
 
 def test_T2_01_build_has_w3c_vc_shape(dao, counterparty, agent_did):
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, sign=False)
     digest = intent_mandate_digest(intent)
-    cart = _make_cart(counterparty, agent_did, digest)
-    assert cart["@context"] == CART_CONTEXT
-    assert cart["type"] == CART_TYPE
+    # sign=False so we can assert the post-build pre-sign shape.
+    cart = _make_cart(counterparty, agent_did, digest, sign=False)
+    # V-11: CART_CONTEXT / CART_TYPE are immutable tuples now; on-wire
+    # shape is still a list.
+    assert cart["@context"] == list(CART_CONTEXT)
+    assert cart["type"] == list(CART_TYPE)
     assert cart["type"][0] == "VerifiableCredential"
     assert cart["issuer"] == counterparty.as_did()
     assert "issuanceDate" in cart
@@ -147,7 +169,8 @@ def test_T2_02_credentialSubject_binds_to_intent_digest(dao, counterparty, agent
     subject = cart["credentialSubject"]
     assert subject["id"] == agent_did
     assert subject["intent_mandate_digest"] == digest
-    assert len(subject["cart_id"]) == 16
+    # V-10: full UUID4 hex (32 chars / 122 bits)
+    assert len(subject["cart_id"]) == 32
     assert subject["total"] == {"value": "50.00", "currency": "USDC"}
     assert len(subject["items"]) == 1
     assert subject["settlement_methods"] == ["x402:usdc"]
@@ -160,9 +183,9 @@ def test_T2_03_sign_attaches_proof_with_assertionMethod(dao, counterparty, agent
     """CartMandate is an ASSERTION ("I will perform X for Y") - not
     a delegation. proofPurpose must be assertionMethod, distinct from
     IntentMandate's capabilityInvocation."""
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, sign=False)
     digest = intent_mandate_digest(intent)
-    cart = _make_cart(counterparty, agent_did, digest)
+    cart = _make_cart(counterparty, agent_did, digest, sign=False)
     signed = sign_cart_mandate(cart, counterparty)
     assert "proof" not in cart   # input not mutated
     proof = signed["proof"]
@@ -179,8 +202,8 @@ def test_T2_03_sign_attaches_proof_with_assertionMethod(dao, counterparty, agent
 def test_T2_04_verify_signed_cart_passes(dao, counterparty, agent_did):
     intent = _make_intent(dao, agent_did)
     digest = intent_mandate_digest(intent)
-    cart = _make_cart(counterparty, agent_did, digest)
-    signed = sign_cart_mandate(cart, counterparty)
+    # V-18: _make_cart already signs; no second sign call.
+    signed = _make_cart(counterparty, agent_did, digest)
     ok, reason = verify_cart_mandate(signed)
     assert ok, reason
 
@@ -191,8 +214,7 @@ def test_T2_04_verify_signed_cart_passes(dao, counterparty, agent_did):
 def test_T2_05_verify_rejects_tampered_total(dao, counterparty, agent_did):
     intent = _make_intent(dao, agent_did)
     digest = intent_mandate_digest(intent)
-    cart = _make_cart(counterparty, agent_did, digest)
-    signed = sign_cart_mandate(cart, counterparty)
+    signed = _make_cart(counterparty, agent_did, digest)
     # Buyer-side attacker: lower the price after signing
     signed["credentialSubject"]["total"]["value"] = "0.01"
     ok, reason = verify_cart_mandate(signed)
@@ -209,7 +231,7 @@ def test_T2_06_verify_rejects_wrong_proof_purpose(dao, counterparty, agent_did):
     authorisation-shaped credential as a sale."""
     intent = _make_intent(dao, agent_did)
     digest = intent_mandate_digest(intent)
-    cart = _make_cart(counterparty, agent_did, digest)
+    cart = _make_cart(counterparty, agent_did, digest, sign=False)
     signed = sign_cart_mandate(cart, counterparty)
     signed["proof"]["proofPurpose"] = "capabilityInvocation"
     ok, reason = verify_cart_mandate(signed)
@@ -222,8 +244,12 @@ def test_T2_06_verify_rejects_wrong_proof_purpose(dao, counterparty, agent_did):
 
 def test_T2_07_satisfies_intent_for_compatible_cart(dao, counterparty, agent_did):
     """The DAO authorises 100 USDC via x402:usdc; the cart asks for
-    50 USDC via x402:usdc - satisfies on all five axes."""
-    intent = _make_intent(dao, agent_did)
+    50 USDC via x402:usdc - satisfies on all five axes.
+
+    Post Voss V-22 the intent must whitelist a specific counterparty
+    (empty list = fail-closed), so the fixture whitelists ``counterparty``.
+    """
+    intent = _make_intent(dao, agent_did, counterparty_for_whitelist=counterparty)
     digest = intent_mandate_digest(intent)
     cart = _make_cart(counterparty, agent_did, digest)
     ok, reason = cart_satisfies_intent(cart, intent)
@@ -236,7 +262,7 @@ def test_T2_07_satisfies_intent_for_compatible_cart(dao, counterparty, agent_did
 def test_T2_08_satisfies_intent_rejects_total_over_max_amount(dao, counterparty, agent_did):
     """The whole point of IntentMandate.max_amount: the cart cannot
     exceed it. Decimal compare so "100.01" > "100.00"."""
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, counterparty_for_whitelist=counterparty)
     digest = intent_mandate_digest(intent)
     # 100.01 vs max 100.00 - one cent over
     over_budget = _make_cart(
@@ -263,7 +289,7 @@ def test_T2_09_satisfies_rejects_currency_and_digest_mismatch(dao, counterparty,
     """A cart in EUR cannot satisfy a USDC intent (currency check).
     A cart with a stale or forged digest cannot satisfy any intent
     (binding check)."""
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, counterparty_for_whitelist=counterparty)
     digest = intent_mandate_digest(intent)
 
     # Currency mismatch
@@ -279,6 +305,7 @@ def test_T2_09_satisfies_rejects_currency_and_digest_mismatch(dao, counterparty,
     other_intent = _make_intent(
         dao, agent_did,
         max_amount={"value": "999.00", "currency": "USDC"},
+        counterparty_for_whitelist=counterparty,
     )
     other_digest = intent_mandate_digest(other_intent)
     swap = _make_cart(counterparty, agent_did, other_digest)
@@ -344,16 +371,20 @@ def test_T2_facade_reexport():
 def test_T2_digest_stable_and_helpers_work(dao, counterparty, agent_did):
     """T-3 PaymentMandate will bind to cart_mandate_digest, so the
     digest MUST be stable across signing - signing only adds the proof
-    block, which is excluded."""
-    intent = _make_intent(dao, agent_did)
+    block, which is excluded.
+
+    Voss V-21 + V-22 update: the helper now signs by default and
+    requires a populated counterparty whitelist; the test builds an
+    unsigned cart + sign-once to exercise the "before signing" digest
+    invariant.
+    """
+    intent = _make_intent(dao, agent_did, counterparty_for_whitelist=counterparty)
     digest = intent_mandate_digest(intent)
-    cart = _make_cart(counterparty, agent_did, digest)
-    d1 = cart_mandate_digest(cart)
-    signed = sign_cart_mandate(cart, counterparty)
+    cart_unsigned = _make_cart(counterparty, agent_did, digest, sign=False)
+    d1 = cart_mandate_digest(cart_unsigned)
+    signed = sign_cart_mandate(cart_unsigned, counterparty)
     d2 = cart_mandate_digest(signed)
     assert d1 == d2
 
-    # Real signed intent + signed cart can be verified end-to-end
-    signed_intent = sign_intent_mandate(intent, dao)
-    intent_ok, _ = cart_satisfies_intent(signed, signed_intent)
-    assert intent_ok
+    intent_ok, reason = cart_satisfies_intent(signed, intent)
+    assert intent_ok, reason

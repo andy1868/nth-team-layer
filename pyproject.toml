@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nth-dao"
-version = "0.9.6"
+version = "0.10.0b1"
 description = "AI-native Web3 DAO layer for humans and agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -66,11 +66,19 @@ packages = [
     "nth_dao.cli",
     "nth_dao.conformance",
     "nth_dao.discovery",
+    "nth_dao.mandate",
     "nth_dao.orchestration",
     "nth_dao.util",
     "nth_dao.web",
     "nth_dao.web.static",
     "nth_dao.web.static.assets",
+    "team_layer",
+    "team_layer.backends",
+    "team_layer.blackboard",
+    "team_layer.compression",
+    "team_layer.evolution",
+    "team_layer.git_sync",
+    "team_layer.memory_providers",
 ]
 
 # Optional package data: include INTEGRATION_GUIDE inside nth_dao/

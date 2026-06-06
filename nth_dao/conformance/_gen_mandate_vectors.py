@@ -61,6 +61,13 @@ TS_PAYMENT_EXPIRES = "2026-06-01T01:45:00+00:00"
 # intent_expired negative vector.
 NOW_AFTER_EXPIRY = "2026-07-01T00:00:00+00:00"
 
+# Fixed UUID4-shaped identifiers without hyphens. They are deterministic
+# for conformance, but match the 32-hex wire shape produced by the live
+# mandate builders.
+INTENT_ID = "a1b2c3d4e5f64718a9b0c1d2e3f40516"
+CART_ID = "b1c2d3e4f5064728b9c0d1e2f3041526"
+PAYMENT_ID = "c1d2e3f40506472899d0e1f203142536"
+
 
 # ===== Vector 1: IntentMandate canonical_json =====
 
@@ -77,7 +84,7 @@ INTENT_INPUT: Dict[str, Any] = {
     "validUntil": TS_INTENT_EXPIRES,
     "credentialSubject": {
         "id": DID_AGENT,
-        "intent_id": "a1b2c3d4e5f60718",   # fixed 16-hex
+        "intent_id": INTENT_ID,
         "purpose": "buy code review",
         "constraints": {
             "max_amount": {"value": "100.00", "currency": "USDC"},
@@ -104,7 +111,7 @@ def _make_cart_input() -> Dict[str, Any]:
         "validUntil": TS_CART_EXPIRES,
         "credentialSubject": {
             "id": DID_AGENT,
-            "cart_id": "b1c2d3e4f5061728",
+            "cart_id": CART_ID,
             "intent_mandate_digest": intent_mandate_digest(INTENT_INPUT),
             "items": [
                 {"description": "Code review of PR #42", "quantity": 1},
@@ -132,7 +139,7 @@ def _make_payment_input() -> Dict[str, Any]:
         "validUntil": TS_PAYMENT_EXPIRES,
         "credentialSubject": {
             "id": DID_SELLER,
-            "payment_id": "c1d2e3f405061728",
+            "payment_id": PAYMENT_ID,
             "cart_mandate_digest": cart_mandate_digest(cart),
             "settlement_choice": "x402:usdc",
         },

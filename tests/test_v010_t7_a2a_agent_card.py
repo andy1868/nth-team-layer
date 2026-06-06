@@ -222,7 +222,9 @@ def test_T7_07b_duplicate_skill_id_rejected():
 def test_T7_08_top_level_validation():
     with pytest.raises(ValueError, match="non-empty"):
         build_agent_card(name="", description="", url="https://x/a2a")
-    with pytest.raises(ValueError, match="HTTP"):
+    # V-35 wording changed: "scheme must be http(s)" - match the
+    # canonical name "http(s)" used by the hardened urlparse path.
+    with pytest.raises(ValueError, match="http"):
         build_agent_card(name="X", description="", url="ftp://x/a2a")
     with pytest.raises(ValueError, match="url"):
         build_agent_card(name="X", description="", url="")
@@ -230,6 +232,23 @@ def test_T7_08_top_level_validation():
         build_agent_card(
             name="X", description="", url="https://x/a2a",
             capabilities=["has space"],   # not URL-safe
+        )
+
+
+def test_T7_08b_voss_V35_hardened_url_validation():
+    """V-35 tightening: urlparse-based check rejects empty-host URLs,
+    URLs containing CR/LF, and 2KB+ payloads."""
+    # bare scheme, no host -> reject
+    with pytest.raises(ValueError, match="host"):
+        build_agent_card(name="X", description="", url="http://")
+    # CR/LF injection
+    with pytest.raises(ValueError, match="CR/LF"):
+        build_agent_card(name="X", description="", url="https://x/a2a\nHeader: evil")
+    # length cap
+    with pytest.raises(ValueError, match="too long"):
+        build_agent_card(
+            name="X", description="",
+            url="https://x.com/" + ("a" * 3000),
         )
 
 

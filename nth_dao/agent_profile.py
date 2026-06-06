@@ -224,7 +224,7 @@ class AgentProfile:
         table or inject inline-code formatting.
         """
         label = _escape_md(self.label or self.agent_id)
-        alive_glyph = "🟢 online" if self.is_alive else "⚫ offline"
+        alive_glyph = "[online]" if self.is_alive else "[offline]"
         bar = _markdown_bar(self.health_score)
         rep_str = (
             f"{self.reputation_score:.1f}/5.0 ({self.reputation_count} ratings)"
@@ -255,7 +255,7 @@ class AgentProfile:
     def render_short(self) -> str:
         """One-line summary for log lines or compact lists."""
         label = self.label or self.agent_id
-        glyph = "●" if self.is_alive else "○"
+        glyph = "*" if self.is_alive else "-"
         caps = ",".join(self.capabilities[:3]) or "-"
         rep = f"{self.reputation_score:.1f}" if self.reputation_count else "-"
         return f"{glyph} {label}  h={self.health_score:.2f} r={rep}  [{caps}]"
@@ -271,10 +271,10 @@ class AgentProfile:
 
 
 def _markdown_bar(score: float, width: int = 10) -> str:
-    """Render a Markdown-safe health bar: ▰▰▰▰▱▱▱▱▱▱"""
+    """Render a Markdown-safe ASCII health bar."""
     score = max(0.0, min(1.0, score))
     filled = int(score * width)
-    return "▰" * filled + "▱" * (width - filled)
+    return "#" * filled + "-" * (width - filled)
 
 
 def _escape_md(value: str) -> str:
@@ -292,15 +292,13 @@ def _escape_md_code(value: str) -> str:
     the value breaks them. Replace with a visually-similar marker that
     survives Markdown parsing.
 
-    Implementation note: the replacement char is U+02CB MODIFIER LETTER
-    GRAVE ACCENT - looks like a backtick but isn't one, so Markdown
-    doesn't close the inline code on it. Spelled via \\u escape so the
-    source stays ASCII-only per the protocol-layer policy (some Windows
-    + GBK environments mangle raw U+02CB on round-trip).
+    Implementation note: use ASCII apostrophe rather than a lookalike
+    Unicode mark. It is less pretty, but keeps the protocol-layer source
+    and rendered fallback robust on Windows consoles.
     """
     if not value:
         return ""
-    return value.replace("`", "ˋ").replace("|", "\\|")
+    return value.replace("`", "'").replace("|", "\\|")
 
 
 __all__ = [

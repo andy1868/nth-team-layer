@@ -109,7 +109,10 @@ export function ContactShell({ actorId, actorPubkeyHex = "", sign }: Props) {
         />
       )}
       {tab === "mandates" && (
-        <MandatesPanel walletDid={actorPubkeyHex ? `did:key:${actorPubkeyHex}` : undefined} />
+        <MandatesPanel
+          actorId={actorId}
+          walletDid={actorPubkeyHex ? `did:key:${actorPubkeyHex}` : undefined}
+        />
       )}
     </div>
   );

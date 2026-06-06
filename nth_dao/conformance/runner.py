@@ -308,10 +308,21 @@ def check_mandate_negative_binding(vectors: List[dict]) -> List[ConformanceFailu
         expected_ok = v["expected_ok"]
         expected_reason_contains = v["expected_reason_contains"]
 
+        # Conformance vectors are about STRUCTURAL binding logic
+        # (digest binding, currency, allow-lists, etc.), not
+        # signature verification - that lives in its own category.
+        # Voss V-21 added require_signed=True to the binding helpers;
+        # pass require_signed=False here so the vectors keep
+        # exercising the pure structural rules without bloating each
+        # vector with a redundant proof block.
         if "cart" in inp and "intent" in inp:
-            ok, reason = cart_satisfies_intent(inp["cart"], inp["intent"])
+            ok, reason = cart_satisfies_intent(
+                inp["cart"], inp["intent"], require_signed=False,
+            )
         elif "payment" in inp and "cart_presented" in inp:
-            ok, reason = payment_satisfies_cart(inp["payment"], inp["cart_presented"])
+            ok, reason = payment_satisfies_cart(
+                inp["payment"], inp["cart_presented"], require_signed=False,
+            )
         else:
             failures.append(ConformanceFailure(
                 vector_id=v["id"], category="mandate_negative_binding",

@@ -51,7 +51,13 @@ from .identity import (
     _VerifyKey,
     canonical_json,
 )
-from .util import atomic_write_json, safe_load_json, safe_id
+from .util import (
+    LOCK_TIMEOUT_PATIENT,
+    atomic_write_json,
+    safe_append_jsonl,
+    safe_load_json,
+    safe_id,
+)
 
 logger = logging.getLogger("nth_dao.web_of_trust")
 
@@ -411,9 +417,14 @@ class TrustGraph:
         return out
 
     def _append(self, e: Endorsement) -> None:
-        self._endorsements_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._endorsements_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(e.to_dict(), ensure_ascii=False) + "\n")
+        # PR-0 (audit CRITICAL #1) + G-12 (Voss audit): reputation
+        # endorsements are low-frequency but high-value writes; use
+        # the PATIENT tier so transient contention never surfaces as
+        # a missed endorsement.
+        safe_append_jsonl(
+            self._endorsements_path, e.to_dict(),
+            lock_timeout=LOCK_TIMEOUT_PATIENT,
+        )
 
     def import_revocation(self, r: Revocation) -> bool:
         """Validate + store a revocation. Returns True if accepted.
@@ -445,9 +456,12 @@ class TrustGraph:
                 and existing.subject_pubkey == r.subject_pubkey
                 and existing.endorsement_issued_at == r.endorsement_issued_at):
                 return False
-        self._revocations_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._revocations_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(r.to_dict(), ensure_ascii=False) + "\n")
+        # PR-0 (audit CRITICAL #1) + G-12 (Voss audit): revocations
+        # share the same audit-criticality as endorsements - PATIENT.
+        safe_append_jsonl(
+            self._revocations_path, r.to_dict(),
+            lock_timeout=LOCK_TIMEOUT_PATIENT,
+        )
         return True
 
     def revoke(

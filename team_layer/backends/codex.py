@@ -20,12 +20,14 @@ import os
 import shutil
 import subprocess
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from .base import (
     AgentBackend,
     BackendCapabilities,
     BackendUnavailableError,
+    PreflightResult,
     SessionConfig,
     SessionSummary,
     TokenUsage,
@@ -51,6 +53,46 @@ class CodexBackend(AgentBackend):
     @classmethod
     def is_available(cls, cli_name: str = "codex", **kwargs) -> bool:
         return shutil.which(cli_name) is not None
+
+    def preflight_check(self, *, timeout: float = 5.0):
+        """PR-1: real Codex exec round-trip.
+
+        Doc-level failure mode #4: codex CLI is present but the
+        underlying API key / network is broken; ``is_available()``
+        returns True so attach proceeds, then ``send_turn`` hangs.
+        Running a trivial ``codex exec "echo OK"`` under timeout
+        surfaces that state before any work depends on it.
+        """
+        # G-9 (Voss audit): imports promoted to module scope.
+        t0 = time.monotonic()
+        if not shutil.which(self.cli_name):
+            return PreflightResult(
+                ok=False, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail=f"codex CLI {self.cli_name!r} not in PATH",
+            )
+        try:
+            result = subprocess.run(
+                [self.cli_name, "exec", "echo OK"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            return PreflightResult(
+                ok=False, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail=f"codex exec {type(exc).__name__}: {exc}",
+            )
+        ok = result.returncode == 0 and "OK" in result.stdout
+        detail = "" if ok else (result.stderr or result.stdout).strip()[:200]
+        return PreflightResult(
+            ok=ok, backend_id=self.backend_id,
+            checked_at=datetime.now(timezone.utc).isoformat(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            detail=detail,
+            structured={"returncode": result.returncode},
+        )
 
     def start_session(self, config: SessionConfig) -> None:
         if not self.is_available(cli_name=self.cli_name):

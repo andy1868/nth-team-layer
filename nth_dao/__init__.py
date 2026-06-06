@@ -36,9 +36,9 @@ try:
     try:
         __version__ = _pkg_version("nth-dao")
     except PackageNotFoundError:
-        __version__ = "0.9.6+source"
+        __version__ = "0.10.0b1+source"
 except ImportError:
-    __version__ = "0.9.6+source"
+    __version__ = "0.10.0b1+source"
 
 #
 # Facade — re-export all team_layer public APIs.

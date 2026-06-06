@@ -79,9 +79,13 @@ def test_T1_01_build_has_w3c_vc_shape(issuer, agent_did):
     keys with correct values - so any external VC verifier (AP2
     facilitator, Universal Resolver) can consume it."""
     mandate = _make_mandate(issuer, agent_did)
-    assert mandate["@context"] == INTENT_CONTEXT
+    # INTENT_CONTEXT / INTENT_TYPE are now immutable tuples (Voss V-11);
+    # the on-wire shape is still a list so compare against list(...) to
+    # exercise the structural equality without coupling to the
+    # underlying container type.
+    assert mandate["@context"] == list(INTENT_CONTEXT)
     assert mandate["@context"][0].startswith("https://www.w3.org/")
-    assert mandate["type"] == INTENT_TYPE
+    assert mandate["type"] == list(INTENT_TYPE)
     assert mandate["type"][0] == "VerifiableCredential"
     assert mandate["issuer"] == issuer.as_did()
     assert "issuanceDate" in mandate
@@ -101,7 +105,10 @@ def test_T1_02_credentialSubject_carries_agent_and_constraints(issuer, agent_did
     subject = mandate["credentialSubject"]
     assert subject["id"] == agent_did
     assert subject["purpose"] == "buy code review"
-    assert len(subject["intent_id"]) == 16
+    # intent_id is now the full UUID4 hex (32 chars / 122 bits) - the
+    # previous [:16] truncation halved the entropy unnecessarily
+    # (Voss V-10).
+    assert len(subject["intent_id"]) == 32
     assert subject["constraints"]["max_amount"] == {
         "value": "100.00", "currency": "USDC",
     }
@@ -223,10 +230,14 @@ def test_T1_10_is_expired_window(issuer, agent_did):
         expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
     )
     assert is_intent_expired(fresh) is False
-    # Past-dated
+    # Past-dated. The build-time gate (Voss V-12) rejects
+    # validUntil <= issuanceDate, so we have to fix issuanceDate
+    # further back than the past-dated expiry to construct a
+    # legitimately-issued-but-now-expired mandate.
     stale = _make_mandate(
         issuer, agent_did,
         expires_at=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        issued_at=datetime.now(timezone.utc) - timedelta(hours=2),
     )
     assert is_intent_expired(stale) is True
     # Custom 'now' parameter - simulate the future, fresh mandate
@@ -238,34 +249,50 @@ def test_T1_10_is_expired_window(issuer, agent_did):
 # ===== 11. constraint validation rejects bad input =====
 
 
+def _full_constraints(**overrides) -> dict:
+    """Helper for the negative-validation suite: complete valid
+    constraints with one field overridden to tamper-test it. Avoids
+    the old pattern of passing partial constraints (which now hits
+    the "required field missing" error first - Voss V-2/V-3)."""
+    base = {
+        "max_amount": {"value": "100.00", "currency": "USDC"},
+        "allowed_counterparties": [],
+        "allowed_settlement_methods": ["x402:usdc"],
+    }
+    base.update(overrides)
+    return base
+
+
 def test_T1_11_invalid_constraints_rejected(issuer, agent_did):
     """Structural validation surfaces bugs at build time, NOT at the
-    counterparty's verifier."""
+    counterparty's verifier. Each case overrides exactly one field of
+    a known-valid constraints dict, so the test pinpoints which
+    validation rule fires."""
     # Negative max_amount
     with pytest.raises(ValueError, match="positive"):
-        _make_mandate(issuer, agent_did, constraints={
-            "max_amount": {"value": "-1.00", "currency": "USDC"},
-        })
+        _make_mandate(issuer, agent_did, constraints=_full_constraints(
+            max_amount={"value": "-1.00", "currency": "USDC"},
+        ))
     # Non-decimal value
     with pytest.raises(ValueError, match="decimal"):
-        _make_mandate(issuer, agent_did, constraints={
-            "max_amount": {"value": "free", "currency": "USDC"},
-        })
+        _make_mandate(issuer, agent_did, constraints=_full_constraints(
+            max_amount={"value": "free", "currency": "USDC"},
+        ))
     # Lowercase currency
     with pytest.raises(ValueError, match="uppercase"):
-        _make_mandate(issuer, agent_did, constraints={
-            "max_amount": {"value": "1.00", "currency": "usdc"},
-        })
+        _make_mandate(issuer, agent_did, constraints=_full_constraints(
+            max_amount={"value": "1.00", "currency": "usdc"},
+        ))
     # Bad counterparty DID
     with pytest.raises(ValueError, match="did:key"):
-        _make_mandate(issuer, agent_did, constraints={
-            "allowed_counterparties": ["not-a-did"],
-        })
+        _make_mandate(issuer, agent_did, constraints=_full_constraints(
+            allowed_counterparties=["not-a-did"],
+        ))
     # Bad settlement method (no colon)
     with pytest.raises(ValueError, match="adapter"):
-        _make_mandate(issuer, agent_did, constraints={
-            "allowed_settlement_methods": ["x402usdc"],
-        })
+        _make_mandate(issuer, agent_did, constraints=_full_constraints(
+            allowed_settlement_methods=["x402usdc"],
+        ))
     # Naive timestamp (no tz)
     with pytest.raises(ValueError, match="timezone"):
         _make_mandate(
@@ -280,7 +307,7 @@ def test_T1_11_invalid_constraints_rejected(issuer, agent_did):
     with pytest.raises(ValueError, match="issuer_did"):
         build_intent_mandate(
             issuer_did="not-a-did", agent_did=agent_did,
-            purpose="x", constraints={}, expires_at=expires,
+            purpose="x", constraints=_full_constraints(), expires_at=expires,
         )
 
 

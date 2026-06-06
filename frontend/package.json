@@ -1,11 +1,14 @@
 {
   "name": "nth-dao-console",
-  "version": "0.9.0",
+  "version": "0.10.0-beta.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc && vite build",
+    "build": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-build.ps1",
+    "build:raw": "tsc && vite build",
+    "test": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/run-vitest.ps1",
+    "test:raw": "vitest run --environment jsdom",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
@@ -13,10 +16,14 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "jsdom": "^29.1.1",
     "typescript": "^5.8.0",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "vitest": "^4.1.8"
   }
 }

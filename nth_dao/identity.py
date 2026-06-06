@@ -16,6 +16,7 @@ import os
 import secrets
 import sys
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -53,12 +54,81 @@ def _require_crypto(feature: str) -> None:
         )
 
 
+def _validate_canonical_json_value(value: Any, path: str = "$") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        raise TypeError(
+            f"canonical_json rejects float at {path}; use int or decimal string"
+        )
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            _validate_canonical_json_value(item, f"{path}[{idx}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"canonical_json object keys must be strings at {path}; "
+                    f"got {type(key).__name__}"
+                )
+            _validate_canonical_json_value(item, f"{path}.{key}")
+        return
+    raise TypeError(
+        f"canonical_json does not support {type(value).__name__} at {path}"
+    )
+
+
+def normalize_for_canonical_json(value: Any, path: str = "$") -> Any:
+    """Return a JSON value whose numbers are stable across implementations.
+
+    This is for internal wire objects that historically carried floats in
+    event payloads. The public ``canonical_json`` API remains strict and will
+    reject floats; callers must opt in to this normalization explicitly.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        text = str(value)
+        try:
+            decimal = Decimal(text)
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"invalid float at {path}") from exc
+        if not decimal.is_finite():
+            raise ValueError(f"non-finite float at {path}")
+        return format(decimal, "f")
+    if isinstance(value, list):
+        return [
+            normalize_for_canonical_json(item, f"{path}[{idx}]")
+            for idx, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"canonical JSON object keys must be strings at {path}; "
+                    f"got {type(key).__name__}"
+                )
+            out[key] = normalize_for_canonical_json(item, f"{path}.{key}")
+        return out
+    raise TypeError(
+        f"cannot normalize {type(value).__name__} for canonical JSON at {path}"
+    )
+
+
 def canonical_json(data: Dict[str, Any]) -> bytes:
+    if not isinstance(data, dict):
+        raise TypeError(
+            f"canonical_json root must be a dict, got {type(data).__name__}"
+        )
+    _validate_canonical_json_value(data)
     return json.dumps(
         data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
 
 
@@ -95,7 +165,15 @@ class AgentID:
     def from_pubkey(cls, pubkey_hex: str) -> "AgentID":
         if not pubkey_hex:
             raise ValueError("pubkey_hex must not be empty")
-        fingerprint = hashlib.sha256(bytes.fromhex(pubkey_hex)).hexdigest()
+        try:
+            pubkey = bytes.fromhex(pubkey_hex)
+        except ValueError as e:
+            raise ValueError(f"pubkey_hex must be valid hex: {e}") from e
+        if len(pubkey) != 32:
+            raise ValueError(
+                f"Ed25519 pubkey must be 32 bytes; got {len(pubkey)}"
+            )
+        fingerprint = hashlib.sha256(pubkey).hexdigest()
         return cls(
             value=fingerprint[:AGENT_ID_SHORT_LEN],
             is_cryptographic=True,
@@ -306,8 +384,13 @@ class AgentIdentity:
         signature_hex: str,
         pubkey_hex: Optional[str] = None,
     ) -> bool:
-        pubkey = bytes.fromhex(pubkey_hex) if pubkey_hex else None
-        return self.verify(canonical_json(data), bytes.fromhex(signature_hex), pubkey)
+        try:
+            pubkey = bytes.fromhex(pubkey_hex) if pubkey_hex else None
+            signature = bytes.fromhex(signature_hex)
+            payload = canonical_json(data)
+        except (TypeError, ValueError):
+            return False
+        return self.verify(payload, signature, pubkey)
 
     def fingerprint(self) -> str:
         payload = self.pubkey_hex or str(self.agent_id)

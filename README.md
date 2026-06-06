@@ -18,7 +18,29 @@ direction, and merge criteria.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zero deps](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
-[![Tests](https://img.shields.io/badge/tests-238%20passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1067%20passing-brightgreen.svg)](tests/)
+
+## What's New in 0.10.0b1 - Beta release
+
+This beta previews the v0.10 protocol surface for testers and early
+integrators:
+
+- Signed `IntentMandate`, `CartMandate`, and `PaymentMandate`
+  primitives, with Data Integrity style proof helpers.
+- Mandate conformance vectors and EventBus mandate lifecycle events.
+- A2A JSON-RPC server and Agent Card helpers for task lookup and
+  capability discovery.
+- Hardened action routing with pubkey lookup, explicit dev mode,
+  TTL/nonce replay protection, signed requests, and signed responses.
+- EventBus correction events, event subscriptions, and audited fault
+  isolation.
+- Mandate sidebar in the TypeScript frontend, plus browser Ed25519
+  wallet support and Vitest coverage.
+- Packaging fixes so `nth_dao.mandate` and the required `team_layer`
+  runtime packages are included in distributions.
+
+Validation for this beta: Python suite `1067 passed, 11 skipped`;
+frontend Vitest `2 passed`; production frontend build passed.
 
 ## What's New in 0.9.6 — Unique group names, governance votes, QQ-style UI
 

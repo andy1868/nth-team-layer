@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .membership import MembershipManager, TeamRole
-from .util import atomic_write_json, safe_load_json, safe_id as _safe_id_util
+from .util import atomic_write_json, safe_append_jsonl, safe_load_json, safe_id as _safe_id_util
 
 
 DEFAULT_CHANNELS_DIR = "team_channels"
@@ -349,14 +349,123 @@ class GroupManager:
         )
         return message
 
+    def add_channel_member(
+        self,
+        channel_id: str,
+        agent_id: str,
+        added_by: str = "",
+    ) -> Channel:
+        """Add an agent to a channel's member list.
+
+        If the agent is already a member, this is a no-op.
+        For open teams, the agent is auto-added to the team first if needed.
+        Requires that `added_by` has manage_members permission (or the team
+        has no members yet, i.e. is still bootstrapping).
+        """
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            raise ValueError(f"No channel found for '{channel_id}'")
+        # Ensure the agent is a team member (auto-join for open teams)
+        config = self.membership.load_config()
+        if config.admin_ids or config.member_ids:
+            if not self.membership.has_permission(agent_id, "send_messages"):
+                ok, _ = self.membership.ensure_member(agent_id)
+                if not ok:
+                    self._require_member(agent_id)  # will raise PermissionError
+        if added_by:
+            self._require_permission(added_by, "manage_members")
+        if agent_id not in channel.member_ids:
+            channel.member_ids.append(agent_id)
+            self._write_json(self._channel_path(channel.channel_id), channel.to_dict())
+            self._append_audit(
+                "channel.member_added",
+                added_by or agent_id,
+                "channel",
+                channel.channel_id,
+                f"added {agent_id} to channel {channel.channel_id}",
+                {"added_agent_id": agent_id},
+            )
+        return channel
+
+    def remove_channel_member(
+        self,
+        channel_id: str,
+        agent_id: str,
+        removed_by: str = "",
+    ) -> Channel:
+        """Remove an agent from a channel's member list.
+
+        Requires that `removed_by` has manage_members permission.
+        """
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            raise ValueError(f"No channel found for '{channel_id}'")
+        self._require_permission(removed_by, "manage_members")
+        if agent_id in channel.member_ids:
+            channel.member_ids.remove(agent_id)
+            self._write_json(self._channel_path(channel.channel_id), channel.to_dict())
+            self._append_audit(
+                "channel.member_removed",
+                removed_by,
+                "channel",
+                channel.channel_id,
+                f"removed {agent_id} from channel {channel.channel_id}",
+                {"removed_agent_id": agent_id},
+            )
+        return channel
+
+    def update_channel(
+        self,
+        channel_id: str,
+        actor_id: str = "",
+        name: Optional[str] = None,
+        topic: Optional[str] = None,
+        is_private: Optional[bool] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Channel:
+        """Update channel properties (name, topic, privacy, metadata).
+
+        Only non-None fields are updated. Requires manage_members permission.
+        """
+        channel = self.get_channel(channel_id)
+        if channel is None:
+            raise ValueError(f"No channel found for '{channel_id}'")
+        self._require_permission(actor_id, "manage_members")
+        changes = []
+        if name is not None and name != channel.name:
+            channel.name = name
+            changes.append(f"name={name}")
+        if topic is not None and topic != channel.topic:
+            channel.topic = topic
+            changes.append("topic updated")
+        if is_private is not None and is_private != channel.is_private:
+            channel.is_private = is_private
+            changes.append(f"is_private={is_private}")
+        if metadata is not None:
+            channel.metadata.update(metadata)
+            changes.append("metadata updated")
+        if changes:
+            self._write_json(self._channel_path(channel.channel_id), channel.to_dict())
+            self._append_audit(
+                "channel.updated",
+                actor_id,
+                "channel",
+                channel.channel_id,
+                f"updated channel {channel_id}: {', '.join(changes)}",
+                {"changes": changes},
+            )
+        return channel
+
     def list_messages(
         self,
         channel_id: str = DEFAULT_CHANNEL_ID,
         actor_id: str = "",
         limit: Optional[int] = None,
     ) -> List[Message]:
+        # Gracefully handle empty actor_id: if the team has no members yet
+        # (still bootstrapping), skip the permission check.
         channel = self.get_channel(channel_id)
-        if channel:
+        if channel and actor_id:
             self._require_channel_access(channel, actor_id)
         messages = [
             Message.from_dict(item)
@@ -617,9 +726,11 @@ class GroupManager:
 
     @staticmethod
     def _append_jsonl(path: Path, data: Dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n")
+        # PR-0 (audit CRITICAL #1): InterProcessLock + fsync via the
+        # shared safe_append_jsonl helper. Previous unsafe open("a")
+        # let concurrent post_message / add_audit_event interleave
+        # bytes above PIPE_BUF.
+        safe_append_jsonl(path, data)
 
     @staticmethod
     def _read_jsonl(path: Path) -> List[Dict[str, Any]]:

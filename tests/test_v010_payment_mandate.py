@@ -77,10 +77,24 @@ def _future(seconds: int = 3600) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
 
-def _make_signed_intent(dao: AgentIdentity, agent_did: str, **overrides):
+def _make_signed_intent(
+    dao: AgentIdentity, agent_did: str,
+    *,
+    counterparty: AgentIdentity = None,
+    **overrides,
+):
+    """Build + sign an IntentMandate.
+
+    Post Voss V-22, the empty ``allowed_counterparties=[]`` default
+    means fail-closed. The test fixture instead whitelists the
+    supplied counterparty (if any) so the happy-path tests work
+    without weakening the new semantic.
+    """
     constraints = {
         "max_amount": {"value": "100.00", "currency": "USDC"},
-        "allowed_counterparties": [],
+        "allowed_counterparties": (
+            [counterparty.as_did()] if counterparty is not None else []
+        ),
         "allowed_settlement_methods": ["x402:usdc", "ap2:card"],
     }
     constraints.update(overrides.pop("constraints_overrides", {}))
@@ -111,8 +125,17 @@ def _make_signed_cart(
     return sign_cart_mandate(cart, counterparty)
 
 
-def _make_payment(dao: AgentIdentity, counterparty: AgentIdentity, cart_digest: str, **overrides):
-    return build_payment_mandate(
+def _make_payment(
+    dao: AgentIdentity, counterparty: AgentIdentity, cart_digest: str,
+    *, sign: bool = True, **overrides,
+):
+    """Build (and by default sign) a PaymentMandate.
+
+    Voss V-21 requires payment_satisfies_cart inputs to carry a proof
+    block; the default ``sign=True`` makes the happy-path callers
+    work without per-test boilerplate.
+    """
+    mandate = build_payment_mandate(
         issuer_did=dao.as_did(),
         payee_did=counterparty.as_did(),
         cart_mandate_digest_hex=cart_digest,
@@ -120,6 +143,9 @@ def _make_payment(dao: AgentIdentity, counterparty: AgentIdentity, cart_digest: 
         expires_at=_future(900),
         **overrides,
     )
+    if sign:
+        return sign_payment_mandate(mandate, dao)
+    return mandate
 
 
 # ===== 1. W3C VC shape =====
@@ -128,9 +154,11 @@ def _make_payment(dao: AgentIdentity, counterparty: AgentIdentity, cart_digest: 
 def test_T3_01_build_has_w3c_vc_shape(dao, counterparty, agent_did):
     intent = _make_signed_intent(dao, agent_did)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
-    assert payment["@context"] == PAYMENT_CONTEXT
-    assert payment["type"] == PAYMENT_TYPE
+    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart), sign=False)
+    # V-11: PAYMENT_CONTEXT / PAYMENT_TYPE are immutable tuples;
+    # on-wire shape is still a list.
+    assert payment["@context"] == list(PAYMENT_CONTEXT)
+    assert payment["type"] == list(PAYMENT_TYPE)
     assert payment["issuer"] == dao.as_did()
     assert "issuanceDate" in payment
     assert "validFrom" in payment
@@ -149,7 +177,7 @@ def test_T3_02_credentialSubject_binds_cart_and_carries_choice(
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
     cart_digest = cart_mandate_digest(cart)
     payment = _make_payment(
-        dao, counterparty, cart_digest,
+        dao, counterparty, cart_digest, sign=False,
         settlement_metadata={"recipient_address": "0xabc123"},
     )
     subject = payment["credentialSubject"]
@@ -157,7 +185,8 @@ def test_T3_02_credentialSubject_binds_cart_and_carries_choice(
     assert subject["cart_mandate_digest"] == cart_digest
     assert subject["settlement_choice"] == "x402:usdc"
     assert subject["settlement_metadata"] == {"recipient_address": "0xabc123"}
-    assert len(subject["payment_id"]) == 16
+    # V-10: full UUID4 hex
+    assert len(subject["payment_id"]) == 32
 
 
 # ===== 3. sign attaches capabilityInvocation proof =====
@@ -171,7 +200,7 @@ def test_T3_03_sign_attaches_proof_with_capabilityInvocation(
     IntentMandate, distinct from CartMandate's assertionMethod."""
     intent = _make_signed_intent(dao, agent_did)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
+    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart), sign=False)
     signed = sign_payment_mandate(payment, dao)
     assert "proof" not in payment   # input not mutated
     proof = signed["proof"]
@@ -188,8 +217,8 @@ def test_T3_03_sign_attaches_proof_with_capabilityInvocation(
 def test_T3_04_verify_signed_payment_passes(dao, counterparty, agent_did):
     intent = _make_signed_intent(dao, agent_did)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
-    signed = sign_payment_mandate(payment, dao)
+    # V-18: _make_payment already signs by default.
+    signed = _make_payment(dao, counterparty, cart_mandate_digest(cart))
     ok, reason = verify_payment_mandate(signed)
     assert ok, reason
 
@@ -203,8 +232,7 @@ def test_T3_05_verify_rejects_tampered_settlement_choice(dao, counterparty, agen
     signed payload."""
     intent = _make_signed_intent(dao, agent_did)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
-    signed = sign_payment_mandate(payment, dao)
+    signed = _make_payment(dao, counterparty, cart_mandate_digest(cart))
     signed["credentialSubject"]["settlement_choice"] = "manual:ach"   # tampered
     ok, reason = verify_payment_mandate(signed)
     assert not ok
@@ -220,8 +248,8 @@ def test_T3_06_verify_rejects_wrong_proof_purpose(dao, counterparty, agent_did):
     a sale-shaped credential as a settlement authority."""
     intent = _make_signed_intent(dao, agent_did)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
-    signed = sign_payment_mandate(payment, dao)
+    # V-18: _make_payment signs by default; tamper proofPurpose in place
+    signed = _make_payment(dao, counterparty, cart_mandate_digest(cart))
     signed["proof"]["proofPurpose"] = "assertionMethod"
     ok, reason = verify_payment_mandate(signed)
     assert not ok
@@ -233,8 +261,12 @@ def test_T3_06_verify_rejects_wrong_proof_purpose(dao, counterparty, agent_did):
 
 def test_T3_07_satisfies_cart_for_compatible_payment(dao, counterparty, agent_did):
     """payment.cart_mandate_digest == digest(cart), settlement_choice
-    is in cart.settlement_methods, payee = cart.issuer -> ok."""
-    intent = _make_signed_intent(dao, agent_did)
+    is in cart.settlement_methods, payee = cart.issuer -> ok.
+
+    Post Voss V-21 + V-22: intent whitelists the counterparty; helper
+    signs the payment by default so V-21 (require_signed) is satisfied.
+    """
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
     payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
     ok, reason = payment_satisfies_cart(payment, cart)
@@ -248,7 +280,7 @@ def test_T3_08_satisfies_rejects_cart_digest_mismatch(dao, counterparty, agent_d
     """A payment bound to cart A presented during settlement with cart
     B must fail. Without this check an attacker could swap a cheap
     cart for an expensive one at the last moment."""
-    intent = _make_signed_intent(dao, agent_did)
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
     cart_a = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
     cart_b = _make_signed_cart(
         counterparty, agent_did, intent_mandate_digest(intent),
@@ -269,7 +301,7 @@ def test_T3_09_satisfies_rejects_unilateral_settlement_choice(
     """The DAO can't unilaterally pick a settlement rail the
     counterparty didn't offer. The cart's settlement_methods is the
     set of acceptable choices."""
-    intent = _make_signed_intent(dao, agent_did)
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
     cart = _make_signed_cart(
         counterparty, agent_did, intent_mandate_digest(intent),
         settlement_methods=["x402:usdc"],   # only x402 offered
@@ -292,16 +324,18 @@ def test_T3_10_satisfies_rejects_payee_redirection(
     """The payment's payee (credentialSubject.id) MUST equal the cart
     issuer - otherwise the DAO would be redirecting funds to a third
     party that didn't make the offer."""
-    intent = _make_signed_intent(dao, agent_did)
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    # Build a payment that names a DIFFERENT DID as the payee
-    payment = build_payment_mandate(
+    # Build a payment that names a DIFFERENT DID as the payee. Sign
+    # it so the V-21 require_signed gate passes and we reach the
+    # payee-mismatch check we're trying to test.
+    payment = sign_payment_mandate(build_payment_mandate(
         issuer_did=dao.as_did(),
         payee_did=hijacker.as_did(),   # not the cart issuer
         cart_mandate_digest_hex=cart_mandate_digest(cart),
         settlement_choice="x402:usdc",
         expires_at=_future(900),
-    )
+    ), dao)
     ok, reason = payment_satisfies_cart(payment, cart)
     assert not ok
     assert "payee mismatch" in reason
@@ -313,14 +347,71 @@ def test_T3_10_satisfies_rejects_payee_redirection(
 def test_T3_bonus_complete_triad_chain_happy_path(dao, counterparty, agent_did):
     """The full Intent -> Cart -> Payment chain, every check
     composes through complete_triad_chain."""
-    intent = _make_signed_intent(dao, agent_did)
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = sign_payment_mandate(
-        _make_payment(dao, counterparty, cart_mandate_digest(cart)),
-        dao,
-    )
+    # _make_payment now signs by default
+    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
     ok, reason = complete_triad_chain(intent, cart, payment)
     assert ok, reason
+
+
+def test_T3_bonus_complete_triad_rejects_expired_mandates(
+    dao, counterparty, agent_did,
+):
+    """The settlement gate must reject expired authority even when all
+    signatures and digest bindings are otherwise valid."""
+    issued = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    expired_at = "2025-01-02T00:00:00+00:00"
+    intent = build_intent_mandate(
+        issuer_did=dao.as_did(),
+        agent_did=agent_did,
+        purpose="buy code review",
+        constraints={
+            "max_amount": {"value": "100.00", "currency": "USDC"},
+            "allowed_counterparties": [counterparty.as_did()],
+            "allowed_settlement_methods": ["x402:usdc"],
+        },
+        expires_at=expired_at,
+        issued_at=issued,
+    )
+    intent = sign_intent_mandate(intent, dao, created_at=issued)
+    cart = build_cart_mandate(
+        issuer_did=counterparty.as_did(),
+        buyer_did=agent_did,
+        intent_mandate_digest_hex=intent_mandate_digest(intent),
+        items=[{"description": "Code review of PR #42", "quantity": 1}],
+        total={"value": "50.00", "currency": "USDC"},
+        settlement_methods=["x402:usdc"],
+        expires_at=expired_at,
+        issued_at=issued,
+    )
+    cart = sign_cart_mandate(cart, counterparty, created_at=issued)
+    payment = build_payment_mandate(
+        issuer_did=dao.as_did(),
+        payee_did=counterparty.as_did(),
+        cart_mandate_digest_hex=cart_mandate_digest(cart),
+        settlement_choice="x402:usdc",
+        expires_at=expired_at,
+        issued_at=issued,
+    )
+    payment = sign_payment_mandate(payment, dao, created_at=issued)
+
+    ok, reason = complete_triad_chain(intent, cart, payment)
+    assert not ok
+    assert "expired" in reason
+
+
+def test_T3_bonus_complete_triad_rejects_malformed_expiry(
+    dao, counterparty, agent_did,
+):
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
+    cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
+    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
+    payment = {**payment, "validUntil": "not-an-iso-date"}
+
+    ok, reason = complete_triad_chain(intent, cart, payment)
+    assert not ok
+    assert "malformed validUntil" in reason
 
 
 def test_T3_bonus_complete_triad_rejects_hijacked_issuer(
@@ -328,8 +419,11 @@ def test_T3_bonus_complete_triad_rejects_hijacked_issuer(
 ):
     """A DIFFERENT DAO can't sign the PaymentMandate against a cart
     bound to the original DAO's intent. complete_triad_chain catches
-    issuer mismatch as the final gate."""
-    intent = _make_signed_intent(dao, agent_did)
+    issuer mismatch as the very first gate (Voss V-31 reordering).
+    Failure message uses the canonical "issuer continuity broken"
+    phrasing emitted by both complete_triad_chain and
+    payment_satisfies_cart."""
+    intent = _make_signed_intent(dao, agent_did, counterparty=counterparty)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
     # Hijacker tries to accept the cart - same payee, same digest, but
     # the issuer is wrong
@@ -343,7 +437,7 @@ def test_T3_bonus_complete_triad_rejects_hijacked_issuer(
     signed = sign_payment_mandate(payment, hijacker)
     ok, reason = complete_triad_chain(intent, cart, signed)
     assert not ok
-    assert "issuer mismatch" in reason
+    assert "issuer continuity broken" in reason
 
 
 # ===== Bonus B: facade re-export + digest stable =====
@@ -359,8 +453,12 @@ def test_T3_bonus_facade_and_digest_stable(dao, counterparty, agent_did):
 
     intent = _make_signed_intent(dao, agent_did)
     cart = _make_signed_cart(counterparty, agent_did, intent_mandate_digest(intent))
-    payment = _make_payment(dao, counterparty, cart_mandate_digest(cart))
-    d1 = payment_mandate_digest(payment)
-    signed = sign_payment_mandate(payment, dao)
+    # V-18: build unsigned then sign once; the digest must match
+    # before and after signing.
+    unsigned_payment = _make_payment(
+        dao, counterparty, cart_mandate_digest(cart), sign=False,
+    )
+    d1 = payment_mandate_digest(unsigned_payment)
+    signed = sign_payment_mandate(unsigned_payment, dao)
     d2 = payment_mandate_digest(signed)
     assert d1 == d2   # signing doesn't change the digest

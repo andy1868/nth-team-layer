@@ -38,6 +38,7 @@ import logging
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -184,6 +185,20 @@ def _semver_key(version: str):
     return (*release, *prerelease_rank)
 
 
+def _decimal_wire(value: Any, *, field_name: str) -> str:
+    """Return a stable decimal string for signed template numeric fields."""
+    if isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a number or decimal string")
+    text = str(value).strip()
+    try:
+        decimal = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a decimal value") from exc
+    if not decimal.is_finite():
+        raise ValueError(f"{field_name} must be finite")
+    return format(decimal, "f")
+
+
 @dataclass
 class MissionTemplate:
     """A signed, reusable task definition.
@@ -209,8 +224,8 @@ class MissionTemplate:
     inputs: Dict[str, IOField] = field(default_factory=dict)   # name 鈫?IOField
     outputs: Dict[str, IOField] = field(default_factory=dict)
     steps: List[StepSkeleton] = field(default_factory=list)
-    suggested_reward: float = 0.0
-    suggested_deadline_hours: float = 0.0
+    suggested_reward: Union[str, int, float] = "0.0"
+    suggested_deadline_hours: Union[str, int, float] = "0.0"
 
     # 鈹€鈹€ lifecycle (immutable) 鈹€鈹€
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -243,8 +258,13 @@ class MissionTemplate:
             "inputs": {k: v.to_dict() for k, v in self.inputs.items()},
             "outputs": {k: v.to_dict() for k, v in self.outputs.items()},
             "steps": [s.to_dict() for s in self.steps],
-            "suggested_reward": float(self.suggested_reward),
-            "suggested_deadline_hours": float(self.suggested_deadline_hours),
+            "suggested_reward": _decimal_wire(
+                self.suggested_reward, field_name="suggested_reward"
+            ),
+            "suggested_deadline_hours": _decimal_wire(
+                self.suggested_deadline_hours,
+                field_name="suggested_deadline_hours",
+            ),
             "created_at": self.created_at,
             "deprecated": bool(self.deprecated),
             "deprecated_reason": self.deprecated_reason,
@@ -282,8 +302,14 @@ class MissionTemplate:
             inputs={k: IOField.from_dict(v) for k, v in (data.get("inputs") or {}).items()},
             outputs={k: IOField.from_dict(v) for k, v in (data.get("outputs") or {}).items()},
             steps=[StepSkeleton.from_dict(s) for s in (data.get("steps") or [])],
-            suggested_reward=float(data.get("suggested_reward", 0)),
-            suggested_deadline_hours=float(data.get("suggested_deadline_hours", 0)),
+            suggested_reward=_decimal_wire(
+                data.get("suggested_reward", "0.0"),
+                field_name="suggested_reward",
+            ),
+            suggested_deadline_hours=_decimal_wire(
+                data.get("suggested_deadline_hours", "0.0"),
+                field_name="suggested_deadline_hours",
+            ),
             created_at=data.get("created_at", datetime.now().isoformat()),
             deprecated=bool(data.get("deprecated", False)),
             deprecated_reason=data.get("deprecated_reason", ""),
@@ -344,8 +370,8 @@ def mint_template(
     inputs: Optional[Dict[str, Union[IOField, dict]]] = None,
     outputs: Optional[Dict[str, Union[IOField, dict]]] = None,
     steps: Optional[List[Union[StepSkeleton, dict]]] = None,
-    suggested_reward: float = 0.0,
-    suggested_deadline_hours: float = 0.0,
+    suggested_reward: Union[str, int, float] = "0.0",
+    suggested_deadline_hours: Union[str, int, float] = "0.0",
     supersedes: Optional[List[str]] = None,
     credentials_required: Optional[List[str]] = None,
 ) -> MissionTemplate:
@@ -404,8 +430,12 @@ def mint_template(
         inputs=_normalize_io(inputs),
         outputs=_normalize_io(outputs),
         steps=_normalize_steps(steps),
-        suggested_reward=float(suggested_reward),
-        suggested_deadline_hours=float(suggested_deadline_hours),
+        suggested_reward=_decimal_wire(
+            suggested_reward, field_name="suggested_reward"
+        ),
+        suggested_deadline_hours=_decimal_wire(
+            suggested_deadline_hours, field_name="suggested_deadline_hours"
+        ),
         supersedes=list(supersedes or []),
         credentials_required=list(credentials_required or []),
     )

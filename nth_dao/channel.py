@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
 from .identity import AgentIdentity
+from .util import safe_append_jsonl
 
 
 #
@@ -536,6 +537,6 @@ class TeamChannel:
         filename = f"{hostname}_{safe_agent}_{date}.jsonl"
         file_path = channel_dir / filename
 
-        line = json.dumps(msg.to_dict(), ensure_ascii=False) + "\n"
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(line)
+        # PR-0 (audit CRITICAL #1): use safe_append_jsonl so concurrent
+        # post_message() calls cannot interleave bytes above PIPE_BUF.
+        safe_append_jsonl(file_path, msg.to_dict())

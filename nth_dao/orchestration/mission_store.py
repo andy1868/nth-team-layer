@@ -277,6 +277,8 @@ class MissionStore:
         self,
         agent_id: str,
         agent_capabilities: Optional[List[str]] = None,
+        agent_platform: Optional[str] = None,
+        agent_runtime: Optional[str] = None,
         include_team: bool = True,
     ) -> List[Mission]:
         """
@@ -296,12 +298,35 @@ class MissionStore:
                 relevant.append(m)
                 continue
             if include_team and m.scope == "shared":
-                actionable = m.next_actionable(agent_capabilities)
+                actionable = m.next_actionable(
+                    agent_capabilities,
+                    agent_platform=agent_platform,
+                    agent_runtime=agent_runtime,
+                )
                 if actionable:
                     relevant.append(m)
         return relevant
 
     #
+
+    def get_step(
+        self, mission_id: str, step_id: str,
+    ) -> Optional[MissionStep]:
+        """G-8 (Voss audit): O(1) single-step lookup.
+
+        Convenience over ``get(mission_id).get_step(step_id)`` for
+        callers that only need one step's metadata - avoids the
+        cost of materializing every MissionStep dataclass in the
+        mission just to inspect one. For now the implementation
+        still loads the whole file (mission.json is one document
+        per mission), but the public surface is now O(1) at the
+        caller side so a later refactor to per-step files won't
+        break callers.
+        """
+        mission = self.get(mission_id)
+        if mission is None:
+            return None
+        return mission.get_step(step_id)
 
     def update_step(
         self,
@@ -314,6 +339,7 @@ class MissionStore:
         note_author: str = "system",
         expect_status: Optional[str] = None,
         expect_assignee_in: Optional[List[str]] = None,
+        append_review_trail: Optional[Dict[str, Any]] = None,
     ) -> Optional[MissionStep]:
         """更新 step + 检查 mission 终态。
 
@@ -367,6 +393,11 @@ class MissionStore:
                 step.output = output
             if note:
                 step.add_note(note, note_author)
+            # G-2 (Voss audit): append the rejected attempt before
+            # overwriting output. The trail is append-only by design
+            # so reviewers never lose the prior submitter's work.
+            if append_review_trail is not None:
+                step.review_trail.append(append_review_trail)
 
             # ── Mission 终态机 ──
             now_iso = datetime.now().isoformat()

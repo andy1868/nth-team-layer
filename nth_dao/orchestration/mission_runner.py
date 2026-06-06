@@ -42,11 +42,15 @@ class MissionRunner:
         store: MissionStore,
         agent_id: str,
         capabilities: Optional[List[str]] = None,
+        platform: Optional[str] = None,
+        runtime: Optional[str] = None,
         registry=None,  # 可选 AgentRegistry —— 让 handoff 能验证目标 alive
     ):
         self.store = store
         self.agent_id = agent_id
         self.capabilities = capabilities or []
+        self.platform = platform
+        self.runtime = runtime
         self.registry = registry
 
     #  1.
@@ -67,7 +71,11 @@ class MissionRunner:
             (mission, step)  None
         """
         relevant = self.store.list_for_agent(
-            self.agent_id, self.capabilities, include_team=True
+            self.agent_id,
+            self.capabilities,
+            agent_platform=self.platform,
+            agent_runtime=self.runtime,
+            include_team=True,
         )
 
         # handed_off  me
@@ -84,13 +92,21 @@ class MissionRunner:
         if prefer_mission_id:
             m = self.store.get(prefer_mission_id)
             if m:
-                actionable = m.next_actionable(self.capabilities)
+                actionable = m.next_actionable(
+                    self.capabilities,
+                    agent_platform=self.platform,
+                    agent_runtime=self.runtime,
+                )
                 if actionable:
                     return m, actionable[0]
 
         #  TODO +
         for m in relevant:
-            actionable = m.next_actionable(self.capabilities)
+            actionable = m.next_actionable(
+                self.capabilities,
+                agent_platform=self.platform,
+                agent_runtime=self.runtime,
+            )
             if actionable:
                 return m, actionable[0]
 
@@ -123,7 +139,52 @@ class MissionRunner:
         output: Optional[dict] = None,
         note: str = "",
     ) -> RunnerOutcome:
-        """ step"""
+        """Complete a step.
+
+        PR-3: if the step carries ``acceptance_criteria``, validate
+        the output BEFORE marking DONE. On failure the step
+        transitions to NEEDS_REVIEW (not FAILED) so the prior
+        output is preserved for the reviewer, and the returned
+        ``RunnerOutcome.success`` is False so the agent knows
+        their submission wasn't accepted.
+        """
+        # G-8 (Voss audit): use the explicit single-step lookup so
+        # the abstraction works whether the underlying store keeps
+        # one file per mission or per step. Whole-mission load is
+        # still the current implementation but the caller no longer
+        # has to know that.
+        current = self.store.get_step(mission_id, step_id)
+        if current is not None:
+            ok, reason = current.evaluate(output)
+            if not ok:
+                # G-2 (Voss audit): append the rejected submission
+                # to review_trail BEFORE overwriting output, so a
+                # later re-claim+re-submit by another agent can't
+                # silently destroy the first submitter's work.
+                from datetime import datetime as _dt
+                trail_entry = {
+                    "ts": _dt.now().isoformat(),
+                    "by": self.agent_id,
+                    "output": output,
+                    "reason": reason,
+                }
+                self.store.update_step(
+                    mission_id=mission_id,
+                    step_id=step_id,
+                    status=StepStatus.NEEDS_REVIEW.value,
+                    output=output,
+                    note=f"acceptance failed: {reason}",
+                    note_author=self.agent_id,
+                    append_review_trail=trail_entry,
+                )
+                return RunnerOutcome(
+                    success=False,
+                    mission_id=mission_id,
+                    step_id=step_id,
+                    note=f"needs_review: {reason}",
+                    output=output,
+                )
+
         step = self.store.update_step(
             mission_id=mission_id,
             step_id=step_id,

@@ -29,10 +29,11 @@ the integrator wires up. Typical implementations:
                     return pk
         return None
 
-If no ``pubkey_lookup`` is configured the router runs in **dev mode**:
-- unsigned requests are accepted
-- signed requests are NOT verified (we have no way to)
-This is explicit and visible in the constructor, not a hidden default.
+If no ``pubkey_lookup`` is configured the router refuses to start unless
+``allow_unsigned_dev=True`` is passed explicitly:
+- unsigned requests are accepted only in that explicit dev mode
+- signed requests are NOT verified in dev mode (we have no way to)
+This is visible in the constructor, not a hidden default.
 
 Production mode (``pubkey_lookup`` set, identity set, can_sign=True)
 rejects:
@@ -73,6 +74,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime, timezone
 
 from .util import InterProcessLock, atomic_write_json, monotonic_ms, now_iso, safe_load_json
+from .identity import normalize_for_canonical_json
 
 if TYPE_CHECKING:
     from .channel import TeamChannel
@@ -170,7 +172,7 @@ class ActionRequest:
     def signable_dict(self) -> dict:
         d = self.to_dict()
         d.pop("sig", None)
-        return d
+        return normalize_for_canonical_json(d)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ActionRequest":
@@ -211,7 +213,7 @@ class ActionResponse:
     def signable_dict(self) -> dict:
         d = self.to_dict()
         d.pop("sig", None)
-        return d
+        return normalize_for_canonical_json(d)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ActionResponse":
@@ -249,9 +251,13 @@ class ActionRouter:
             workspace=team.workspace,
         )
 
-    Dev-mode constructor (no verification, no signing)::
+    Explicit dev-mode constructor (no verification, no signing)::
 
-        router = ActionRouter(agent_id="alice", workspace=tmp_path)
+        router = ActionRouter(
+            agent_id="alice",
+            workspace=tmp_path,
+            allow_unsigned_dev=True,
+        )
     """
 
     DEFAULT_STORAGE_DIR = "team_actions"
@@ -331,9 +337,9 @@ class ActionRouter:
         #   1. TTL: reject requests whose timestamp is older than now -
         #      ttl, OR more than skew seconds in the future.
         #   2. Persistent nonce ledger: every successfully-verified
-        #      (from_agent, request_id) is recorded on disk; a second
-        #      delivery of the SAME pair is rejected even after the
-        #      in-memory cache evicts it AND across process restarts.
+        #      (from_agent, request_id) is reserved on disk BEFORE handler
+        #      execution; a second delivery of the SAME pair is rejected
+        #      even across parallel routers, cache eviction, and restarts.
         # The ledger is opt-in for dev mode (where it would just add
         # disk churn for smoke tests); production mode turns it on by
         # default unless the caller explicitly opts out.
@@ -364,7 +370,7 @@ class ActionRouter:
     def _verify_request(self, request: ActionRequest) -> bool:
         """Verify *request.sig* using the *claimed* sender's pubkey.
 
-        Dev mode (no identity OR no pubkey_lookup): accept unconditionally.
+        Explicit dev mode (allow_unsigned_dev=True): accept unconditionally.
         Production mode:
           - unsigned request -> reject
           - from_agent unknown to lookup -> reject
@@ -513,11 +519,13 @@ class ActionRouter:
                     sig="",
                 )
 
-        # P2 anti-replay gate (#2 of 2): persistent nonce ledger,
-        # survives process restarts so the same signed request can't
-        # be replayed after _seen evicts the in-memory entry.
+        # P2 anti-replay gate (#2 of 2): persistent nonce ledger. The
+        # reservation is atomic under an inter-process lock and happens
+        # BEFORE handler execution. A post-execution "record nonce" leaves
+        # a race where two worker processes both pass the check, both run
+        # the handler, and only then write the same key.
         if self._enable_nonce_ledger and self._verify_enabled:
-            if self._nonce_already_consumed(request):
+            if not self._reserve_nonce(request):
                 return ActionResponse(
                     request_id=request.request_id,
                     action_type=request.action_type,
@@ -828,10 +836,9 @@ class ActionRouter:
         self._seen[key] = response
         while len(self._seen) > self._max_dedup:
             self._seen.popitem(last=False)   # evict least-recently used
-        # P2: also record on the persistent nonce ledger so a restart
-        # plus cache-eviction can't re-execute the request.
-        if self._enable_nonce_ledger and self._verify_enabled:
-            self._record_nonce(key, response)
+        # The persistent nonce was already reserved before handler
+        # execution. Keeping cache writes separate preserves in-process
+        # response memoisation without re-opening the cross-process race.
 
     # ===== P2 anti-replay helpers =====
 
@@ -904,22 +911,28 @@ class ActionRouter:
             logger.warning("nonce ledger read failed: %s; failing closed", exc)
             return True
 
-    def _record_nonce(self, key: CacheKey, response: ActionResponse) -> None:
-        """Add (from_agent, request_id) to the persistent ledger after
-        the request was actually processed. Only completed and failed
-        statuses qualify - rejections are NOT recorded (they didn't
-        truly execute)."""
-        if response.status == ActionStatus.REJECTED.value:
-            return
+    def _reserve_nonce(self, request: ActionRequest) -> bool:
+        """Atomically reserve ``(from_agent, request_id)`` before work.
+
+        Returns True only for the first verified delivery inside the TTL
+        window. The reservation is deliberately made before handler
+        execution: this is the only way to guarantee at-most-once behavior
+        when several router instances share the same workspace.
+        """
         try:
             with InterProcessLock(self._nonce_lock_path):
                 ledger = self._load_nonce_ledger()
-                ledger[self._nonce_key(key[0], key[1])] = datetime.now(
+                key = self._nonce_key(request.from_agent, request.request_id)
+                if key in ledger:
+                    return False
+                ledger[key] = datetime.now(
                     timezone.utc,
                 ).timestamp()
                 atomic_write_json(self._nonce_ledger_path, ledger)
+                return True
         except OSError as exc:
-            logger.warning("nonce ledger write failed: %s", exc)
+            logger.warning("nonce ledger reserve failed: %s; failing closed", exc)
+            return False
 
     def _log(self, request: ActionRequest, response: ActionResponse) -> None:
         self._append_log("requests_received", request.to_dict())

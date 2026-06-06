@@ -23,10 +23,13 @@ import sys
 import time
 from typing import Optional
 
+from datetime import datetime, timezone
+
 from .base import (
     AgentBackend,
     BackendCapabilities,
     BackendUnavailableError,
+    PreflightResult,
     SessionConfig,
     SessionSummary,
     TokenUsage,
@@ -69,15 +72,62 @@ class HermesBackend(AgentBackend):
             return True
         # 2.  python -m hermes
         try:
+            # Use binary mode to avoid Windows UTF-8/GBK decode errors
             result = subprocess.run(
                 [sys.executable, "-c", "import hermes; print('ok')"],
                 capture_output=True,
-                text=True,
                 timeout=5,
             )
-            return result.returncode == 0 and "ok" in (result.stdout or "")
+            stdout = (result.stdout or b"").decode("utf-8", errors="replace")
+            return result.returncode == 0 and "ok" in stdout
         except Exception:
             return False
+
+    def preflight_check(self, *, timeout: float = 5.0):
+        """G-7 (Voss audit): real `hermes --version` round-trip.
+
+        The COLLABORATION_ANALYSIS doc named Hermes as the NTH DAO
+        main backend - it MUST not fall back to the weak default
+        ``is_available()`` (which only checks ``shutil.which``).
+        Running ``hermes --version`` confirms the CLI not only exists
+        on PATH but actually executes successfully.
+        """
+        # G-9 (Voss audit): imports promoted to module scope.
+        t0 = time.monotonic()
+        if not shutil.which("hermes"):
+            # Fall back to module import probe per is_available()
+            available = self.is_available()
+            return PreflightResult(
+                ok=available, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail="" if available else (
+                    "hermes CLI not in PATH and `import hermes` failed"
+                ),
+            )
+        try:
+            result = subprocess.run(
+                ["hermes", "--version"],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+            return PreflightResult(
+                ok=False, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail=f"hermes --version {type(exc).__name__}: {exc}",
+            )
+        ok = result.returncode == 0
+        return PreflightResult(
+            ok=ok, backend_id=self.backend_id,
+            checked_at=datetime.now(timezone.utc).isoformat(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            detail="" if ok else (result.stderr or result.stdout).strip()[:200],
+            structured={
+                "returncode": result.returncode,
+                "stdout_head": result.stdout[:500],
+            },
+        )
 
     def _resolve_cmd(self) -> list:
         """ hermes """

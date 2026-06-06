@@ -19,6 +19,7 @@ import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -30,6 +31,19 @@ logger = logging.getLogger("nth_dao.orchestration.review")
 
 SCORE_MIN = 0.0
 SCORE_MAX = 5.0
+
+
+def _score_wire(value: Any) -> str:
+    if isinstance(value, bool):
+        raise TypeError("score must be a number or decimal string")
+    text = str(value).strip()
+    try:
+        decimal = Decimal(text)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("score must be a decimal value") from exc
+    if not decimal.is_finite():
+        raise ValueError("score must be finite")
+    return format(decimal, "f")
 
 
 @dataclass
@@ -56,7 +70,9 @@ class MissionReview:
     reviewer_sig: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        d["score"] = _score_wire(self.score)
+        return d
 
     def signable_dict(self) -> dict:
         d = self.to_dict()
@@ -99,7 +115,7 @@ def mint_review(
     template_id: str,
     template_version: str,
     mission_id: str,
-    score: float,
+    score: Union[float, int, str],
     feedback: str = "",
     metadata: Optional[Dict[str, Any]] = None,
 ) -> MissionReview:
@@ -110,7 +126,8 @@ def mint_review(
     """
     if not reviewer.can_sign:
         raise ValueError("mint_review requires a signing-capable identity")
-    if not (SCORE_MIN <= score <= SCORE_MAX):
+    score_float = float(_score_wire(score))
+    if not (SCORE_MIN <= score_float <= SCORE_MAX):
         raise ValueError(f"score must be in [{SCORE_MIN}, {SCORE_MAX}]")
     if not template_id or not template_version or not mission_id:
         raise ValueError("template_id, template_version, mission_id required")
@@ -121,7 +138,7 @@ def mint_review(
         template_id=template_id,
         template_version=template_version,
         mission_id=mission_id,
-        score=float(score),
+        score=score_float,
         feedback=feedback,
         metadata=dict(metadata or {}),
     )

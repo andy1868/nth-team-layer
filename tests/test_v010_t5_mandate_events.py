@@ -40,6 +40,7 @@ from nth_dao.identity import AgentIdentity, crypto_available
 from nth_dao.mandate.cart import (
     build_cart_mandate,
     cart_mandate_digest,
+    sign_cart_mandate,
 )
 from nth_dao.mandate.events import (
     emit_cart_received,
@@ -50,10 +51,12 @@ from nth_dao.mandate.events import (
 from nth_dao.mandate.intent import (
     build_intent_mandate,
     intent_mandate_digest,
+    sign_intent_mandate,
 )
 from nth_dao.mandate.payment import (
     build_payment_mandate,
     payment_mandate_digest,
+    sign_payment_mandate,
 )
 
 
@@ -90,23 +93,33 @@ def _future(s=3600):
     return (datetime.now(timezone.utc) + timedelta(seconds=s)).isoformat()
 
 
-def _make_intent(dao, agent_did, **overrides):
-    return build_intent_mandate(
+def _make_intent(dao, agent_did, *, seller=None, **overrides):
+    """Build + sign a representative intent.
+
+    Voss V-22 + V-34: defaults whitelist the test seller so the cart
+    can satisfy the intent, and we sign so the V-34 emit gate accepts
+    the mandate. Tests that need an unsigned intent pass it explicitly
+    through ``build_intent_mandate``.
+    """
+    mandate = build_intent_mandate(
         issuer_did=dao.as_did(),
         agent_did=agent_did,
         purpose="buy code review",
         constraints={
             "max_amount": {"value": "100.00", "currency": "USDC"},
-            "allowed_counterparties": [],
+            "allowed_counterparties": (
+                [seller.as_did()] if seller is not None else []
+            ),
             "allowed_settlement_methods": ["x402:usdc"],
         },
         expires_at=_future(86400),
         **overrides,
     )
+    return sign_intent_mandate(mandate, dao)
 
 
 def _make_cart(seller, agent_did, intent_digest):
-    return build_cart_mandate(
+    cart = build_cart_mandate(
         issuer_did=seller.as_did(),
         buyer_did=agent_did,
         intent_mandate_digest_hex=intent_digest,
@@ -115,16 +128,18 @@ def _make_cart(seller, agent_did, intent_digest):
         settlement_methods=["x402:usdc"],
         expires_at=_future(3600),
     )
+    return sign_cart_mandate(cart, seller)
 
 
 def _make_payment(dao, seller, cart_digest):
-    return build_payment_mandate(
+    mandate = build_payment_mandate(
         issuer_did=dao.as_did(),
         payee_did=seller.as_did(),
         cart_mandate_digest_hex=cart_digest,
         settlement_choice="x402:usdc",
         expires_at=_future(900),
     )
+    return sign_payment_mandate(mandate, dao)
 
 
 # ===== T5-#1: constants exposed =====
@@ -165,8 +180,10 @@ def test_T5_facade_exposes_constants_and_helpers():
 # ===== T5-#2: each helper emits correct event_type + payload =====
 
 
-def test_T5_emit_intent_issued_payload_shape(bus, dao, agent_did):
-    intent = _make_intent(dao, agent_did)
+def test_T5_emit_intent_issued_payload_shape(bus, dao, agent_did, seller):
+    # whitelist seller so the intent is later usable by cart fixtures;
+    # not strictly needed for this test, but keeps the fixture coherent.
+    intent = _make_intent(dao, agent_did, seller=seller)
     ev = emit_intent_issued(bus, intent)
     assert ev.event_type == MANDATE_INTENT_ISSUED
     p = ev.payload
@@ -180,7 +197,7 @@ def test_T5_emit_intent_issued_payload_shape(bus, dao, agent_did):
 
 
 def test_T5_emit_cart_received_payload_shape(bus, dao, seller, agent_did):
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, seller=seller)
     cart = _make_cart(seller, agent_did, intent_mandate_digest(intent))
     ev = emit_cart_received(bus, cart)
     assert ev.event_type == MANDATE_CART_RECEIVED
@@ -195,7 +212,7 @@ def test_T5_emit_cart_received_payload_shape(bus, dao, seller, agent_did):
 
 
 def test_T5_emit_payment_authorised_payload_shape(bus, dao, seller, agent_did):
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, seller=seller)
     cart = _make_cart(seller, agent_did, intent_mandate_digest(intent))
     payment = _make_payment(dao, seller, cart_mandate_digest(cart))
     ev = emit_payment_authorised(bus, payment)
@@ -211,6 +228,11 @@ def test_T5_emit_payment_authorised_payload_shape(bus, dao, seller, agent_did):
 
 def test_T5_emit_settlement_completed_payload_shape(bus):
     digest = "a" * 64
+    # V-34 follow-up: this test exercises the PAYLOAD-SHAPE branch
+    # without first emitting the full lifecycle chain. Pass
+    # require_prior_authorisation=False so the audit-chain gate
+    # doesn't preempt the assertion we're trying to make here.
+    # Production code paths must NEVER pass False.
     ev = emit_settlement_completed(
         bus,
         payment_mandate_digest_hex=digest,
@@ -218,6 +240,7 @@ def test_T5_emit_settlement_completed_payload_shape(bus):
         settlement_choice="x402:usdc",
         outcome="success",
         receipt={"tx_hash": "0xabc123", "block": 12345},
+        require_prior_authorisation=False,
     )
     assert ev.event_type == SETTLEMENT_COMPLETED
     p = ev.payload
@@ -234,11 +257,18 @@ def test_T5_emit_settlement_completed_payload_shape(bus):
 
 def test_T5_emit_intent_issued_rejects_missing_fields(bus):
     """Catches subsystem bugs early - the audit trail must not be
-    polluted with malformed payloads."""
+    polluted with malformed payloads.
+
+    Pass ``require_signed=False`` to bypass Voss V-34 (which would
+    otherwise reject the unsigned malformed dict at the verify gate)
+    and reach the field-presence check we're trying to exercise.
+    """
     with pytest.raises(ValueError, match="missing required fields"):
-        emit_intent_issued(bus, {"credentialSubject": {}})
+        emit_intent_issued(bus, {"credentialSubject": {}}, require_signed=False)
     with pytest.raises(ValueError, match="must be a dict"):
-        emit_intent_issued(bus, {"credentialSubject": "not a dict"})
+        emit_intent_issued(
+            bus, {"credentialSubject": "not a dict"}, require_signed=False,
+        )
 
 
 def test_T5_emit_cart_received_rejects_missing_intent_binding(bus):
@@ -253,7 +283,7 @@ def test_T5_emit_cart_received_rejects_missing_intent_binding(bus):
         "issuer": "did:key:zYY",
     }
     with pytest.raises(ValueError, match="missing required fields"):
-        emit_cart_received(bus, cart_no_binding)
+        emit_cart_received(bus, cart_no_binding, require_signed=False)
 
 
 def test_T5_emit_payment_authorised_rejects_missing_settlement_choice(bus):
@@ -267,7 +297,7 @@ def test_T5_emit_payment_authorised_rejects_missing_settlement_choice(bus):
         "issuer": "did:key:zYY",
     }
     with pytest.raises(ValueError, match="missing required fields"):
-        emit_payment_authorised(bus, payment_no_choice)
+        emit_payment_authorised(bus, payment_no_choice, require_signed=False)
 
 
 def test_T5_emit_settlement_completed_rejects_bad_inputs(bus):
@@ -312,7 +342,7 @@ def test_T5_emit_settlement_completed_rejects_bad_inputs(bus):
 def test_T5_replay_returns_full_mandate_audit_chain(bus, dao, seller, agent_did):
     """The whole point of reserving the four event types: a consumer
     can fetch the entire Mandate audit trail with one replay call."""
-    intent = _make_intent(dao, agent_did)
+    intent = _make_intent(dao, agent_did, seller=seller)
     cart = _make_cart(seller, agent_did, intent_mandate_digest(intent))
     payment = _make_payment(dao, seller, cart_mandate_digest(cart))
 

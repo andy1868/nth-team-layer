@@ -20,12 +20,14 @@ import os
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from typing import Optional
 
 from .base import (
     AgentBackend,
     BackendCapabilities,
     BackendUnavailableError,
+    PreflightResult,
     SessionConfig,
     SessionSummary,
     TokenUsage,
@@ -66,6 +68,38 @@ class OpenHandsBackend(AgentBackend):
                 return resp.status == 200
         except Exception:
             return False
+
+    def preflight_check(self, *, timeout: float = 5.0):
+        """G-7 (Voss audit): real HTTP /api/health probe.
+
+        Captures latency and HTTP status code so an operator can
+        diagnose a slow / partially-up OpenHands server from the
+        audit chain without re-running the check manually.
+        """
+        # G-9 (Voss audit): imports promoted to module scope.
+        t0 = time.monotonic()
+        url = self.api_url or self.DEFAULT_URL
+        try:
+            req = urllib.request.Request(
+                f"{url.rstrip('/')}/api/health", method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = resp.status
+        except Exception as exc:    # noqa: BLE001
+            return PreflightResult(
+                ok=False, backend_id=self.backend_id,
+                checked_at=datetime.now(timezone.utc).isoformat(),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                detail=f"GET {url}/api/health: {type(exc).__name__}: {exc}",
+            )
+        ok = status == 200
+        return PreflightResult(
+            ok=ok, backend_id=self.backend_id,
+            checked_at=datetime.now(timezone.utc).isoformat(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            detail="" if ok else f"unexpected HTTP {status}",
+            structured={"url": url, "http_status": status},
+        )
 
     def start_session(self, config: SessionConfig) -> None:
         if not self.is_available(api_url=self.api_url):

@@ -17,6 +17,7 @@ from __future__ import annotations
 import abc
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -119,6 +120,43 @@ class BackendCapabilities:
     notes: str = ""
 
 
+@dataclass
+class PreflightResult:
+    """PR-1: outcome of AgentBackend.preflight_check().
+
+    Returned by the pre-attach feasibility check so the orchestrator
+    can decide between (a) proceeding, (b) falling back to another
+    backend, and (c) refusing the attach with an audit-trail entry.
+
+    Fields
+    ------
+    ok
+        True iff the backend is usable RIGHT NOW (auth valid, binary
+        responsive within timeout, network reachable as applicable).
+    backend_id
+        Mirrors ``AgentBackend.backend_id`` so the caller can
+        correlate against the registry without re-introspecting.
+    checked_at
+        ISO-8601 UTC. Together with ``duration_ms`` lets ops graph
+        preflight health over time.
+    duration_ms
+        Wall-clock cost. Useful when investigating slow attaches.
+    detail
+        Human-readable failure cause when ok=False. Empty on success.
+    structured
+        Machine-readable details (stdout, stderr, returncode etc.)
+        for backends that exec a subprocess. Free-form; the audit
+        chain just stores it verbatim.
+    """
+
+    ok: bool
+    backend_id: str
+    checked_at: str = ""
+    duration_ms: int = 0
+    detail: str = ""
+    structured: Dict[str, Any] = field(default_factory=dict)
+
+
 #
 # AgentBackend ABC
 #
@@ -159,6 +197,49 @@ class AgentBackend(abc.ABC):
     @abc.abstractmethod
     def end_session(self) -> SessionSummary:
         """"""
+
+    # PR-1: pre-attach feasibility check.
+    #
+    # Concrete method with a default impl - subclasses SHOULD override
+    # to perform a real liveness check (claude auth status, codex
+    # exec, hermes --version, etc.), but ABC users that don't will
+    # automatically get the is_available() fallback so the trait
+    # extension is non-breaking. Adding @abstractmethod here would
+    # have broken every existing AgentBackend subclass.
+
+    def preflight_check(self, *, timeout: float = 5.0) -> PreflightResult:
+        """Verify this backend is usable RIGHT NOW.
+
+        Default implementation degrades to ``is_available()``: if the
+        binary or library is present we treat the backend as ok.
+        Subclasses with real auth / network / process dependencies
+        should override and exec a minimal real action:
+
+            * ClaudeCodeBackend: ``claude auth status``
+            * CodexBackend: ``codex exec "echo OK"`` with timeout
+            * HermesBackend: ``hermes --version``
+
+        Failures must be REPORTED via ``ok=False`` and ``detail``,
+        NOT raised - the caller (attach.py) decides whether to fall
+        back, retry, or refuse the attach. Raising would bypass the
+        fallback path and force a hard failure.
+        """
+        t0 = time.monotonic()
+        try:
+            available = self.is_available()
+            detail = "" if available else "is_available() returned False"
+            ok = bool(available)
+        except Exception as exc:    # noqa: BLE001
+            available = False
+            ok = False
+            detail = f"is_available() raised: {exc!s}"
+        return PreflightResult(
+            ok=ok,
+            backend_id=self.backend_id,
+            checked_at=datetime.now(timezone.utc).isoformat(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            detail=detail,
+        )
 
     #
 

@@ -53,11 +53,14 @@ unknown ``x-`` prefixed extension fields.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from ..attach import TeamSession
@@ -76,6 +79,42 @@ A2A_PROTOCOL_VERSION = "0.3.0"
 # Skill ids must be URL-safe identifiers - other A2A agents may use them
 # in JSON-RPC parameters or URL paths.
 _SKILL_ID_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+
+# V-35: URL validation cap. Anything past 2 KB is almost certainly a
+# misuse (data: URL, CR/LF injection attempt, browser cache poison).
+_URL_MAX_LEN = 2048
+
+# V-45: cap on serialized size of a single skill object. A reasonable
+# A2A skill (id, name, description, tags, IO modes, a couple of
+# small x- extensions) fits comfortably under 4 KB. Larger entries
+# are almost certainly an unbounded x- extension being abused.
+_SKILL_MAX_SERIALIZED_BYTES = 4096
+
+
+def _validate_endpoint_url(url: Any, field_label: str = "url") -> None:
+    """Voss V-35: tightened URL validation.
+
+    Previously ``url.startswith("http(s)://")`` accepted things like
+    bare ``"http://"`` (no host), URLs with embedded CR/LF (header
+    injection), and unbounded lengths (DoS). urlparse + length cap
+    closes those gaps.
+    """
+    if not isinstance(url, str) or not url:
+        raise ValueError(f"{field_label} must be a non-empty string")
+    if len(url) > _URL_MAX_LEN:
+        raise ValueError(
+            f"{field_label} too long ({len(url)} > {_URL_MAX_LEN} chars)"
+        )
+    if "\n" in url or "\r" in url:
+        raise ValueError(f"{field_label} must not contain CR/LF characters")
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(
+            f"{field_label} scheme must be http(s), got "
+            f"{parsed.scheme!r} (input: {url!r})"
+        )
+    if not parsed.netloc:
+        raise ValueError(f"{field_label} must have a host component, got {url!r}")
 
 
 def build_agent_card(
@@ -124,10 +163,9 @@ def build_agent_card(
         raise ValueError("name must be a non-empty string")
     if not isinstance(description, str):
         raise ValueError("description must be a string (can be empty)")
-    if not url or not isinstance(url, str):
-        raise ValueError("url must be a non-empty string (the A2A endpoint URL)")
-    if not (url.startswith("http://") or url.startswith("https://")):
-        raise ValueError(f"url must be HTTP(S), got {url!r}")
+    _validate_endpoint_url(url, "url")    # V-35
+    if provider_url:
+        _validate_endpoint_url(provider_url, "provider_url")
     if not version or not isinstance(version, str):
         raise ValueError("version must be a non-empty string")
 
@@ -166,7 +204,10 @@ def build_agent_card(
         # x- prefix is the standard A2A convention for vendor extensions.
         # Consumers that don't understand them must (per the spec) ignore
         # them rather than reject the whole card.
-        card["x-nth-dao"] = dict(nth_dao_extras)
+        # Voss V-37: deep copy so a caller mutating their source dict
+        # AFTER build_agent_card returns can't smuggle changes into the
+        # served card. The previous ``dict(...)`` was a shallow copy.
+        card["x-nth-dao"] = copy.deepcopy(nth_dao_extras)
 
     return card
 
@@ -272,6 +313,24 @@ def _validate_skill(raw: Any) -> Dict[str, Any]:
                 f"skill {skill_id!r} has unknown field {k!r}; use 'x-{k}' for "
                 f"vendor extensions"
             )
+
+    # Voss V-45: cap the serialized size of the cleaned skill. An
+    # attacker controlling a skill dict could otherwise smuggle in a
+    # 100 MB x- extension value and bloat the well-known card. The
+    # cap is enforced AFTER cleaning so we count only fields that
+    # actually make it through.
+    try:
+        serialized_len = len(json.dumps(clean, ensure_ascii=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"skill {skill_id!r} contains non-JSON-serialisable values: {exc}"
+        ) from exc
+    if serialized_len > _SKILL_MAX_SERIALIZED_BYTES:
+        raise ValueError(
+            f"skill {skill_id!r} exceeds max serialized size "
+            f"({serialized_len} > {_SKILL_MAX_SERIALIZED_BYTES} bytes); "
+            f"trim x- extension values or split into multiple skills"
+        )
     return clean
 
 
@@ -301,8 +360,17 @@ def build_agent_card_from_session(
     if identity is not None and getattr(identity, "pubkey_hex", ""):
         try:
             nth_dao_extras["agent_did"] = identity.as_did()
-        except Exception:   # noqa: BLE001
-            pass
+        except Exception as exc:    # noqa: BLE001
+            # Voss V-46: don't silently swallow. Without the agent_did
+            # in the card, an A2A consumer can't cross-reference the
+            # exposed identity with our DID ledger - that's a
+            # diagnosable problem that deserves an audit log entry,
+            # not silent degradation.
+            logger.warning(
+                "agent_did decode failed for session %r; card will be served "
+                "without agent_did extra: %s",
+                getattr(session, "agent_id", "?"), exc,
+            )
     if extras:
         nth_dao_extras.update(extras)
 
@@ -328,6 +396,12 @@ REQUIRED_CAPABILITIES_FIELDS = (
     "streaming", "pushNotifications", "stateTransitionHistory",
 )
 
+# Voss V-51: ingested card field types. The pre-fix validator only
+# checked KEY presence; ``{"name": null, "url": "https://...", ...}``
+# passed. Aligning with build_agent_card's type expectations.
+_REQUIRED_STRING_FIELDS = ("protocolVersion", "name", "url", "version")
+_REQUIRED_STRING_FIELDS_ALLOW_EMPTY = ("description",)
+
 
 def validate_agent_card(card: Any) -> Tuple[bool, str]:
     """Structural validation of a generated or externally-supplied card.
@@ -343,8 +417,21 @@ def validate_agent_card(card: Any) -> Tuple[bool, str]:
         if field not in card:
             return False, f"missing required field: {field!r}"
 
-    if not card["url"].startswith(("http://", "https://")):
-        return False, f"url must be HTTP(S), got {card['url']!r}"
+    # V-51: type-check the string fields, not just presence.
+    for field in _REQUIRED_STRING_FIELDS:
+        value = card[field]
+        if not isinstance(value, str) or not value:
+            return False, f"{field} must be a non-empty string, got {value!r}"
+    for field in _REQUIRED_STRING_FIELDS_ALLOW_EMPTY:
+        value = card[field]
+        if not isinstance(value, str):
+            return False, f"{field} must be a string, got {value!r}"
+
+    # V-35: same urlparse-based check as build_agent_card.
+    try:
+        _validate_endpoint_url(card["url"], "url")
+    except ValueError as exc:
+        return False, str(exc)
 
     caps = card.get("capabilities")
     if not isinstance(caps, dict):
@@ -380,13 +467,20 @@ def write_agent_card(path: Path, card: Dict[str, Any]) -> None:
 
     Validates before writing - we never ship a malformed card to the
     well-known URL.
+
+    Voss V-38: writes atomically via tmp-file + rename so a crashing
+    process can't leave a truncated card at the well-known path. An
+    A2A consumer fetching during the write window will see the OLD
+    card (or 404 on first write) but never garbage.
     """
     ok, reason = validate_agent_card(card)
     if not ok:
         raise ValueError(f"refusing to write invalid card: {reason}")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(card, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
+    payload = (
+        json.dumps(card, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
     )
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(str(tmp), str(path))

@@ -41,18 +41,19 @@ from nth_dao.mandate import (
     MandateStore,
     cart_mandate_digest,
     cart_satisfies_intent,
+    complete_triad_chain,
     intent_mandate_digest,
     is_cart_expired,
     is_intent_expired,
     is_payment_expired,
     payment_mandate_digest,
-    payment_satisfies_cart,
     verify_cart_mandate,
     verify_intent_mandate,
     verify_payment_mandate,
 )
 from nth_dao.membership import MembershipManager, TeamConfig, TeamRole
 from nth_dao.orchestration import MissionStore
+from nth_dao.web.rate_limit import RateLimiter, enforce_min_response_time
 from team_layer.blackboard import Blackboard
 
 
@@ -73,6 +74,17 @@ class WebState:
         self.peer_finder = PeerFinder(self.registry)
         # v0.10 T-9: Mandate triad file-backed store, sidebar reads from this
         self.mandates = MandateStore(workspace)
+        # v0.10 V-30: per-actor rate limiters for the two crypto-heavy
+        # /api/mandates/* routes. The verify endpoint is more sensitive
+        # (free oracle + timing side-channel) so its window is tighter.
+        # Defaults sized for a sidebar in active use: ~30 verify calls
+        # per minute is plenty for clicking through a panel of rows.
+        self.verify_limiter = RateLimiter(
+            max_per_window=30, window_seconds=60.0,
+        )
+        self.store_limiter = RateLimiter(
+            max_per_window=60, window_seconds=60.0,
+        )
 
 
 class JoinPayload(BaseModel):
@@ -187,24 +199,32 @@ class MandateStorePayload(BaseModel):
     IntentMandate; settlement adapters issue this after receiving carts
     or completing payments. Server determines digest from the body so
     callers cannot forge an inconsistent index entry.
+
+    Voss V-28: ``actor_id`` is required so the request goes through
+    the same membership gate as the rest of the web console.
     """
 
     kind: str                    # "intent" | "cart" | "payment"
     mandate: dict[str, Any]
+    actor_id: str
 
 
 class MandateVerifyPayload(BaseModel):
     """Verify a mandate's Ed25519 signature against its canonical JSON.
 
     For carts, optionally bind-check against an intent by passing
-    ``against_intent``; for payments, pass ``against_cart``. When both
-    bind targets are passed, the full triad gate runs.
+    ``against_intent``. For payments, ``against_intent`` and
+    ``against_cart`` are both required because a PaymentMandate is only
+    authorizing inside the full Intent -> Cart -> Payment triad.
+
+    Voss V-28: ``actor_id`` required for membership gating.
     """
 
     kind: str                    # "intent" | "cart" | "payment"
     mandate: dict[str, Any]
     against_intent: Optional[dict[str, Any]] = None
     against_cart: Optional[dict[str, Any]] = None
+    actor_id: str
 
 
 def create_app(workspace: str | Path | None = None) -> FastAPI:
@@ -776,17 +796,17 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         }
 
     # v0.10 T-9: Mandate sidebar - read-only listings + verify + store
+    #
+    # Voss V-28: every mandate route runs through the same membership
+    # gate as the rest of the web console. Mandates leak counterparty
+    # / amount / settlement-rail metadata; an anonymous reader is not
+    # an acceptable default even for local-first deployments.
 
     @app.get("/api/mandates")
-    def list_mandates() -> dict[str, Any]:
-        """List all mandates with summary rows for the sidebar.
-
-        The sidebar renders three sections (intents / carts / payments).
-        Each row carries enough fields to display without re-fetching
-        the full body: digest, issuer, the headline amount/choice, and
-        a precomputed ``expired`` flag so the UI doesn't have to know
-        the clock semantics.
-        """
+    def list_mandates(actor_id: str) -> dict[str, Any]:
+        """List all mandates with summary rows for the sidebar."""
+        _require_explicit_actor_id(actor_id)
+        _require_member(state, actor_id)
         return {
             "intents": [_summarise_intent(m) for m in state.mandates.list_intents()],
             "carts": [_summarise_cart(m) for m in state.mandates.list_carts()],
@@ -796,13 +816,19 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         }
 
     @app.get("/api/mandates/{kind}/{digest}")
-    def get_mandate(kind: str, digest: str) -> dict[str, Any]:
+    def get_mandate(
+        kind: str, digest: str, actor_id: str,
+    ) -> Response:
         """Return the full mandate body for a digest.
 
-        Used by the [Verify] button to fetch the canonical JSON that
-        the browser then re-verifies, and by adapters that already
-        have the digest from an EventBus event.
+        Voss V-48: a mandate body is content-addressed by its digest
+        and never changes (re-saving the same digest is a no-op per
+        V-36). Serving with ``Cache-Control: public, immutable``
+        lets the browser skip the re-fetch entirely on the sidebar's
+        next render.
         """
+        _require_explicit_actor_id(actor_id)
+        _require_member(state, actor_id)
         if kind not in MANDATE_KINDS:
             raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
         try:
@@ -811,10 +837,22 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if body is None:
             raise HTTPException(status_code=404, detail="mandate not found")
-        return body
+        # F-1 (4th-round audit): "private" not "public" - a mandate
+        # body carries counterparty DIDs, amounts, and settlement
+        # rail. ``public`` would let shared proxies (corp HTTP
+        # proxy, ISP cache, CDN) hold the bytes for 24h, defeating
+        # V-28 auth gating entirely. ``private`` means only the end
+        # browser's own cache stores it.
+        return JSONResponse(
+            body,
+            headers={
+                "Cache-Control": "private, max-age=86400, immutable",
+                "ETag": f'"{digest}"',
+            },
+        )
 
     @app.post("/api/mandates/store")
-    def store_mandate(payload: MandateStorePayload) -> dict[str, Any]:
+    async def store_mandate(payload: MandateStorePayload) -> dict[str, Any]:
         """Persist a signed mandate; returns the canonical digest.
 
         Server re-derives the digest from the body so the index
@@ -823,7 +861,40 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         Shape-checks the body before saving so a junk payload doesn't
         produce a worthless hash file on disk: the W3C VC ``type``
         array must contain the expected mandate type for the kind.
+
+        Voss F-5: store has the same 50ms response-time floor as
+        verify, including 403 / 429 / malformed-body paths. Store runs
+        signature verification before persistence, so leaving it as a
+        fast-fail endpoint recreates the timing oracle that verify
+        already closed.
         """
+        import time as _time
+        _start = _time.monotonic()
+        try:
+            return await _store_mandate_body(payload, state, _start)
+        except HTTPException:
+            await enforce_min_response_time(_start, 0.05)
+            raise
+
+    async def _store_mandate_body(
+        payload: MandateStorePayload,
+        state: WebState,
+        _start: float,
+    ) -> dict[str, Any]:
+        _require_explicit_actor_id(payload.actor_id)
+        _require_member(state, payload.actor_id)
+        # V-30: rate limit the store endpoint too - it runs a full
+        # signature verification before persisting (V-29).
+        store_decision = state.store_limiter.check(payload.actor_id or "anonymous")
+        if not store_decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"store rate limit exceeded; retry after "
+                    f"{store_decision.retry_after_seconds:.1f}s"
+                ),
+                headers={"Retry-After": f"{int(store_decision.retry_after_seconds) + 1}"},
+            )
         kind = payload.kind
         if kind not in MANDATE_KINDS:
             raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
@@ -836,6 +907,26 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
                 detail=f"body does not look like a {kind} mandate "
                 "(missing @context / type / credentialSubject)",
             )
+        # Voss V-29: refuse to store unsigned / invalidly-signed
+        # mandates. Without this gate any client can pollute the
+        # sidebar with mandates that no party actually signed.
+        try:
+            if kind == KIND_INTENT:
+                sig_ok, sig_reason = verify_intent_mandate(body)
+            elif kind == KIND_CART:
+                sig_ok, sig_reason = verify_cart_mandate(body)
+            else:
+                sig_ok, sig_reason = verify_payment_mandate(body)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"malformed {kind}: {exc}",
+            ) from exc
+        if not sig_ok:
+            raise HTTPException(
+                status_code=400,
+                detail=f"refusing to store {kind} with invalid signature: "
+                f"{sig_reason}",
+            )
         try:
             if kind == KIND_INTENT:
                 digest = state.mandates.save_intent(body)
@@ -845,10 +936,11 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
                 digest = state.mandates.save_payment(body)
         except (ValueError, TypeError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=f"invalid {kind}: {exc}") from exc
+        await enforce_min_response_time(_start, 0.05)
         return {"ok": True, "kind": kind, "digest": digest}
 
     @app.post("/api/mandates/verify")
-    def verify_mandate_route(payload: MandateVerifyPayload) -> dict[str, Any]:
+    async def verify_mandate_route(payload: MandateVerifyPayload) -> dict[str, Any]:
         """Verify signature and (optionally) binding constraints.
 
         The sidebar's per-row [Verify] button calls this for a quick
@@ -856,12 +948,52 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         binding fields (``against_intent`` / ``against_cart``) extend
         the check upward through the triad without forcing a separate
         round-trip per layer.
+
+        Voss V-30 + follow-up timing tightening:
+
+          * Per-actor sliding-window rate limit (30/min by default)
+            caps the DoS / oracle exposure.
+          * A 50ms response-time floor applies to EVERY return path
+            including HTTPException raisings (403 / 429 / 400). The
+            outer try/except below catches HTTPException so the
+            floor runs before the exception propagates - without
+            this, a 403 (non-member) returns in <1ms while a 200
+            takes 50ms, leaking membership status via wall-clock.
         """
+        import time as _time
+        _start = _time.monotonic()
+        try:
+            return await _verify_mandate_body(payload, state, _start)
+        except HTTPException:
+            # Pad the error path too so 403 / 429 / 400 don't leak
+            # gate identity via latency.
+            await enforce_min_response_time(_start, 0.05)
+            raise
+
+    async def _verify_mandate_body(
+        payload: MandateVerifyPayload,
+        state: WebState,
+        _start: float,
+    ) -> dict[str, Any]:
+        _require_explicit_actor_id(payload.actor_id)
+        _require_member(state, payload.actor_id)
+        decision = state.verify_limiter.check(payload.actor_id or "anonymous")
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"verify rate limit exceeded; retry after "
+                    f"{decision.retry_after_seconds:.1f}s"
+                ),
+                headers={"Retry-After": f"{int(decision.retry_after_seconds) + 1}"},
+            )
         kind = payload.kind
         if kind not in MANDATE_KINDS:
+            await enforce_min_response_time(_start, 0.05)
             raise HTTPException(status_code=400, detail=f"unknown kind: {kind!r}")
         body = payload.mandate
         if not isinstance(body, dict):
+            await enforce_min_response_time(_start, 0.05)
             raise HTTPException(status_code=400, detail="mandate must be a JSON object")
 
         # Reject obviously-non-mandate shapes early so the verify
@@ -870,6 +1002,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         # would render as a generic signature error which is less
         # useful in the UI than a clear "malformed" badge.
         if not _looks_like_mandate(kind, body):
+            await enforce_min_response_time(_start, 0.05)
             return {"ok": False, "reason": f"malformed {kind}: not a W3C VC body"}
 
         # Layer 1: signature verification.
@@ -887,9 +1020,11 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
                 sig_ok, sig_reason = verify_payment_mandate(body)
                 expired = is_payment_expired(body)
         except (ValueError, KeyError, TypeError) as exc:
+            await enforce_min_response_time(_start, 0.05)
             return {"ok": False, "reason": f"malformed {kind}: {exc}"}
 
         if not sig_ok:
+            await enforce_min_response_time(_start, 0.05)
             return {
                 "ok": False,
                 "reason": f"signature verification failed: {sig_reason}",
@@ -898,21 +1033,43 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         checks: list[dict[str, Any]] = [{"name": "signature", "ok": True}]
         if expired:
             checks.append({"name": "expiry", "ok": False, "reason": "expired"})
+            await enforce_min_response_time(_start, 0.05)
             return {"ok": False, "reason": "expired", "checks": checks}
         checks.append({"name": "expiry", "ok": True})
 
-        # Layer 2: optional binding constraints
+        # Layer 2: binding constraints.
+        #
+        # IntentMandate can be verified standalone. CartMandate may be
+        # signature-only for inventory/display, but when an intent is
+        # supplied it must satisfy it. PaymentMandate is different: a
+        # payment is never settlement-authorizing without the full
+        # Intent -> Cart -> Payment chain, so require both bindings.
         if kind == KIND_CART and payload.against_intent is not None:
             ok, reason = cart_satisfies_intent(body, payload.against_intent)
             checks.append({"name": "binds_intent", "ok": ok, "reason": reason})
             if not ok:
+                await enforce_min_response_time(_start, 0.05)
                 return {"ok": False, "reason": reason, "checks": checks}
-        if kind == KIND_PAYMENT and payload.against_cart is not None:
-            ok, reason = payment_satisfies_cart(body, payload.against_cart)
-            checks.append({"name": "binds_cart", "ok": ok, "reason": reason})
+        if kind == KIND_PAYMENT:
+            if payload.against_cart is None or payload.against_intent is None:
+                reason = (
+                    "against_intent and against_cart are required when "
+                    "verifying payment mandates"
+                )
+                checks.append(
+                    {"name": "complete_triad", "ok": False, "reason": reason}
+                )
+                await enforce_min_response_time(_start, 0.05)
+                return {"ok": False, "reason": reason, "checks": checks}
+            ok, reason = complete_triad_chain(
+                payload.against_intent, payload.against_cart, body
+            )
+            checks.append({"name": "complete_triad", "ok": ok, "reason": reason})
             if not ok:
+                await enforce_min_response_time(_start, 0.05)
                 return {"ok": False, "reason": reason, "checks": checks}
 
+        await enforce_min_response_time(_start, 0.05)
         return {"ok": True, "reason": "", "checks": checks}
 
     assets_dir = STATIC_DIR / "assets"
@@ -979,6 +1136,14 @@ def _require_member_or_joinable(state: WebState, agent_id: str) -> None:
     ok, reason = state.membership.ensure_member(agent_id)
     if not ok:
         raise HTTPException(status_code=403, detail=reason)
+
+
+def _require_explicit_actor_id(actor_id: str) -> None:
+    if not isinstance(actor_id, str) or not actor_id.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="actor_id is required for mandate routes",
+        )
 
 
 def _require_member(state: WebState, agent_id: str) -> None:

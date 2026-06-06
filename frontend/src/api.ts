@@ -155,14 +155,32 @@ export function updateTaskStatus(input: {
 // see the `_summarise_*` helpers for field semantics. The four calls form
 // the entire surface the sidebar needs: list, fetch one, persist, verify.
 
-/** Read the three mandate kinds for sidebar rendering. */
-export function listMandates(): Promise<MandateListing> {
-  return request<MandateListing>("/api/mandates");
+/**
+ * Read the three mandate kinds for sidebar rendering.
+ *
+ * V-28: the backend now gates every /api/mandates/* route through the
+ * membership check. The frontend MUST thread an actor_id so the
+ * gate sees a non-anonymous caller; otherwise the backend uses the
+ * default admin id which fails on non-admin workspaces.
+ */
+function mandateActorQuery(actorId: string): string {
+  if (!actorId.trim()) {
+    throw new Error("actorId is required for mandate API calls");
+  }
+  return `?actor_id=${encodeURIComponent(actorId)}`;
+}
+
+export function listMandates(actorId: string): Promise<MandateListing> {
+  return request<MandateListing>(`/api/mandates${mandateActorQuery(actorId)}`);
 }
 
 /** Fetch the full canonical mandate body (e.g. for a wallet-side re-verify). */
-export function getMandate(kind: MandateKind, digest: string): Promise<unknown> {
-  return request<unknown>(`/api/mandates/${kind}/${encodeURIComponent(digest)}`);
+export function getMandate(
+  kind: MandateKind, digest: string, actorId: string
+): Promise<unknown> {
+  return request<unknown>(
+    `/api/mandates/${kind}/${encodeURIComponent(digest)}${mandateActorQuery(actorId)}`
+  );
 }
 
 /**
@@ -175,35 +193,45 @@ export function getMandate(kind: MandateKind, digest: string): Promise<unknown> 
  */
 export function storeMandate(
   kind: MandateKind,
-  mandate: unknown
+  mandate: unknown,
+  actorId: string
 ): Promise<{ ok: boolean; kind: MandateKind; digest: string }> {
+  if (!actorId.trim()) {
+    throw new Error("actorId is required for mandate API calls");
+  }
   return request("/api/mandates/store", {
     method: "POST",
-    body: JSON.stringify({ kind, mandate })
+    body: JSON.stringify({ kind, mandate, actor_id: actorId })
   });
 }
 
 /**
- * Run server-side signature + expiry + (optional) binding checks.
+ * Run server-side signature + expiry + binding checks.
  *
  * When verifying a Cart, pass the Intent it claims to bind to via
  * `againstIntent` to also gate the digest-binding and constraint
- * checks. Similarly pass `againstCart` when verifying a Payment.
- * Without those, only the signature + expiry are checked.
+ * checks. A Payment is not valid standalone: callers must pass both
+ * `againstCart` and the Cart's bound `againstIntent`, otherwise the
+ * server returns ok=false.
  */
 export function verifyMandate(input: {
   kind: MandateKind;
   mandate: unknown;
   againstIntent?: unknown;
   againstCart?: unknown;
+  actorId: string;
 }): Promise<MandateVerifyResult> {
+  if (!input.actorId.trim()) {
+    throw new Error("actorId is required for mandate API calls");
+  }
   return request<MandateVerifyResult>("/api/mandates/verify", {
     method: "POST",
     body: JSON.stringify({
       kind: input.kind,
       mandate: input.mandate,
       against_intent: input.againstIntent,
-      against_cart: input.againstCart
+      against_cart: input.againstCart,
+      actor_id: input.actorId
     })
   });
 }

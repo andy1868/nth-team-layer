@@ -8,7 +8,7 @@
 //   showing the cached digest immediately and verifying on demand
 //   keeps the sidebar snappy when the store has hundreds of rows.
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getMandate, listMandates, verifyMandate } from "../api";
 import type {
   CartMandateSummary,
@@ -20,6 +20,14 @@ import type {
 } from "../types";
 
 interface Props {
+  /**
+   * The current actor id (agent_id from the host page). Threaded
+   * through every /api/mandates/* call so the backend's
+   * _require_member_or_joinable check sees a real caller. Without
+   * this the V-28 auth gate falls back to the admin default, which
+   * is correct only on the owner's machine.
+   */
+  actorId: string;
   /**
    * Wallet did:key. Currently informational only - the sidebar is
    * read-only at T-9 (issuing new IntentMandates from the browser
@@ -42,27 +50,99 @@ const EMPTY_LISTING: MandateListing = {
   payments: []
 };
 
-export function MandatesPanel(_: Props) {
+/**
+ * Voss V-47: scrub error messages before showing them to the user.
+ *
+ * The raw error from `fetch` / `request<T>` can include the response
+ * server's detail string, which we don't fully control. Show a short
+ * human-readable summary instead, log the full detail to the console
+ * for the developer.
+ */
+function userFacingError(prefix: string, e: unknown): string {
+  const msg = e instanceof Error ? e.message : String(e);
+  // eslint-disable-next-line no-console
+  console.warn(prefix, msg);
+  // Trim to first sentence / 120 chars to avoid dumping HTML/stack traces.
+  const trimmed = msg.split(/[\r\n]/)[0].slice(0, 120);
+  return `${prefix}: ${trimmed}`;
+}
+
+function intentDigestFromCart(cart: unknown): string {
+  if (!cart || typeof cart !== "object") return "";
+  const subject = (cart as { credentialSubject?: unknown }).credentialSubject;
+  if (!subject || typeof subject !== "object") return "";
+  const digest = (
+    subject as { intent_mandate_digest?: unknown }
+  ).intent_mandate_digest;
+  return typeof digest === "string" ? digest : "";
+}
+
+export function MandatesPanel({ actorId }: Props) {
   const [listing, setListing] = useState<MandateListing>(EMPTY_LISTING);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [verifyState, setVerifyState] = useState<RowVerifyMap>({});
 
-  async function refresh() {
+  /**
+   * V-43: cache binding-mandate fetches across rows. Clicking Verify
+   * on 10 cart rows that all bind to the same Intent should only
+   * fetch that Intent once. The cache is keyed by `${kind}:${digest}`
+   * and lives for the lifetime of the panel mount; backend serves
+   * with `Cache-Control: immutable` (V-48) so a re-mount also picks
+   * up the browser HTTP cache.
+   */
+  const bindingCacheRef = useRef<Map<string, Promise<unknown>>>(new Map());
+
+  async function refresh(targetActorId = actorId) {
     setLoading(true);
     setError(null);
     try {
-      setListing(await listMandates());
+      setListing(await listMandates(targetActorId));
+      // Refresh invalidates the in-memory binding cache. The browser
+      // HTTP cache survives (immutable headers), so re-fetches that
+      // happen via the cache will still be free.
+      bindingCacheRef.current.clear();
     } catch (e) {
-      setError((e as Error).message);
+      setError(userFacingError("Failed to load mandates", e));
     } finally {
       setLoading(false);
     }
   }
 
+  function cachedGetMandate(
+    kind: MandateKind, digest: string,
+  ): Promise<unknown> {
+    const key = `${kind}:${digest}`;
+    const cached = bindingCacheRef.current.get(key);
+    if (cached) return cached;
+    const pending = getMandate(kind, digest, actorId);
+    bindingCacheRef.current.set(key, pending);
+    // If the fetch fails, drop the cache entry so the next try doesn't
+    // also resolve to the same rejection.
+    pending.catch(() => bindingCacheRef.current.delete(key));
+    return pending;
+  }
+
   useEffect(() => {
-    void refresh();
-  }, []);
+    let cancelled = false;
+    bindingCacheRef.current.clear();
+    setVerifyState({});
+    setLoading(true);
+    setError(null);
+    listMandates(actorId)
+      .then((next) => {
+        if (!cancelled) setListing(next);
+      })
+      .catch((e) => {
+        if (!cancelled) setError(userFacingError("Failed to load mandates", e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [actorId]);
 
   /**
    * Verify a single row.
@@ -80,20 +160,36 @@ export function MandatesPanel(_: Props) {
   ) {
     setVerifyState((prev) => ({ ...prev, [digest]: { status: "running" } }));
     try {
-      const mandate = await getMandate(kind, digest);
-      const params: Parameters<typeof verifyMandate>[0] = { kind, mandate };
+      const mandate = await cachedGetMandate(kind, digest);
+      const params: Parameters<typeof verifyMandate>[0] = {
+        kind, mandate, actorId
+      };
       if (kind === "cart" && bindingIntentDigest) {
         try {
-          params.againstIntent = await getMandate("intent", bindingIntentDigest);
+          // V-43: cachedGetMandate reuses across rows that bind to
+          // the same intent. Saves N-1 round-trips for N cart rows.
+          params.againstIntent = await cachedGetMandate(
+            "intent", bindingIntentDigest
+          );
         } catch {
-          // Intent not in store - fall back to signature-only check
+          throw new Error("Cart verification requires its bound IntentMandate");
         }
       }
       if (kind === "payment" && bindingCartDigest) {
         try {
-          params.againstCart = await getMandate("cart", bindingCartDigest);
+          const cart = await cachedGetMandate("cart", bindingCartDigest);
+          params.againstCart = cart;
+          const intentDigest = intentDigestFromCart(cart);
+          if (!intentDigest) {
+            throw new Error(
+              "Payment verification requires a CartMandate with intent digest"
+            );
+          }
+          params.againstIntent = await cachedGetMandate("intent", intentDigest);
         } catch {
-          // Cart not in store - fall back to signature-only check
+          throw new Error(
+            "Payment verification requires its bound CartMandate and IntentMandate"
+          );
         }
       }
       const result = await verifyMandate(params);
@@ -108,7 +204,8 @@ export function MandatesPanel(_: Props) {
           status: "done",
           result: {
             ok: false,
-            reason: (e as Error).message,
+            // V-47: scrub before showing.
+            reason: userFacingError("verify failed", e),
             checks: []
           }
         }
@@ -231,7 +328,11 @@ function IntentRow({
         </p>
         <p className="mandate-meta">expires {row.expires_at}</p>
       </div>
-      <VerifyControl verify={verify} onVerify={onVerify} />
+      <VerifyControl
+        verify={verify}
+        onVerify={onVerify}
+        label={`intent ${row.digest}`}
+      />
     </li>
   );
 }
@@ -268,7 +369,11 @@ function CartRow({
           {row.expires_at}
         </p>
       </div>
-      <VerifyControl verify={verify} onVerify={onVerify} />
+      <VerifyControl
+        verify={verify}
+        onVerify={onVerify}
+        label={`cart ${row.digest}`}
+      />
     </li>
   );
 }
@@ -297,17 +402,23 @@ function PaymentRow({
           authorised {row.issued_at} - window {row.expires_at}
         </p>
       </div>
-      <VerifyControl verify={verify} onVerify={onVerify} />
+      <VerifyControl
+        verify={verify}
+        onVerify={onVerify}
+        label={`payment ${row.digest}`}
+      />
     </li>
   );
 }
 
 function VerifyControl({
   verify,
-  onVerify
+  onVerify,
+  label
 }: {
   verify: VerifyState;
   onVerify: () => void;
+  label: string;
 }) {
   if (verify.status === "running") {
     return <p className="mandate-verify mandate-verify-running">verifying...</p>;
@@ -331,14 +442,19 @@ function VerifyControl({
             </ul>
           </details>
         )}
-        <button type="button" onClick={onVerify}>
+        <button type="button" onClick={onVerify} aria-label={`Re-verify ${label}`}>
           re-verify
         </button>
       </div>
     );
   }
   return (
-    <button type="button" className="mandate-verify-btn" onClick={onVerify}>
+    <button
+      type="button"
+      className="mandate-verify-btn"
+      onClick={onVerify}
+      aria-label={`Verify ${label}`}
+    >
       Verify
     </button>
   );

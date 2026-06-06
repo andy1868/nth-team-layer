@@ -75,7 +75,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .identity import AgentIdentity, canonical_json
+from .identity import AgentIdentity, canonical_json, normalize_for_canonical_json
 from .util import InterProcessLock, atomic_write_json, safe_id, safe_load_json
 
 logger = logging.getLogger("nth_dao.agent_ledger")
@@ -123,7 +123,7 @@ class LedgerEvent:
         d = self.to_dict()
         d.pop("sig", None)
         d.pop("event_hash", None)
-        return d
+        return normalize_for_canonical_json(d)
 
     def compute_hash(self) -> str:
         return hashlib.sha256(canonical_json(self.signable_dict())).hexdigest()

@@ -27,10 +27,13 @@ end-to-end design rationale.
 
 from .intent import (
     INTENT_CONTEXT,
+    INTENT_PROOF_PURPOSE,
     INTENT_TYPE,
     PROOF_TYPE,
-    PROOF_PURPOSE as INTENT_PROOF_PURPOSE,
+    ExpiryStatus,
+    VerifyResult,
     build_intent_mandate,
+    intent_expiry_status,
     intent_mandate_digest,
     is_intent_expired,
     sign_intent_mandate,
@@ -38,9 +41,10 @@ from .intent import (
 )
 from .cart import (
     CART_CONTEXT,
+    CART_PROOF_PURPOSE,
     CART_TYPE,
-    PROOF_PURPOSE as CART_PROOF_PURPOSE,
     build_cart_mandate,
+    cart_expiry_status,
     cart_mandate_digest,
     cart_satisfies_intent,
     is_cart_expired,
@@ -49,11 +53,12 @@ from .cart import (
 )
 from .payment import (
     PAYMENT_CONTEXT,
+    PAYMENT_PROOF_PURPOSE,
     PAYMENT_TYPE,
-    PROOF_PURPOSE as PAYMENT_PROOF_PURPOSE,
     build_payment_mandate,
     complete_triad_chain,
     is_payment_expired,
+    payment_expiry_status,
     payment_mandate_digest,
     payment_satisfies_cart,
     sign_payment_mandate,
@@ -76,33 +81,38 @@ from .store import (
 )
 
 __all__ = [
-    # IntentMandate (T-1)
+    # IntentMandate (T-1, hardened per Voss review)
     "INTENT_CONTEXT",
     "INTENT_TYPE",
     "INTENT_PROOF_PURPOSE",
     "PROOF_TYPE",
+    "ExpiryStatus",
+    "VerifyResult",
     "build_intent_mandate",
+    "intent_expiry_status",
     "intent_mandate_digest",
     "is_intent_expired",
     "sign_intent_mandate",
     "verify_intent_mandate",
-    # CartMandate (T-2)
+    # CartMandate (T-2, hardened per Voss V-2..V-20 horizontal)
     "CART_CONTEXT",
     "CART_TYPE",
     "CART_PROOF_PURPOSE",
     "build_cart_mandate",
+    "cart_expiry_status",
     "cart_mandate_digest",
     "cart_satisfies_intent",
     "is_cart_expired",
     "sign_cart_mandate",
     "verify_cart_mandate",
-    # PaymentMandate (T-3)
+    # PaymentMandate (T-3, hardened per Voss V-2..V-20 horizontal)
     "PAYMENT_CONTEXT",
     "PAYMENT_TYPE",
     "PAYMENT_PROOF_PURPOSE",
     "build_payment_mandate",
     "complete_triad_chain",
     "is_payment_expired",
+    "payment_expiry_status",
     "payment_mandate_digest",
     "payment_satisfies_cart",
     "sign_payment_mandate",
