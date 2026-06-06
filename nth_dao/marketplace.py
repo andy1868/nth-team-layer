@@ -241,7 +241,7 @@ class TaskMarketplace:
 
     def _init_credits(self) -> None:
         if not self._credit_file.exists():
-            self._write_credits(100.0, txn=None)  # 新 agent 100 起手
+            self._write_credits(100.0, txn=None)  # new agent starts with 100 credits
 
     def _read_credits(self) -> float:
         data = safe_load_json(self._credit_file, fallback=None)
@@ -337,25 +337,26 @@ class TaskMarketplace:
         min_reputation: float = 0.0,
         required_capabilities: Optional[List[str]] = None,
     ) -> TaskOrder:
-        """
+        """Create a new task order.
 
         Args:
-            title:
-            description:
-            context:
-            reward:
-            deadline: ISO
-            tags:
-            min_reputation:
-            required_capabilities:
+            title: Short task title.
+            description: Detailed task description.
+            context: Task context (code_review, bug_fix, research, etc.).
+            reward: Credits offered for completing this task.
+            deadline: ISO timestamp deadline (optional).
+            tags: Free-form tags for filtering.
+            min_reputation: Minimum reputation score required to claim.
+            required_capabilities: Capabilities the claimant must possess.
 
         Returns:
-
+            The created TaskOrder.
 
         Raises:
-            ValueError:
+            ValueError: If reward < 0 or insufficient credits.
         """
-        # 预扣验证（真正的扣款放到 order 创建后做，否则 fail 时会扣了又退）
+        # Pre-validate balance before creating the order (actual debit after creation,
+        # so failed order creation doesn't require a compensating credit).
         if reward < 0:
             raise ValueError("reward must be >= 0")
         if reward > 0 and self._read_credits() < reward:
@@ -390,13 +391,13 @@ class TaskMarketplace:
             }
             order.creator_sig = self.identity.sign_json(payload)
 
-        # 通过 ledger 扣款（双花防护）
+        # Debit via ledger (double-spend protection)
         if reward > 0:
             self._transfer_credits(-reward, order_id=order.order_id, kind="escrow_lock")
 
         self._save(order)
 
-        #
+        # Broadcast to team channel
         if self.channel:
             self.channel.send(
                 f" New task: {title} (reward={reward} credits, context={context})",
@@ -409,14 +410,14 @@ class TaskMarketplace:
     #
 
     def claim(self, order_id: str) -> TaskOrder:
-        """
+        """Claim an open order.
 
         Args:
-            order_id:  ID
+            order_id: The order ID.
 
         Raises:
-            ValueError:
-            PermissionError:
+            ValueError: Order not found, not open, or is your own.
+            PermissionError: Reputation score too low for the order context.
         """
         order = self._load(order_id)
         if order is None:
@@ -428,7 +429,7 @@ class TaskMarketplace:
         if order.creator == self.agent_id:
             raise ValueError("Cannot claim your own order")
 
-        #
+        # Check reputation requirement
         min_rep = order.requirements.get("min_reputation", 0)
         if min_rep > 0 and self.reputation:
             score = self.reputation.get_score(self.agent_id, context=order.context)
@@ -712,16 +713,17 @@ class TaskMarketplace:
         description: str = "",
         *,
         context: str = "",
-        reward: int = 0,
+        reward: float = 0.0,
         capability: str = "",
-        finder: Any = None,
-        channel: Any = None,
+        finder: Any = None,   # PeerFinder — avoid circular import
+        channel: Any = None,  # TeamChannel — avoid circular import
     ) -> TaskOrder:
         """Create an order and fanout to capable agents via channel.
 
         When *finder* and *channel* are provided, finds agents with
         ``accepting_tasks=True`` and the required *capability*, then
-        DMs each one.  Messages are signed when the channel has an
+        DMs each one.  The DM includes the order's ``creator_sig`` so
+        the receiver can verify authenticity when the channel has an
         identity configured.  The order is stored with ``creator``
         set to this agent for auditability.
 
@@ -745,6 +747,14 @@ class TaskMarketplace:
         if finder is not None and channel is not None and capability:
             try:
                 targets = finder.find(capability=capability, only_alive=True)
+                # Build signed message payload for receiver verification
+                sig_info = ""
+                if order.creator_sig:
+                    sig_info = (
+                        f"\nCreator: {order.creator}\n"
+                        f"Created: {order.created_at}\n"
+                        f"Signature: {order.creator_sig}"
+                    )
                 for t in targets:
                     if getattr(t, "accepting_tasks", False):
                         try:
@@ -752,7 +762,8 @@ class TaskMarketplace:
                                 t.agent_id,
                                 f"[New Task] {order.title}\n"
                                 f"Reward: {order.reward} credits\n"
-                                f"ID: {order.order_id}",
+                                f"ID: {order.order_id}"
+                                f"{sig_info}",
                             )
                         except Exception:
                             logger.debug("broadcast dm to %s failed", t.agent_id)

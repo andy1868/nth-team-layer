@@ -17,9 +17,20 @@ PeerFinder
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from .agent_registry import AgentRecord, AgentRegistry
+
+# ── search scoring constants ──
+EXACT_MATCH_WEIGHT = 3.0
+PREFIX_MATCH_WEIGHT = 1.5
+SUBSTRING_MATCH_WEIGHT = 0.8
+IDLE_BONUS = 0.5
+GROUP_BONUS = 0.3
+HOSTNAME_BONUS = 0.2
+ACCEPTING_TASKS_BONUS = 0.5
+
+ComplementDirection = Literal["bidirectional", "incoming", "outgoing"]
 
 
 @dataclass
@@ -139,11 +150,11 @@ class PeerFinder:
             score = float(len(matched))
 
             if prefer_idle and r.status == "idle":
-                score += 0.5
+                score += IDLE_BONUS
             if prefer_group and prefer_group in r.groups:
-                score += 0.3
+                score += GROUP_BONUS
             if prefer_hostname and r.hostname == prefer_hostname:
-                score += 0.2
+                score += HOSTNAME_BONUS
 
             results.append(MatchResult(
                 record=r, score=score, matched_capabilities=matched,
@@ -206,7 +217,7 @@ class PeerFinder:
             if score < min_score:
                 continue
             if r.status == "idle":
-                score += 0.5
+                score += IDLE_BONUS
             # MatchResult 复用既有结构：matched_capabilities 改装成 "field:value" 列表
             results.append(MatchResult(
                 record=r,
@@ -228,14 +239,23 @@ class PeerFinder:
                 idx.setdefault(cap, []).append(r.agent_id)
         return idx
 
-    def find_complements(self, agent_id: str) -> List[MatchResult]:
+    def find_complements(
+        self,
+        agent_id: str,
+        direction: ComplementDirection = "bidirectional",
+    ) -> List[MatchResult]:
         """Find agents whose capabilities complement *agent_id*'s needs.
 
         Matching is purely based on ``seeking`` × ``capabilities``:
-        1. Other agent HAS a capability that *agent_id* is SEEKING, OR
-        2. *agent_id* HAS a capability that the other agent is SEEKING.
 
-        ``accepting_tasks`` gives a score bonus but does NOT filter results.
+        * **incoming**: other agent HAS a capability that *agent_id* is SEEKING.
+          (Who can help me?)
+        * **outgoing**: *agent_id* HAS a capability that the other agent is SEEKING.
+          (Who can I help?)
+        * **bidirectional** (default): either direction matches.
+
+        ``accepting_tasks`` gives a score bonus (+ACCEPTING_TASKS_BONUS)
+        but does NOT filter results.
         ``available_for`` is metadata for consumers — it is NOT used for
         complement filtering (it describes accepted action types, not
         capabilities).
@@ -260,25 +280,33 @@ class PeerFinder:
             other_caps = set(r.capabilities)
             other_seeking = set(r.seeking)
 
-            they_have = list(my_seeking & other_caps)
-            i_have = list(other_seeking & my_caps)
+            # Directional match sets
+            skills_they_offer = list(my_seeking & other_caps)  # they have what I need
+            skills_i_offer = list(other_seeking & my_caps)     # I have what they need
 
-            all_matched = they_have + i_have
-            if not all_matched:
+            # Collect matched capabilities based on direction
+            if direction == "incoming":
+                matched = skills_they_offer
+            elif direction == "outgoing":
+                matched = skills_i_offer
+            else:  # bidirectional
+                matched = skills_they_offer + skills_i_offer
+
+            if not matched:
                 continue
 
-            score = float(len(all_matched)) * 1.0
+            score = float(len(matched)) * 1.0
             if r.accepting_tasks:
-                score += 0.5
+                score += ACCEPTING_TASKS_BONUS
 
             # M2: include match direction (non-mutating)
             result = MatchResult(
                 record=r,
                 score=score,
-                matched_capabilities=all_matched,
+                matched_capabilities=matched,
                 match_details={
-                    "they_have": they_have,
-                    "i_have": i_have,
+                    "they_have": skills_they_offer,
+                    "i_have": skills_i_offer,
                 },
             )
 
@@ -304,11 +332,11 @@ def _field_score(haystack: str, needle: str) -> float:
         return 0.0
     hay = haystack.lower()
     if hay == needle:
-        return 3.0
+        return EXACT_MATCH_WEIGHT
     if hay.startswith(needle):
-        return 1.5
+        return PREFIX_MATCH_WEIGHT
     if needle in hay:
-        return 0.8
+        return SUBSTRING_MATCH_WEIGHT
     return 0.0
 
 

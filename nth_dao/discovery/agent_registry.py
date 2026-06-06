@@ -33,9 +33,13 @@ from ..util import atomic_write_json, safe_load_json, safe_id as _safe_id
 
 logger = logging.getLogger("nth_dao.discovery")
 
-
 # repo_root/team_agents/
 DEFAULT_AGENTS_DIR = "team_agents"
+
+# C2: clock-skew tolerance — two machines sharing a filesystem may have
+# clocks that differ by up to 30 s.  Without this buffer, agent B may
+# incorrectly mark agent A as dead simply because B's clock is ahead.
+CLOCK_SKEW_TOLERANCE_SECONDS = 30
 
 
 @dataclass
@@ -59,6 +63,9 @@ class AgentRecord:
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
     instance_token: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    # S2: integrity protection — optional signature over the record payload.
+    # When set, consumers SHOULD verify before trusting capabilities/status.
+    signature: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -67,13 +74,21 @@ class AgentRecord:
     def from_dict(cls, data: dict) -> "AgentRecord":
         # Tolerant: drop unknown fields so older / newer records still load.
         fields = {f for f in cls.__dataclass_fields__}
+        unknown = set(data.keys()) - fields
+        if unknown:
+            logger.debug("AgentRecord.from_dict: ignoring unknown fields %s", unknown)
         return cls(**{k: v for k, v in data.items() if k in fields})
 
     def is_alive(self, max_stale_seconds: int = 90) -> bool:
-        """True iff last_seen is within max_stale_seconds of now."""
+        """True iff last_seen is within max_stale_seconds of now.
+
+        Adds CLOCK_SKEW_TOLERANCE_SECONDS buffer to account for clock
+        drift between machines sharing the filesystem-backed registry.
+        """
         try:
             last = datetime.fromisoformat(self.last_seen)
-            return (datetime.now() - last).total_seconds() < max_stale_seconds
+            effective = max_stale_seconds + CLOCK_SKEW_TOLERANCE_SECONDS
+            return (datetime.now() - last).total_seconds() < effective
         except Exception:
             return False
 
@@ -112,6 +127,7 @@ class AgentRegistry:
         self.heartbeat_interval = heartbeat_interval
 
         self._record: Optional[AgentRecord] = None
+        self._record_lock = threading.RLock()  # C3: protect _record R/W across threads
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
         # 修复 M-8：register() 重复调用不再 stack 多个 atexit 回调
@@ -133,22 +149,23 @@ class AgentRegistry:
     ) -> AgentRecord:
         """Register this agent and (optionally) start a heartbeat thread."""
         # Re-registering replaces the prior record (idempotent).
-        if self._record is not None:
-            self.unregister()
+        with self._record_lock:
+            if self._record is not None:
+                self.unregister()
 
-        self._record = AgentRecord(
-            agent_id=agent_id,
-            hostname=socket.gethostname(),
-            pid=os.getpid(),
-            backend_id=backend_id,
-            capabilities=capabilities or [],
-            groups=groups or [],
-            seeking=seeking or [],
-            accepting_tasks=accepting_tasks,
-            available_for=available_for or [],
-            metadata=metadata or {},
-        )
-        self._write(self._record)
+            self._record = AgentRecord(
+                agent_id=agent_id,
+                hostname=socket.gethostname(),
+                pid=os.getpid(),
+                backend_id=backend_id,
+                capabilities=capabilities or [],
+                groups=groups or [],
+                seeking=seeking or [],
+                accepting_tasks=accepting_tasks,
+                available_for=available_for or [],
+                metadata=metadata or {},
+            )
+            self._write(self._record)
 
         if start_heartbeat:
             self._start_heartbeat()
@@ -167,23 +184,25 @@ class AgentRegistry:
         metadata_patch: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Patch this agent's record fields + bump last_seen."""
-        if self._record is None:
-            raise RuntimeError("call register() first")
-        if status is not None:
-            self._record.status = status
-        if current_mission is not None:
-            self._record.current_mission = current_mission
-        if metadata_patch:
-            self._record.metadata.update(metadata_patch)
-        self._record.last_seen = datetime.now().isoformat()
-        self._write(self._record)
+        with self._record_lock:
+            if self._record is None:
+                raise RuntimeError("call register() first")
+            if status is not None:
+                self._record.status = status
+            if current_mission is not None:
+                self._record.current_mission = current_mission
+            if metadata_patch:
+                self._record.metadata.update(metadata_patch)
+            self._record.last_seen = datetime.now().isoformat()
+            self._write(self._record)
 
     def heartbeat(self) -> None:
         """Just bump last_seen; called from the heartbeat thread."""
-        if self._record is None:
-            return
-        self._record.last_seen = datetime.now().isoformat()
-        self._write(self._record)
+        with self._record_lock:
+            if self._record is None:
+                return
+            self._record.last_seen = datetime.now().isoformat()
+            self._write(self._record)
 
     def unregister(self) -> None:
         """Stop heartbeat and mark this agent offline.
@@ -192,19 +211,21 @@ class AgentRegistry:
         Run cleanup() to remove stale tombstones.
         """
         self._stop_heartbeat()
-        if self._record is None:
-            return
-        target = self._path_for(self._record.agent_id)
-        try:
-            if target.exists():
-                # Write status=offline rather than unlinking, to preserve audit
-                # trail. Use cleanup() to purge old tombstones.
-                self._record.status = "offline"
-                self._record.last_seen = datetime.now().isoformat()
-                self._write(self._record)
-        except Exception:
-            pass
-        self._record = None
+        with self._record_lock:
+            if self._record is None:
+                return
+            target = self._path_for(self._record.agent_id)
+            try:
+                if target.exists():
+                    # Write status=offline rather than unlinking, to preserve audit
+                    # trail. Use cleanup() to purge old tombstones.
+                    self._record.status = "offline"
+                    self._record.last_seen = datetime.now().isoformat()
+                    self._write(self._record)
+            except Exception:
+                logger.exception("unregister: failed to write offline tombstone for %s",
+                                 self._record.agent_id)
+            self._record = None
 
     #   /
 
@@ -237,7 +258,8 @@ class AgentRegistry:
 
     @property
     def my_record(self) -> Optional[AgentRecord]:
-        return self._record
+        with self._record_lock:
+            return self._record
 
     #
 
@@ -259,6 +281,41 @@ class AgentRegistry:
                 except OSError as e:
                     logger.warning("cleanup unlink %s failed: %s", f, e)
         return removed
+
+    def verify_all_records(self, did_key: str) -> Dict[str, bool]:
+        """Verify Ed25519 signatures on all agent records in the registry.
+
+        Args:
+            did_key: W3C did:key string of the identity whose signatures to verify.
+
+        Returns:
+            {agent_id: True if signature valid or absent, False if invalid}
+        """
+        from ..identity import AgentIdentity
+        try:
+            verifier = AgentIdentity.from_did(did_key)
+        except Exception as e:
+            logger.warning("verify_all_records: invalid did_key: %s", e)
+            return {}
+
+        results: Dict[str, bool] = {}
+        for f in sorted(self.agents_dir.glob("*.json")):
+            data = safe_load_json(f, fallback=None)
+            if data is None:
+                continue
+            sig = data.get("signature", "")
+            if not sig:
+                # Unsigned records: no integrity claim → OK (trusting filesystem).
+                results[f.stem] = True
+                continue
+            try:
+                # Payload is everything except the signature itself
+                payload = {k: v for k, v in data.items() if k != "signature"}
+                results[f.stem] = verifier.verify_json(payload, sig)
+            except Exception as e:
+                logger.warning("verify_all_records: %s error: %s", f.stem, e)
+                results[f.stem] = False
+        return results
 
     #
 
