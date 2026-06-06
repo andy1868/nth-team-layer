@@ -321,6 +321,17 @@ class TestIdempotency:
 # ────────────────────────── ActionRouter — history ──────────────────────────
 
 
+    def test_wrong_target_rejected(self, router_with_handlers):
+        """Request addressed to a different agent should be rejected."""
+        req = ActionRequest(
+            request_id="r1", action_type="ping",
+            from_agent="bob", to_agent="charlie",
+        )
+        resp = router_with_handlers.handle(req)
+        assert resp.status == ActionStatus.REJECTED.value
+        assert "charlie" in resp.error
+
+
 class TestRouterHistory:
     def test_responses_sent(self, router_with_handlers):
         for i in range(3):

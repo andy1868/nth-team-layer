@@ -413,6 +413,19 @@ class ActionRouter:
             self._log(request, response)
             return response
 
+        # Target validation: reject if request is addressed to a different agent
+        if request.to_agent and request.to_agent != self.agent_id:
+            response = ActionResponse(
+                request_id=request.request_id,
+                action_type=request.action_type,
+                from_agent=self.agent_id,
+                to_agent=request.from_agent,
+                status=ActionStatus.REJECTED.value,
+                error=f"request addressed to {request.to_agent!r}, not {self.agent_id!r}",
+            )
+            self._log(request, response)
+            return response
+
         # H3: idempotency check
         cached = self._seen.get(request.request_id)
         if cached is not None:
