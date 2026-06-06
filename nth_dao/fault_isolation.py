@@ -93,6 +93,7 @@ class AgentHealth:
     opened_at: str = ""
     half_open_at: str = ""
     health_score: float = 1.0  # 0.0 (dead) to 1.0 (perfect)
+    half_open_successes: int = 0  # successes since entering HALF_OPEN (persisted)
 
 
 # ────────────────────────── Fault Isolator ──────────────────────────
@@ -128,6 +129,7 @@ class FaultIsolator:
     DEFAULT_COOLDOWN = 60.0
     DEFAULT_HALF_OPEN_MAX_PROBES = 1
     DEFAULT_SUCCESS_THRESHOLD = 2
+    DEFAULT_MAX_FAILURE_RECORDS = 200
 
     def __init__(
         self,
@@ -139,6 +141,7 @@ class FaultIsolator:
         cooldown_seconds: float = DEFAULT_COOLDOWN,
         half_open_max_probes: int = DEFAULT_HALF_OPEN_MAX_PROBES,
         success_threshold: int = DEFAULT_SUCCESS_THRESHOLD,
+        max_failure_records: int = DEFAULT_MAX_FAILURE_RECORDS,
     ):
         self._workspace = workspace or Path.cwd()
         self._storage_dir = storage_dir
@@ -147,6 +150,7 @@ class FaultIsolator:
         self._cooldown = max(0.01, cooldown_seconds)
         self._half_open_max_probes = max(1, half_open_max_probes)
         self._success_threshold = max(1, success_threshold)
+        self._max_failure_records = max(10, max_failure_records)
 
         self._lock = threading.Lock()
 
@@ -195,6 +199,7 @@ class FaultIsolator:
                     "opened_at": h.opened_at,
                     "half_open_at": h.half_open_at,
                     "health_score": h.health_score,
+                    "half_open_successes": h.half_open_successes,
                 }
                 for agent_id, h in self._health.items()
             },
@@ -234,18 +239,14 @@ class FaultIsolator:
 
             if h.circuit_state == CircuitState.HALF_OPEN.value:
                 h.consecutive_failures = 0
-                # Count successes since entering half-open
-                # We use a simple counter: each success increments,
-                # reset on failure
-                successes = getattr(h, '_half_open_successes', 0) + 1
-                h._half_open_successes = successes  # type: ignore[attr-defined]
-                if successes >= self._success_threshold:
+                h.half_open_successes += 1
+                if h.half_open_successes >= self._success_threshold:
                     h.circuit_state = CircuitState.CLOSED.value
                     h.opened_at = ""
                     h.half_open_at = ""
                     h.consecutive_failures = 0
+                    h.half_open_successes = 0
                     h.health_score = min(1.0, h.health_score + 0.2)
-                    h._half_open_successes = 0  # type: ignore[attr-defined]
                     logger.info("circuit CLOSED for %r (recovered)", agent_id)
 
             self._update_health_score(h)
@@ -268,14 +269,16 @@ class FaultIsolator:
             h.last_failure = now
             h.last_failure_error = error[:500]  # truncate long errors
 
-            self._failures.setdefault(agent_id, []).append(
-                FailureRecord(
-                    agent_id=agent_id,
-                    action_type=action_type,
-                    error=error[:500],
-                    timestamp=now,
-                )
-            )
+            flist = self._failures.setdefault(agent_id, [])
+            flist.append(FailureRecord(
+                agent_id=agent_id,
+                action_type=action_type,
+                error=error[:500],
+                timestamp=now,
+            ))
+            # Bound: keep only the most recent records
+            if len(flist) > self._max_failure_records:
+                self._failures[agent_id] = flist[-self._max_failure_records:]
 
             # Check if circuit should open
             recent = self._recent_failures(agent_id)
