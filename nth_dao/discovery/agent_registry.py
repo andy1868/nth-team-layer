@@ -264,7 +264,7 @@ class AgentRegistry:
     #
 
     def cleanup(self, max_stale: int = 86400) -> int:
-        """删掉超过 max_stale 秒未心跳的 tombstone（默认 1 天）。"""
+        """Remove tombstones older than max_stale seconds (default 1 day)."""
         removed = 0
         for f in self.agents_dir.glob("*.json"):
             data = safe_load_json(f, fallback=None)
