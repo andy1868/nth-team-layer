@@ -16,8 +16,8 @@ PeerFinder
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from .agent_registry import AgentRecord, AgentRegistry
 
@@ -28,6 +28,7 @@ class MatchResult:
     record: AgentRecord
     score: float
     matched_capabilities: List[str]
+    match_details: Dict[str, Any] = field(default_factory=dict)
 
 
 class PeerFinder:
@@ -280,16 +281,16 @@ class PeerFinder:
             if r.accepting_tasks:
                 score += 0.5
 
-            # M2: include match direction
+            # M2: include match direction (non-mutating)
             result = MatchResult(
                 record=r,
                 score=score,
                 matched_capabilities=all_matched,
+                match_details={
+                    "they_have": they_have,
+                    "i_have": i_have,
+                },
             )
-            result.record.metadata.setdefault("_match_kind", {
-                "they_have": they_have,
-                "i_have": i_have,
-            })
 
             results.append(result)
 

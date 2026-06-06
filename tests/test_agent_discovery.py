@@ -168,10 +168,11 @@ class TestFindComplements:
         finder = PeerFinder(multi_agent_registry)
         results = finder.find_complements("alice")
         bob = [m for m in results if m.record.agent_id == "bob"][0]
-        kind = bob.record.metadata.get("_match_kind", {})
-        assert "they_have" in kind  # Bob has solidity = alice needs
+        kind = bob.match_details
+        assert "they_have" in kind
         assert "solidity" in kind["they_have"]
-        assert "i_have" in kind  # Bob needs python = alice has
+        assert "i_have" in kind
+        assert "python" in kind["i_have"]
 
 
 # ────────────────────────── Registry registration ──────────────────────────
