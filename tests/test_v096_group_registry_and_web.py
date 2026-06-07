@@ -240,7 +240,13 @@ def test_web_search_agents_returns_ranked_results(tmp_path):
     ]:
         atomic_write_json(reg._path_for(ar.agent_id), ar.to_dict())
     client = _client(tmp_path)
-    resp = client.get("/api/agents/search", params={"q": "ali"})
+    # Architect C-1 (2026-06-07): /api/agents/search now requires
+    # actor_id - pass the default admin so we exercise the legitimate
+    # admin search path.
+    resp = client.get(
+        "/api/agents/search",
+        params={"q": "ali", "actor_id": "admin"},
+    )
     assert resp.status_code == 200
     data = resp.json()
     ids = [r["agent_id"] for r in data["results"]]
@@ -251,9 +257,41 @@ def test_web_search_agents_returns_ranked_results(tmp_path):
 
 def test_web_search_agents_empty_query_returns_empty(tmp_path):
     client = _client(tmp_path)
-    resp = client.get("/api/agents/search", params={"q": ""})
+    resp = client.get(
+        "/api/agents/search",
+        params={"q": "", "actor_id": "admin"},
+    )
     assert resp.status_code == 200
     assert resp.json()["results"] == []
+
+
+def test_web_search_agents_includes_local_members_without_registry(tmp_path):
+    client = _client(tmp_path)
+
+    by_id = client.get(
+        "/api/agents/search",
+        params={"q": "admin", "actor_id": "admin"},
+    )
+    assert by_id.status_code == 200
+    rows = by_id.json()["results"]
+    assert any(r["agent_id"] == "admin" and r["source"] == "home" for r in rows)
+
+    # R-35 (2026-06-08): code is derived from the bootstrap admin's
+    # pubkey rather than the literal "admin" string. Pull the real
+    # code from /api/identity so the search query matches what's
+    # actually returned.
+    real_code = client.get(
+        "/api/identity", params={"actor_id": "admin"},
+    ).json()["code"]
+    by_code = client.get(
+        "/api/agents/search",
+        params={
+            "q": real_code.replace("-", ""),
+            "actor_id": "admin",
+        },
+    )
+    assert by_code.status_code == 200
+    assert any(r["agent_id"] == "admin" for r in by_code.json()["results"])
 
 
 def test_web_group_create_then_search(tmp_path):
@@ -412,9 +450,12 @@ def test_web_signed_vote_rejects_non_member(tmp_path):
 
 
 def test_web_lan_discover_runs_without_error(tmp_path):
+    # Architect R-5 (2026-06-07): lan_discover now requires actor_id
+    # and is member-gated. Pass the default admin to exercise the
+    # legitimate happy path.
     client = _client(tmp_path)
     resp = client.post("/api/agents/lan_discover",
-                       json={"timeout_seconds": 0.5})
+                       json={"actor_id": "admin", "timeout_seconds": 0.5})
     assert resp.status_code == 200
     assert "peers" in resp.json()
 

@@ -148,6 +148,11 @@ def sign_with_data_integrity(
         raise RuntimeError("identity has no signing key - cannot sign mandate")
     if not isinstance(document, dict):
         raise ValueError("document must be a dict")
+    if "proof" in document:
+        raise ValueError(
+            "document must NOT include proof - sign the proof-free "
+            "credential body only"
+        )
     if not isinstance(proof_options, dict):
         raise ValueError("proof_options must be a dict")
     if "proofValue" in proof_options:
@@ -191,6 +196,10 @@ def verify_with_data_integrity(
             f"verification requires PyNaCl and did_key support: "
             f"{_CRYPTO_IMPORT_ERROR}"
         )
+    if not isinstance(document, dict):
+        return False, "document must be a dict"
+    if "proof" in document:
+        return False, "document must NOT include proof"
     if not isinstance(proof, dict):
         return False, "proof must be a dict"
     sig_hex = proof.get("proofValue", "")

@@ -1,5 +1,4 @@
 import type {
-  CodeLookupResult,
   DaoState,
   DaoSummary,
   DaoTask,
@@ -10,14 +9,12 @@ import type {
   Summary,
   TaskStatus
 } from "./types";
+import { jsonHeaders } from "./consoleAuth";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {})
-    }
+    headers: jsonHeaders(init)
   });
   if (!response.ok) {
     let detail = response.statusText;
@@ -37,11 +34,53 @@ export function getSummary(actorId: string = ""): Promise<Summary> {
   return request<Summary>(`/api/summary${qs}`);
 }
 
-// v0.9.8: look up an agent by their 8-hex visible code, e.g. "a3f7-b2e8".
-// Used by the "add agent by code" search box.
-export function lookupAgentByCode(code: string): Promise<CodeLookupResult> {
-  return request<CodeLookupResult>(`/api/agents/by_code/${encodeURIComponent(code)}`);
+/**
+ * Week-1 Task 5 (2026-06-07): build identifier surfaced in the
+ * dashboard top bar. Detects "JS bundle newer than backend" drift -
+ * we hit this exact case when uvicorn was still serving the
+ * pre-fix Python code after a vite rebuild.
+ */
+export interface BuildId {
+  backend_git: string;
+  backend_started_at: string;
+  now: string;
 }
+
+/**
+ * DID bootstrap (2026-06-07): "who is this NTH DAO node" - the DID
+ * the dashboard surfaces in the top bar for the operator to share.
+ * Backed by /api/identity. Member-gated like every other endpoint.
+ */
+export interface NodeIdentity {
+  agent_id: string;
+  did: string;
+  pubkey_hex: string;
+  pubkey_prefix: string;
+  code: string;
+  bootstrap_error: string;
+}
+
+export function getIdentity(actorId: string = "admin"): Promise<NodeIdentity> {
+  const qs = `?actor_id=${encodeURIComponent(actorId)}`;
+  return request<NodeIdentity>(`/api/identity${qs}`);
+}
+
+export function getBuildId(actorId: string = "admin"): Promise<BuildId> {
+  // Architect R-2 (2026-06-07): /api/build_id now requires actor_id
+  // to the same member-gate the rest of the console uses. Default
+  // fallback matches the dashboard's bootstrap admin so first-load
+  // works on a fresh workspace.
+  const qs = `?actor_id=${encodeURIComponent(actorId)}`;
+  return request<BuildId>(`/api/build_id${qs}`);
+}
+
+// Architect R-13 (2026-06-07): lookupAgentByCode was used by the
+// "Find by code" panel that Week-1 Task 2 removed. Deleted here too -
+// the unified ContactsPanel search box covers code lookup via the
+// normal /api/agents/search endpoint, and keeping a no-longer-called
+// wrapper carried both maintenance burden and a stale-import risk.
+// The backend /api/agents/by_code/{code} endpoint remains available
+// for external (non-dashboard) callers - it now requires actor_id.
 
 export function getState(agentId: string, channelId: string): Promise<DaoState> {
   const params = new URLSearchParams({ agent_id: agentId, channel_id: channelId });

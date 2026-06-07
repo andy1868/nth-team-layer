@@ -4,16 +4,31 @@ import {
   createTask,
   getDaoState,
   getDaos,
+  getBuildId,
+  getIdentity,
   getSummary,
   join,
-  lookupAgentByCode,
   postAnnouncement,
   postMessage,
   updateTaskStatus
 } from "./api";
 import { ContactShell } from "./panels";
 import { type BrowserWallet, loadOrCreateWallet } from "./crypto";
+import type { BuildId, NodeIdentity } from "./api";
 import type { DaoState, DaoSummary, Summary, TaskStatus } from "./types";
+
+// Week-1 Task 5: the bundle's git/file hash, baked in at vite build
+// time via import.meta.url. Pairing this with backend_git lets the
+// operator detect drift at a glance.
+const BUNDLE_HASH: string = (() => {
+  try {
+    const url = new URL(import.meta.url);
+    const match = url.pathname.match(/index-([A-Za-z0-9_-]+)\.js/);
+    return match ? match[1] : "dev";
+  } catch {
+    return "dev";
+  }
+})();
 
 const defaultAgent = window.localStorage.getItem("nth-dao-agent-id") || "admin";
 const defaultDao = window.localStorage.getItem("nth-dao-active-slug") || "home";
@@ -48,9 +63,18 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [wallet, setWallet] = useState<BrowserWallet | null>(null);
   const [walletError, setWalletError] = useState<string | null>(null);
-  // v0.9.8: agent-code lookup form (the Telegram-style "add by username" box)
-  const [lookupCode, setLookupCode] = useState("");
-  const [lookupResult, setLookupResult] = useState<string>("");
+  // Week-1 Task 5: backend identifier, fetched once at mount. If it
+  // never resolves the top bar shows "backend=?", which is itself a
+  // signal that the user should restart the server.
+  const [backendBuild, setBackendBuild] = useState<BuildId | null>(null);
+  // DID bootstrap (2026-06-07): the workspace's persistent identity.
+  // Drives the top-bar "Your DID: ..." line that operators copy and
+  // share with peers to enable add-by-DID.
+  const [nodeIdentity, setNodeIdentity] = useState<NodeIdentity | null>(null);
+  const [didCopied, setDidCopied] = useState(false);
+  // Week-1 Task 2 (2026-06-07): the lookupCode + lookupResult state
+  // backed the now-removed "Find by code" panel. Removed entirely to
+  // avoid carrying dead state through React renders.
 
   // Load (or generate on first run) the browser-resident Ed25519 wallet.
   // Private key stays inside IndexedDB as non-extractable CryptoKey.
@@ -61,6 +85,39 @@ function App() {
       .catch((e: Error) => { if (!cancelled) setWalletError(e.message); });
     return () => { cancelled = true; };
   }, []);
+
+  // Week-1 Task 5: fetch the backend build id once at mount.
+  // Architect R-2 (2026-06-07): pass the caller's agentId so the
+  // member-gated endpoint accepts the call.
+  useEffect(() => {
+    let cancelled = false;
+    getBuildId(agentId || "admin")
+      .then((b) => { if (!cancelled) setBackendBuild(b); })
+      .catch(() => { /* leave backendBuild null - top bar shows "?" */ });
+    return () => { cancelled = true; };
+  }, [agentId]);
+
+  // DID bootstrap (2026-06-07): pull this node's DID + pubkey at mount.
+  useEffect(() => {
+    let cancelled = false;
+    getIdentity(agentId || "admin")
+      .then((id) => { if (!cancelled) setNodeIdentity(id); })
+      .catch(() => { /* leave null - top bar will show no DID */ });
+    return () => { cancelled = true; };
+  }, [agentId]);
+
+  async function copyDidToClipboard() {
+    if (!nodeIdentity?.did) return;
+    try {
+      await navigator.clipboard.writeText(nodeIdentity.did);
+      setDidCopied(true);
+      window.setTimeout(() => setDidCopied(false), 1500);
+    } catch {
+      // Clipboard API may be blocked on insecure origins; fall back
+      // to selecting the value so user can manually Ctrl+C.
+      setNotice("Copy blocked; select the DID text and Ctrl+C");
+    }
+  }
 
   const activeChannel = useMemo(
     () => state?.channels.find((channel) => channel.channel_id === selectedChannel),
@@ -103,7 +160,7 @@ function App() {
     }, 5000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeDao, wallet?.pubkeyHex]);
+  }, [activeDao, agentId, selectedChannel, wallet?.pubkeyHex]);
 
   function switchDao(slug: string) {
     if (slug === activeDao) return;
@@ -199,20 +256,9 @@ function App() {
     }, "Task status updated");
   }
 
-  // v0.9.8: "Add agent by code" - paste e.g. "a3f7-b2e8" and the API
-  // resolves it back to the underlying agent_id / pubkey / DAO source.
-  async function onLookupCode(event: FormEvent) {
-    event.preventDefault();
-    if (!lookupCode.trim()) return;
-    setLookupResult("Searching…");
-    try {
-      const hit = await lookupAgentByCode(lookupCode.trim());
-      const where = hit.source === "group" ? `in @${hit.group_slug}` : "in home";
-      setLookupResult(`Found ${hit.agent_id} (${hit.code}) ${where}`);
-    } catch (e) {
-      setLookupResult((e as Error).message);
-    }
-  }
+  // Week-1 Task 2 (2026-06-07): onLookupCode handler removed - the
+  // unified ContactsPanel search now covers code lookup. See the
+  // commented-out "Find by code" panel rationale in the left rail.
 
   return (
     <main className="shell">
@@ -220,6 +266,47 @@ function App() {
         <div>
           <p className="eyebrow">Local-first DAO group layer</p>
           <h1>NTH DAO Console</h1>
+          {/*
+            Week-1 Task 5 (2026-06-07): build identifier strip. Helps
+            the operator spot "I rebuilt the JS but didn't restart the
+            backend" drift before debugging a phantom auth bug.
+          */}
+          <small className="build-id" title="backend git / bundle hash">
+            backend={backendBuild?.backend_git ?? "?"} ·
+            {" "}bundle={BUNDLE_HASH}
+          </small>
+          {/*
+            DID bootstrap (2026-06-07): show this node's permanent DID
+            so the operator can copy and share it with peers. The
+            click-to-copy keeps the workflow one-step.
+          */}
+          {nodeIdentity?.did && (
+            <small className="node-did" title="This NTH DAO node's permanent identifier">
+              your DID:{" "}
+              <code
+                className="node-did-value"
+                onClick={copyDidToClipboard}
+                role="button"
+                tabIndex={0}
+              >
+                {nodeIdentity.did}
+              </code>
+              {" "}
+              <button
+                type="button"
+                className="node-did-copy"
+                onClick={copyDidToClipboard}
+                disabled={!nodeIdentity.did}
+              >
+                {didCopied ? "Copied ✓" : "Copy"}
+              </button>
+            </small>
+          )}
+          {nodeIdentity?.bootstrap_error && (
+            <small className="node-did-error">
+              identity unavailable: {nodeIdentity.bootstrap_error}
+            </small>
+          )}
         </div>
         <div className="status-strip" aria-live="polite">
           <Metric label="Members" value={summary?.members ?? "-"} />
@@ -244,31 +331,38 @@ function App() {
             </div>
             <p className="hint">
               Current policy: {summary?.team.join_policy ?? "loading"}
+              {/*
+                R-54 (2026-06-08): label is "your handle" not "your code".
+                A handle is a short, human-friendly display - NOT a
+                cryptographic identifier. The tooltip directs users to
+                share their DID (top bar) for verifiable identity.
+                The empty-string check is intentional: when the backend
+                degrades to "no crypto" (R-46), actor_code is "" and the
+                hint hides entirely rather than showing a stale handle.
+              */}
               {summary?.actor_code && (
-                <> / Your code: <code className="agent-code">{summary.actor_code}</code></>
+                <>
+                  {" / "}
+                  <span title="A short display handle for this node. Not a cryptographic identifier - share your DID (top bar) for verifiable identity.">
+                    your handle:{" "}
+                    <code className="agent-code">{summary.actor_code}</code>
+                  </span>
+                </>
               )}
             </p>
           </form>
 
-          {/* v0.9.8: Telegram-style "add by code". Paste a friend's a3f7-b2e8
-              handle, the API resolves it back to agent_id + pubkey + DAO. */}
-          <form className="panel" onSubmit={onLookupCode}>
-            <div className="panel-heading">
-              <h2>Find by code</h2>
-            </div>
-            <div className="inline">
-              <input
-                placeholder="a3f7-b2e8"
-                value={lookupCode}
-                onChange={(event) => setLookupCode(event.target.value)}
-                spellCheck={false}
-              />
-              <button type="submit" disabled={!lookupCode.trim()}>Find</button>
-            </div>
-            {lookupResult && <p className="hint">{lookupResult}</p>}
-          </form>
+          {/*
+            Week-1 Task 2 (2026-06-07): removed the duplicate "Find by
+            code" panel that lived here. The same lookup is now part of
+            the unified search box inside ContactsPanel (right rail) -
+            having two search surfaces taught users to pick the wrong
+            one. The agent-code matcher inside ``/api/agents/search``'s
+            score function already finds short codes verbatim, so this
+            input has no unique capability.
+          */}
 
-          {/* chat-native "My DAOs" list - one agent ↔ many DAOs. Click to switch. */}
+          {/* "My DAOs" list - one agent ↔ many DAOs. Click to switch. */}
           <section className="panel">
             <div className="panel-heading">
               <h2>My DAOs</h2>
@@ -502,7 +596,15 @@ function App() {
             </div>
           </details>
 
-          <details className="panel collapsible contacts-panel-host">
+          {/*
+            Architect audit (2026-06-07): default-open so the friend
+            discovery / contacts / groups tabs (the primary "find
+            people" surface added in PR #10) are visible immediately.
+            Pre-fix the panel was collapsed by default, so users opening
+            the dashboard saw no UI for /api/agents/search even though
+            the backend was wired up.
+          */}
+          <details className="panel collapsible contacts-panel-host" open>
             <summary className="panel-heading">
               <h2>Contacts / Groups</h2>
               <span className="collapsible-badge">

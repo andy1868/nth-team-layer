@@ -299,6 +299,51 @@ def test_T11_data_integrity_helper_round_trips_arbitrary_payload(dao):
     assert ok is True, reason
 
 
+def test_T11_data_integrity_helper_refuses_document_with_existing_proof(dao):
+    document = {
+        "hello": "world",
+        "proof": {"proofValue": "old-signature"},
+    }
+    proof_options = {
+        "type": "Ed25519Signature2020",
+        "created": "2026-06-05T00:00:00+00:00",
+        "verificationMethod": verification_method(dao.as_did()),
+        "proofPurpose": "assertionMethod",
+    }
+
+    with pytest.raises(ValueError, match="must NOT include proof"):
+        sign_with_data_integrity(
+            identity=dao,
+            document=document,
+            proof_options=proof_options,
+        )
+
+
+def test_T11_data_integrity_verify_refuses_document_with_existing_proof(dao):
+    from nth_dao.mandate._data_integrity import decode_issuer_pubkey
+
+    document = {"hello": "world"}
+    proof_options = {
+        "type": "Ed25519Signature2020",
+        "created": "2026-06-05T00:00:00+00:00",
+        "verificationMethod": verification_method(dao.as_did()),
+        "proofPurpose": "assertionMethod",
+    }
+    sig_hex = sign_with_data_integrity(
+        identity=dao, document=document, proof_options=proof_options,
+    )
+    proof = {**proof_options, "proofValue": sig_hex}
+    with_proof = {**document, "proof": proof}
+
+    ok, reason = verify_with_data_integrity(
+        document=with_proof,
+        proof=proof,
+        pubkey_bytes=decode_issuer_pubkey(dao.as_did()),
+    )
+    assert ok is False
+    assert "must NOT include proof" in reason
+
+
 def test_T11_data_integrity_helper_rejects_tampered_options(dao):
     from nth_dao.mandate._data_integrity import decode_issuer_pubkey
 

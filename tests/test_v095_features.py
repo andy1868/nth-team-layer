@@ -419,6 +419,12 @@ def test_agent_card_from_assembles_well_formed_card(tmp_path):
         capabilities=["code_review"],
         endpoint_url="https://alice.example/a2a",
     )
+    # Architect audit M-3 (2026-06-07): A2A v0.3.0 Agent Card has no
+    # canonical top-level ``id`` field - agent identity is carried by
+    # ``url`` and (for richer identity) under the ``x-nth-dao`` vendor
+    # extension. Pre-fix this test pinned a non-spec top-level ``id``.
+    assert "id" not in card
+    assert card["x-nth-dao"]["agent_did"] == alice.as_did()
     assert card["x-nth-dao"]["agent_did"].startswith("did:key:z")
     assert card["name"] == "Alice's Agent"
     assert card["url"] == "https://alice.example/a2a"
@@ -427,6 +433,17 @@ def test_agent_card_from_assembles_well_formed_card(tmp_path):
     assert card["defaultInputModes"] == ["application/json"]
     assert len(card["skills"]) == 1
     assert card["skills"][0]["id"] == "t@1.0.0"
+
+
+def test_agent_card_from_rejects_non_did_identity(tmp_path):
+    from nth_dao.a2a import agent_card_from
+
+    with pytest.raises(ValueError, match="agent_did"):
+        agent_card_from(
+            agent_did="alice",
+            name="Alice",
+            endpoint_url="https://alice.example/a2a",
+        )
 
 
 def test_a2a_task_from_mission_maps_status(tmp_path):
@@ -472,6 +489,71 @@ def test_mission_inputs_from_a2a_message_missing_required_field(tmp_path):
     )
     with pytest.raises(ValueError, match="A2A inputs invalid"):
         mission_inputs_from_a2a_message({"input": {}}, t)
+
+
+def test_mission_inputs_from_a2a_message_rejects_too_many_keys(tmp_path):
+    from nth_dao.a2a import mission_inputs_from_a2a_message
+    from nth_dao.orchestration import mint_template
+    alice = AgentIdentity.generate(label="alice")
+    t = mint_template(alice, template_id="t", version="1.0.0", name="t")
+    payload = {"input": {f"k{i}": i for i in range(65)}}
+
+    with pytest.raises(ValueError, match="too many keys"):
+        mission_inputs_from_a2a_message(payload, t)
+
+
+def test_mission_inputs_from_a2a_message_rejects_oversized_input(tmp_path):
+    from nth_dao.a2a import mission_inputs_from_a2a_message
+    from nth_dao.orchestration import mint_template
+    alice = AgentIdentity.generate(label="alice")
+    t = mint_template(alice, template_id="t", version="1.0.0", name="t")
+    payload = {"input": {"blob": "x" * (65 * 1024)}}
+
+    with pytest.raises(ValueError, match="too large"):
+        mission_inputs_from_a2a_message(payload, t)
+
+
+def test_mission_inputs_from_a2a_message_rejects_many_overwriting_parts(tmp_path):
+    from nth_dao.a2a import mission_inputs_from_a2a_message
+    from nth_dao.orchestration import mint_template
+    alice = AgentIdentity.generate(label="alice")
+    t = mint_template(alice, template_id="t", version="1.0.0", name="t")
+    payload = {
+        "params": {
+            "message": {
+                "parts": [
+                    {"kind": "data", "data": {"same": i}}
+                    for i in range(65)
+                ],
+            },
+        },
+    }
+
+    with pytest.raises(ValueError, match="too many parts"):
+        mission_inputs_from_a2a_message(payload, t)
+
+
+def test_mission_inputs_from_a2a_message_rejects_deep_input(tmp_path):
+    from nth_dao.a2a import mission_inputs_from_a2a_message
+    from nth_dao.orchestration import mint_template
+    alice = AgentIdentity.generate(label="alice")
+    t = mint_template(alice, template_id="t", version="1.0.0", name="t")
+    value = "leaf"
+    for _ in range(18):
+        value = [value]
+
+    with pytest.raises(ValueError, match="nesting too deep"):
+        mission_inputs_from_a2a_message({"input": {"deep": value}}, t)
+
+
+def test_mission_inputs_from_a2a_message_rejects_large_nested_list(tmp_path):
+    from nth_dao.a2a import mission_inputs_from_a2a_message
+    from nth_dao.orchestration import mint_template
+    alice = AgentIdentity.generate(label="alice")
+    t = mint_template(alice, template_id="t", version="1.0.0", name="t")
+
+    with pytest.raises(ValueError, match="too many items"):
+        mission_inputs_from_a2a_message({"input": {"items": list(range(257))}}, t)
 
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ facade 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

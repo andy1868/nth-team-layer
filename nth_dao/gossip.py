@@ -270,8 +270,8 @@ class GossipNode:
         for agent_id, ws in list(self.peers.items()):
             try:
                 await ws.close()
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as e:
+                logger.debug("closing peer %s failed: %s", agent_id, e)
         self.peers.clear()
 
         if self._server:
@@ -807,9 +807,10 @@ class GossipNode:
 
     @staticmethod
     async def _send_json(ws, data: dict) -> None:
+        payload = json.dumps(data, ensure_ascii=False)
         try:
-            await ws.send(json.dumps(data, ensure_ascii=False))
-        except Exception as e:
+            await ws.send(payload)
+        except (OSError, RuntimeError) as e:
             logger.debug("send_json failed: %s", e)
 
 
@@ -827,13 +828,14 @@ def _verify_nonce(pubkey_hex: str, nonce: str, sig_hex: str) -> bool:
     from .identity import _NACL_AVAILABLE, _VerifyKey  # type: ignore
     if not _NACL_AVAILABLE:
         return False
+    from nacl.exceptions import BadSignatureError
     try:
         assert _VerifyKey is not None
         verify_key = _VerifyKey(bytes.fromhex(pubkey_hex))
         payload = _canon({"nonce": nonce})
         verify_key.verify(payload, bytes.fromhex(sig_hex))
         return True
-    except Exception:
+    except (AssertionError, BadSignatureError, TypeError, ValueError):
         return False
 
 
@@ -842,6 +844,7 @@ def _verify_msg_signature(msg_dict: dict, sig_hex: str, pubkey_hex: str) -> bool
     from .identity import _NACL_AVAILABLE, _VerifyKey  # type: ignore
     if not _NACL_AVAILABLE:
         return False
+    from nacl.exceptions import BadSignatureError
     # 与 channel.TeamChannel.send() 中签名时构造 payload 的字段对齐
     payload = {
         "msg_id": msg_dict.get("msg_id", ""),
@@ -860,7 +863,7 @@ def _verify_msg_signature(msg_dict: dict, sig_hex: str, pubkey_hex: str) -> bool
             _canon(payload), bytes.fromhex(sig_hex)
         )
         return True
-    except Exception:
+    except (AssertionError, BadSignatureError, TypeError, ValueError):
         return False
 
 

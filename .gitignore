@@ -73,3 +73,31 @@ skills/registry/fix_*.md
 *.key
 *.pem
 credentials.json
+
+# ── R-23 (2026-06-08): NTH DAO workspace identity material ──
+# These files are the workspace's Ed25519 keypair, mandate ledger,
+# contact book, and audit log. They MUST NEVER be committed:
+#
+#   * .nth/identity.json contains the PRIVATE KEY in plaintext. A
+#     single push to a public repo exposes the workspace's permanent
+#     signing identity - any attacker can then sign mandates as the
+#     owner, forge endorsements, and impersonate the operator on the
+#     LAN.
+#   * team.json, team_contacts/, team_trust/, team_marketplace/ all
+#     contain participant identities, balances, and audit history
+#     that are private to the workspace operator.
+#   * console.token authenticates dashboard calls; leaking it gives
+#     anyone with HTTP access to the running console full control.
+#
+# Patterns are deliberately broad (**/ glob) because the workspace
+# directory is operator-configurable via NTH_WORKSPACE - it may live
+# at the repo root, in a subdirectory, or under a sibling path the
+# operator added to the working tree.
+.nth/
+**/.nth/
+**/identity.json
+**/team.json
+**/team_contacts/
+**/team_marketplace/
+console.token
+**/console.token

@@ -241,9 +241,8 @@ def build_intent_mandate(
           max_amount: {"value": "<finite positive decimal>",
                        "currency": "<3-8 uppercase letters>"}
           allowed_counterparties: list of did:key strings; empty
-            list = fail-closed (NO counterparty accepted). Use the
-            sentinel ``["*"]`` to mean "any" if your settlement
-            adapter supports it.
+            list = fail-closed (NO counterparty accepted). Wildcards
+            are intentionally unsupported; use explicit DID allow-lists.
           allowed_settlement_methods: list of "<adapter>:<asset>"
             tokens; empty list = fail-closed (NO method allowed).
         All three keys are REQUIRED. Missing them previously produced
@@ -596,6 +595,16 @@ def _validate_constraints(constraints: Any) -> Dict[str, Any]:
     counterparties = constraints["allowed_counterparties"]
     if not isinstance(counterparties, list):
         raise ValueError("allowed_counterparties must be a list")
+    # Architect audit M-2 (2026-06-07): the docstring promised wildcard
+    # ``["*"]`` semantics in earlier revisions; the current docstring says
+    # "wildcards intentionally unsupported". Surface that as an explicit,
+    # actionable error message rather than the generic "must be did:key"
+    # we'd get by accident from _is_did_key.
+    if "*" in counterparties:
+        raise ValueError(
+            "allowed_counterparties wildcard '*' is not supported; "
+            "use explicit did:key allow-list or [] for fail-closed"
+        )
     for cp in counterparties:
         if not _is_did_key(cp):
             raise ValueError(
@@ -612,6 +621,12 @@ def _validate_constraints(constraints: Any) -> Dict[str, Any]:
     methods = constraints["allowed_settlement_methods"]
     if not isinstance(methods, list):
         raise ValueError("allowed_settlement_methods must be a list")
+    # M-2: same explicit-wildcard guard as allowed_counterparties.
+    if "*" in methods:
+        raise ValueError(
+            "allowed_settlement_methods wildcard '*' is not supported; "
+            "use explicit '<adapter>:<asset>' allow-list or [] for fail-closed"
+        )
     for m in methods:
         if not isinstance(m, str) or not _SETTLEMENT_METHOD_RE.match(m):
             raise ValueError(

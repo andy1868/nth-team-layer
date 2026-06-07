@@ -229,20 +229,37 @@ def test_state_actor_carries_code(client):
     res = client.get("/api/state", params={"agent_id": "admin"})
     assert res.status_code == 200
     body = res.json()
-    assert body["actor"]["code"] == code_for_agent_id("admin")
+    identity = client.get(
+        "/api/identity", params={"actor_id": "admin"},
+    ).json()
+    assert body["actor"]["code"] == identity["code"]
+    assert body["actor"]["code"] != code_for_agent_id("admin")
 
 
 def test_state_members_carry_code(client):
     res = client.get("/api/state", params={"agent_id": "admin"})
     assert res.status_code == 200
+    identity = client.get(
+        "/api/identity", params={"actor_id": "admin"},
+    ).json()
     for member in res.json()["members"]:
         assert "code" in member
-        assert member["code"] == code_for_agent_id(member["agent_id"])
+        if member["agent_id"] == "admin":
+            assert member["code"] == identity["code"]
+            assert member["code"] != code_for_agent_id("admin")
+        else:
+            assert member["code"] == code_for_agent_id(member["agent_id"])
 
 
 def test_lookup_by_code_finds_home_member(client):
-    code = code_for_agent_id("admin")
-    res = client.get(f"/api/agents/by_code/{code}")
+    # R-35 (2026-06-08): code is now derived from the bootstrap
+    # admin's pubkey, not the literal "admin" string. Look up the
+    # actual code via /api/identity instead of computing the legacy
+    # constant.
+    code = client.get(
+        "/api/identity", params={"actor_id": "admin"},
+    ).json()["code"]
+    res = client.get(f"/api/agents/by_code/{code}", params={"actor_id": "admin"})
     assert res.status_code == 200
     body = res.json()
     assert body["agent_id"] == "admin"
@@ -250,18 +267,26 @@ def test_lookup_by_code_finds_home_member(client):
 
 
 def test_lookup_by_code_accepts_dashless(client):
-    code = code_for_agent_id("admin").replace("-", "")
-    res = client.get(f"/api/agents/by_code/{code}")
+    # R-35 (2026-06-08): same code source as above; we just strip
+    # the dash to exercise the by_code parser's leniency.
+    code = client.get(
+        "/api/identity", params={"actor_id": "admin"},
+    ).json()["code"].replace("-", "")
+    res = client.get(f"/api/agents/by_code/{code}", params={"actor_id": "admin"})
     assert res.status_code == 200
 
 
 def test_lookup_by_code_404_on_unknown(client):
-    res = client.get("/api/agents/by_code/aaaa-bbbb")
+    res = client.get(
+        "/api/agents/by_code/aaaa-bbbb", params={"actor_id": "admin"}
+    )
     assert res.status_code == 404
 
 
 def test_lookup_by_code_rejects_bad_format(client):
-    res = client.get("/api/agents/by_code/not-a-code")
+    res = client.get(
+        "/api/agents/by_code/not-a-code", params={"actor_id": "admin"}
+    )
     assert res.status_code == 400
 
 
@@ -285,7 +310,7 @@ def test_lookup_by_code_finds_group_member(client):
     assert pub.status_code == 200, pub.text
 
     code = code_for_pubkey(founder.pubkey_hex)
-    res = client.get(f"/api/agents/by_code/{code}")
+    res = client.get(f"/api/agents/by_code/{code}", params={"actor_id": "admin"})
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["source"] == "group"

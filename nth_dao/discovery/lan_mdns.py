@@ -86,7 +86,7 @@ def _ws_url_port(ws_url: str, fallback: int = DEFAULT_HTTP_PORT) -> int:
     try:
         parsed = urlparse(ws_url)
         return parsed.port or fallback
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         return fallback
 
 def _pack_props(props: Dict[str, Any]) -> Dict[bytes, bytes]:
@@ -169,6 +169,10 @@ class MDNSDiscovery:
     groups: List[str] = field(default_factory=list)
     ws_url: str = ""
     pubkey_hex: str = ""
+    # LAN DID publish (2026-06-07): the node's persistent did:key,
+    # propagated in the mDNS TXT record so any browser on the same
+    # network learns the discovered peer's permanent identifier.
+    did: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
     service_type: str = SERVICE_TYPE
     instance_name: str = ""  # auto-derived from agent_id when empty
@@ -191,6 +195,11 @@ class MDNSDiscovery:
             "groups":       self.groups,
             "ws_url":       self.ws_url,
             "pubkey_hex":   self.pubkey_hex,
+            # LAN DID publish: the node's permanent did:key. Listeners
+            # extract this from the TXT record alongside agent_id and
+            # pubkey, giving them a stable handle without needing a
+            # second HTTP round-trip to /api/identity.
+            "did":          self.did,
             **{f"meta_{k}": v for k, v in (self.metadata or {}).items()},
         })
         return ServiceInfo(
@@ -224,8 +233,10 @@ class MDNSDiscovery:
         with self._lock:
             if not self._started:
                 if self._zc is not None:
-                    try: self._zc.close()
-                    except Exception: pass
+                    try:
+                        self._zc.close()
+                    except Exception as e:
+                        logger.debug("zeroconf.close() failed: %s", e)
                     self._zc = None
                 return
             try:
@@ -261,7 +272,8 @@ class MDNSDiscovery:
             def add_service(_, zc_inner, type_, name):
                 try:
                     info = zc_inner.get_service_info(type_, name, timeout=int(timeout * 1000))
-                except Exception:
+                except Exception as e:
+                    logger.debug("mDNS get_service_info failed for %s: %s", name, e)
                     return
                 if info is None:
                     return
@@ -282,6 +294,7 @@ class MDNSDiscovery:
                     groups=list(props.get("groups") or []),
                     ws_url=props.get("ws_url", ""),
                     pubkey_hex=props.get("pubkey_hex", ""),
+                    did=props.get("did", "") or "",
                     source_addr=f"{addr}:{info.port}" if addr else f":{info.port}",
                     rtt_ms=0.0,  # mDNS doesn't give us a meaningful RTT here
                     discovered_at=time.time(),
@@ -299,12 +312,54 @@ class MDNSDiscovery:
             ServiceBrowser(zc, self.service_type, _Listener())
             time.sleep(max(0.05, timeout))
         finally:
-            try: zc.close()
-            except Exception: pass
+            try:
+                zc.close()
+            except Exception as e:
+                logger.debug("zeroconf.close() failed: %s", e)
 
         with results_lock:
-            # don't return ourselves
-            return [p for p in results.values() if p.agent_id != self.agent_id]
+            # R-25 (2026-06-08): filter "self" out by IDENTITY, not by
+            # agent_id. The bootstrap path used to hard-code
+            # agent_id="admin" for every node, which made every peer
+            # look like "self" and discover() returned []. Now we use
+            # the multi-source check ``_is_self_record`` so any of
+            # (pubkey_hex, did, agent_id) that matches our own
+            # excludes the peer - whichever identifier the responder
+            # happened to broadcast.
+            return [
+                p for p in results.values()
+                if not self._is_self_record(
+                    agent_id=p.agent_id,
+                    pubkey_hex=p.pubkey_hex,
+                    did=p.did,
+                )
+            ]
+
+    def _is_self_record(
+        self, *, agent_id: str, pubkey_hex: str, did: str,
+    ) -> bool:
+        """True if this record describes the LOCAL node.
+
+        Cryptographic identifiers (pubkey_hex, did) are authoritative
+        when present on BOTH sides - if they're populated and they
+        differ, the peer is definitely a different identity even if
+        the agent_id label happens to collide.
+
+        Falls back to agent_id only when neither side advertised any
+        crypto material (legacy peers, pre-DID builds).
+        """
+        # Pubkey is the strongest signal - if both sides have one,
+        # it's the source of truth. Match OR mismatch is final.
+        if pubkey_hex and self.pubkey_hex:
+            return pubkey_hex.lower() == self.pubkey_hex.lower()
+        # DID is next - same finality.
+        if did and self.did:
+            return did == self.did
+        # Neither side has crypto in common. Fall back to the agent_id
+        # label.
+        if agent_id and self.agent_id:
+            return agent_id == self.agent_id
+        return False
 
     # 鈹€鈹€鈹€ context manager 鈹€鈹€鈹€
     def __enter__(self) -> "MDNSDiscovery":

@@ -136,6 +136,22 @@ def test_voss_V3c_empty_lists_round_trip_as_fail_closed(dao, agent_did):
     assert constraints["allowed_settlement_methods"] == ["x402:usdc"]
 
 
+def test_voss_V3d_allowed_counterparties_wildcard_rejected(dao, agent_did):
+    """IntentMandate does not define a wildcard counterparty.
+
+    A literal "*" must not be accepted as "any" because cart/payment
+    verifiers only implement explicit did:key allow-lists.
+    """
+    with pytest.raises(ValueError, match="did:key"):
+        _build(
+            dao, agent_did,
+            constraints={
+                **_good_constraints(),
+                "allowed_counterparties": ["*"],
+            },
+        )
+
+
 # =====================================================================
 # V-4: NaN / Infinity / scientific notation / whitespace rejected
 # =====================================================================

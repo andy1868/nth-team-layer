@@ -678,7 +678,8 @@ class TaskMarketplace:
                 if o.status == OrderStatus.OPEN:
                     if context is None or o.context == context:
                         orders.append(o)
-            except Exception:
+            except (AttributeError, KeyError, OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.debug("skipping unreadable marketplace order %s: %s", f, e)
                 continue
 
         #
@@ -697,7 +698,8 @@ class TaskMarketplace:
                 if o.creator == self.agent_id or o.claimant == self.agent_id:
                     if status is None or o.status == status:
                         orders.append(o)
-            except Exception:
+            except (AttributeError, KeyError, OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.debug("skipping unreadable marketplace order %s: %s", f, e)
                 continue
 
         orders.sort(key=lambda o: o.created_at, reverse=True)
@@ -768,10 +770,10 @@ class TaskMarketplace:
                                 f"ID: {order.order_id}"
                                 f"{sig_info}",
                             )
-                        except Exception:
-                            logger.debug("broadcast dm to %s failed", t.agent_id)
-            except Exception:
-                logger.debug("broadcast find failed for %r", capability)
+                        except (OSError, RuntimeError, ValueError) as e:
+                            logger.debug("broadcast dm to %s failed: %s", t.agent_id, e)
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.debug("broadcast find failed for %r: %s", capability, e)
 
         return order
 
@@ -800,7 +802,8 @@ class TaskMarketplace:
                 stats[o.status.value] = stats.get(o.status.value, 0) + 1
                 if o.status == OrderStatus.COMPLETED:
                     stats["total_reward"] += o.reward
-            except Exception:
+            except (AttributeError, KeyError, OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.debug("skipping unreadable marketplace order %s: %s", f, e)
                 continue
 
         stats["balance"] = self.balance
@@ -855,7 +858,8 @@ class TaskMarketplace:
                         self._save(o)
                         expired_count += 1
 
-            except Exception:
+            except (AttributeError, KeyError, OSError, json.JSONDecodeError, TypeError, ValueError) as e:
+                logger.debug("skipping unreadable marketplace order %s: %s", f, e)
                 continue
 
         return expired_count
@@ -890,7 +894,8 @@ class TaskMarketplace:
             return None
         try:
             return TaskOrder.from_dict(data)
-        except Exception:
+        except (TypeError, ValueError) as e:
+            logger.debug("invalid marketplace order %s: %s", order_id, e)
             return None
 
     def _save(self, order: TaskOrder) -> None:

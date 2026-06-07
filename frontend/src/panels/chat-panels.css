@@ -455,3 +455,152 @@
   cursor: pointer;
   color: inherit;
 }
+
+/* Week-1 (2026-06-07): styles for the enriched ContactsPanel row +
+   the Recently Added rail + the build-id strip in the top bar. */
+
+.chat-result-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-result-code {
+  background: #2a2a3a;
+  color: #e8e8f0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+}
+
+.chat-result-source {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  padding: 1px 5px;
+  border-radius: 2px;
+  background: #4a4a5a;
+  color: #fff;
+}
+
+.chat-result-source-home    { background: #2d6e3b; }   /* team member */
+.chat-result-source-registry { background: #2c5a8f; }  /* LAN live */
+.chat-result-source-group   { background: #6b4e2c; }   /* group pubkey */
+
+.chat-result-role {
+  font-size: 10px;
+  text-transform: lowercase;
+  padding: 1px 5px;
+  border: 1px solid #555;
+  border-radius: 2px;
+  color: #ccc;
+}
+
+.chat-result-meta {
+  display: flex;
+  gap: 12px;
+  margin-top: 4px;
+  color: #888;
+}
+
+.chat-result-endorsements {
+  color: #6fbf6f;
+}
+
+.chat-recent {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: #1a1a24;
+  border-left: 3px solid #2d6e3b;
+  border-radius: 3px;
+}
+
+.chat-recent h3 {
+  margin: 0 0 6px 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #8e8eaa;
+}
+
+.chat-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chat-recent-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.chat-recent-label {
+  color: #aaa;
+  font-size: 11px;
+}
+
+.chat-recent-row small {
+  margin-left: auto;
+  color: #666;
+  font-size: 10px;
+}
+
+.build-id {
+  display: block;
+  margin-top: 2px;
+  color: #888;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+}
+
+/* DID bootstrap (2026-06-07): top-bar "your DID" + copy button. */
+
+.node-did {
+  display: block;
+  margin-top: 4px;
+  color: #6fbf6f;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.node-did-value {
+  cursor: pointer;
+  background: #1a1a24;
+  padding: 1px 6px;
+  border-radius: 3px;
+  user-select: all;
+  color: #e8e8f0;
+}
+
+.node-did-value:hover {
+  background: #2a2a3a;
+}
+
+.node-did-copy {
+  margin-left: 6px;
+  padding: 0 8px;
+  font-size: 10px;
+  background: transparent;
+  border: 1px solid #4a4a5a;
+  border-radius: 3px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.node-did-copy:hover:not(:disabled) {
+  background: #2a2a3a;
+}
+
+.node-did-error {
+  display: block;
+  margin-top: 2px;
+  color: #d97744;
+  font-size: 11px;
+}

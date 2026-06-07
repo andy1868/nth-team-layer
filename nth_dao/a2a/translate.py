@@ -19,7 +19,77 @@ Mapping at a glance:
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
+
+# Architect audit H-3 (2026-06-07): is_did_key was being imported inside
+# _is_supported_agent_did on every call (hot path for /api/a2a/* endpoints).
+# Hoisted to module scope so the import system is touched once per process.
+from ..did_key import is_did_key
+
+
+MAX_A2A_INPUT_KEYS = 64
+MAX_A2A_INPUT_BYTES = 64 * 1024
+MAX_A2A_MESSAGE_PARTS = 64
+MAX_A2A_JSON_DEPTH = 16
+MAX_A2A_LIST_ITEMS = 256
+
+
+def _check_a2a_input_bounds(inputs: Dict[str, Any]) -> None:
+    """Reject resource-exhaustion shaped A2A input payloads."""
+    if len(inputs) > MAX_A2A_INPUT_KEYS:
+        raise ValueError(
+            f"A2A input has too many keys "
+            f"({len(inputs)} > {MAX_A2A_INPUT_KEYS})"
+        )
+    _check_a2a_json_shape(inputs)
+    try:
+        encoded = json.dumps(
+            inputs,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"A2A input must be JSON-serializable: {exc}") from exc
+    if len(encoded) > MAX_A2A_INPUT_BYTES:
+        raise ValueError(
+            f"A2A input is too large "
+            f"({len(encoded)} > {MAX_A2A_INPUT_BYTES} bytes)"
+        )
+
+
+def _check_a2a_json_shape(value: Any, depth: int = 0) -> None:
+    if depth > MAX_A2A_JSON_DEPTH:
+        raise ValueError(
+            f"A2A input nesting too deep ({depth} > {MAX_A2A_JSON_DEPTH})"
+        )
+    if isinstance(value, dict):
+        if len(value) > MAX_A2A_INPUT_KEYS:
+            raise ValueError(
+                f"A2A object has too many keys "
+                f"({len(value)} > {MAX_A2A_INPUT_KEYS})"
+            )
+        for item in value.values():
+            _check_a2a_json_shape(item, depth + 1)
+    elif isinstance(value, list):
+        if len(value) > MAX_A2A_LIST_ITEMS:
+            raise ValueError(
+                f"A2A list has too many items "
+                f"({len(value)} > {MAX_A2A_LIST_ITEMS})"
+            )
+        for item in value:
+            _check_a2a_json_shape(item, depth + 1)
+
+
+def _is_supported_agent_did(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    if any(ch.isspace() for ch in value):
+        return False
+    if value.startswith("did:key:"):
+        return is_did_key(value)
+    return value.startswith("did:web:") and len(value) > len("did:web:")
 
 
 # ─────────────────── template → A2A Skill ───────────────────
@@ -136,7 +206,18 @@ def agent_card_from(
         endpoint_url: where this agent listens (the future adapter's HTTP URL).
         version:      AgentCard's `version` field (NOT our package version).
     """
+    if not _is_supported_agent_did(agent_did):
+        raise ValueError("agent_did must be a did:key or did:web identifier")
     skills = [template_to_a2a_skill(t) for t in (templates or [])]
+    # Architect audit M-3 (2026-06-07): the A2A v0.3.0 Agent Card schema
+    # does NOT define a top-level ``id`` field - the agent's identity is
+    # carried by ``url`` (the endpoint URL) plus, for richer identity,
+    # any DID exposed under the ``x-nth-dao`` vendor-extension namespace
+    # below. The sibling ``build_agent_card`` builder agrees (no ``id``).
+    # A previous revision added ``"id": agent_did`` here, which would
+    # cause spec-strict A2A clients to flag the card as containing an
+    # undefined property. Keep the DID inside ``x-nth-dao.agent_did``
+    # where consumers per the spec MUST tolerate unknown ``x-*`` keys.
     return {
         "protocolVersion": protocol_version,
         "name": name,
@@ -285,17 +366,61 @@ def mission_inputs_from_a2a_message(
             message = params.get("message")
             inputs = {}
             if isinstance(message, dict):
-                for part in message.get("parts", []) or []:
+                parts = message.get("parts", []) or []
+                if not isinstance(parts, list):
+                    raise ValueError("A2A message.parts must be a list")
+                if len(parts) > MAX_A2A_MESSAGE_PARTS:
+                    raise ValueError(
+                        f"A2A message has too many parts "
+                        f"({len(parts)} > {MAX_A2A_MESSAGE_PARTS})"
+                    )
+                # Architect audit H-2 + R-6 (2026-06-07): the previous
+                # loop called _check_a2a_input_bounds twice per part
+                # (the original O(N²) issue), then after H-2's first
+                # fix still did ``merged = dict(inputs)`` per part -
+                # O(N·K) extra dict copies for no functional reason.
+                # The real O(N) shape is an in-place merge: keep one
+                # ``inputs`` dict, update it, check size.
+                #
+                # R-7 (2026-06-07): the original code accepted BOTH
+                # ``kind`` and ``type`` for the "data" tag. A2A v0.3.0
+                # uses ``kind``; ``type`` is a legacy alias. If both
+                # are present we now PREFER ``kind`` so the server
+                # decision is unambiguous (a malicious client setting
+                # ``kind=text, type=data`` no longer gets the data
+                # branch).
+                for part in parts:
                     if not isinstance(part, dict):
                         continue
-                    if part.get("kind") == "data" and isinstance(part.get("data"), dict):
-                        inputs.update(part["data"])
-                    elif part.get("type") == "data" and isinstance(part.get("data"), dict):
-                        inputs.update(part["data"])
+                    part_kind = part.get("kind")
+                    part_type = part.get("type")
+                    is_data_part = False
+                    if part_kind == "data":
+                        is_data_part = True
+                    elif part_kind is None and part_type == "data":
+                        # Only fall back to ``type`` if ``kind`` is
+                        # absent. This keeps the legacy alias working
+                        # for clients that never adopted ``kind`` but
+                        # closes the ambiguity hole.
+                        is_data_part = True
+                    if not is_data_part:
+                        continue
+                    if not isinstance(part.get("data"), dict):
+                        continue
+                    inputs.update(part["data"])
+                    if len(inputs) > MAX_A2A_INPUT_KEYS:
+                        raise ValueError(
+                            f"A2A merged input has too many keys "
+                            f"({len(inputs)} > {MAX_A2A_INPUT_KEYS})"
+                        )
     elif "input" in a2a_message:
         inputs = a2a_message["input"] if isinstance(a2a_message["input"], dict) else {}
     else:
         inputs = {}
+
+    # Single deep bounds check on the final merged shape - O(N) total
+    # rather than O(N²) across the per-part loop above.
+    _check_a2a_input_bounds(inputs)
 
     if validator is not None:
         err = validator(inputs)

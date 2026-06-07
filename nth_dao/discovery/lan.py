@@ -65,6 +65,14 @@ class LANPeer:
     groups: List[str] = field(default_factory=list)
     ws_url: str = ""
     pubkey_hex: str = ""
+    # LAN DID publish (2026-06-07): the peer's permanent did:key. Each
+    # NTH DAO node's ``_bootstrap`` auto-generates a workspace identity;
+    # the corresponding did:key travels here as part of the mDNS TXT
+    # record so the discoverer learns "this LAN peer is provably DID X"
+    # without an extra round-trip. Empty when the peer is a legacy
+    # NTH DAO build that does not publish DIDs or when the responder
+    # could not load identity.json.
+    did: str = ""
     source_addr: str = ""   # "ip:port" the response came from
     rtt_ms: float = 0.0
     discovered_at: float = 0.0
@@ -114,6 +122,7 @@ class LANDiscovery:
         groups: Optional[List[str]] = None,
         ws_url: str = "",
         pubkey_hex: str = "",
+        did: str = "",
         metadata: Optional[Dict[str, Any]] = None,
         port: int = DEFAULT_DISCOVERY_PORT,
         broadcast_addrs: Tuple[str, ...] = DEFAULT_BROADCAST_ADDRS,
@@ -136,6 +145,11 @@ class LANDiscovery:
         self.groups = list(groups or [])
         self.ws_url = ws_url
         self.pubkey_hex = pubkey_hex
+        # LAN DID publish (2026-06-07): the node's did:key. Travels in
+        # the broadcast and hello messages so listeners can map a
+        # discovered peer to its permanent identifier without an extra
+        # round-trip.
+        self.did = did
         self.metadata = dict(metadata or {})
         self.port = port
         self.broadcast_addrs = tuple(broadcast_addrs)
@@ -277,6 +291,10 @@ class LANDiscovery:
             "groups": self.groups,
             "ws_url": self.ws_url,
             "pubkey_hex": self.pubkey_hex,
+            # LAN DID publish: travels alongside pubkey so listeners
+            # can map the discovered peer to its permanent identifier.
+            # Older NTH DAO builds without this field arrive as did="".
+            "did": self.did,
             "metadata": self.metadata,
             "nonce": nonce,
             "ts": time.time(),
@@ -373,7 +391,30 @@ class LANDiscovery:
                     logger.debug("dropping hello from %s: psk mismatch", addr)
                     continue
                 aid = msg.get("agent_id", "")
-                if not aid or aid == self.agent_id or aid in peers:
+                if not aid:
+                    continue
+                # R-25 (2026-06-08): filter "self" by identity, not by
+                # agent_id alone. Crypto identifiers (pubkey_hex, did)
+                # are authoritative when present on BOTH sides - if
+                # they differ, the peer is definitely a distinct
+                # identity even if the agent_id label happens to
+                # match. Falls back to agent_id only when neither
+                # side carries crypto (legacy peers).
+                msg_pk = (msg.get("pubkey_hex") or "").lower()
+                msg_did = msg.get("did") or ""
+                self_pk = (self.pubkey_hex or "").lower()
+                if msg_pk and self_pk:
+                    if msg_pk == self_pk:
+                        continue   # self
+                    # else: distinct identity even if aid matches
+                elif msg_did and self.did:
+                    if msg_did == self.did:
+                        continue
+                else:
+                    # neither side has crypto - agent_id fallback
+                    if aid == self.agent_id:
+                        continue
+                if aid in peers:
                     continue
                 if self.peer_filter and not self.peer_filter(msg):
                     continue
@@ -384,6 +425,10 @@ class LANDiscovery:
                     groups=list(msg.get("groups", [])),
                     ws_url=msg.get("ws_url", ""),
                     pubkey_hex=msg.get("pubkey_hex", ""),
+                    # LAN DID publish: pick up the peer's did:key from
+                    # the hello message; empty string when the peer is
+                    # an older NTH DAO build that does not publish DIDs.
+                    did=msg.get("did", "") or "",
                     source_addr=f"{addr[0]}:{addr[1]}",
                     rtt_ms=(time.time() - send_ts) * 1000,
                     discovered_at=time.time(),

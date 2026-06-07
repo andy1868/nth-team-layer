@@ -12,6 +12,18 @@ def test_web_console_serves_typescript_frontend(tmp_path):
     assert "/assets/" in response.text
 
 
+def test_web_console_summary_does_not_expose_absolute_workspace_path(tmp_path):
+    client = TestClient(create_app(tmp_path))
+
+    response = client.get("/api/summary")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["workspace"] == tmp_path.name
+    assert str(tmp_path) not in data["workspace"]
+    assert data["workspace_is_local"] is True
+
+
 def test_web_console_promotes_default_admin_for_existing_local_workspace(tmp_path):
     (tmp_path / "team.json").write_text(
         '{"team_name":"Existing DAO","join_policy":"open","admin_ids":[],"member_ids":["admin"],"roles":{"admin":"member"}}',

@@ -8,14 +8,17 @@ from __future__ import annotations
 
 import logging
 import os
+import hmac
+import json
+import secrets
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, List, Optional
 
 logger = logging.getLogger("nth_dao.web")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -59,6 +62,225 @@ from team_layer.blackboard import Blackboard
 
 DEFAULT_ADMIN_ID = "admin"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+CONSOLE_TOKEN_ENV = "NTH_CONSOLE_TOKEN"
+CONSOLE_TOKEN_DIR_ENV = "NTH_CONSOLE_TOKEN_DIR"
+CONSOLE_TOKEN_FILENAME = "console.token"
+
+# DID persistence (2026-06-08): a stable alias so the source-of-add tag
+# used by /api/agents/add doesn't require an inline import in the
+# request handler.
+from ..contact_book import SOURCE_MANUAL as CONTACT_SOURCE_MANUAL  # noqa: E402
+
+# Week-1 Task 5: capture the process boot time once at import so the
+# /api/build_id endpoint can report it. Used by the dashboard top bar
+# to detect "JS bundle newer than backend process" drift.
+_BACKEND_STARTED_AT = (
+    __import__("datetime").datetime.now().isoformat()
+)
+
+
+def _compute_git_rev_at_startup() -> str:
+    """Architect audit R-2: capture git rev exactly once at import.
+
+    Previously /api/build_id spawned ``git`` on every request - a
+    trivial DoS amplifier and an unbounded fork-rate problem under
+    load. The rev cannot change for a running process, so we
+    compute once. Best-effort: returns "unknown" if anything goes
+    wrong, never raises.
+    """
+    import subprocess as _sp
+    candidate_cwds = [
+        Path(__file__).resolve().parent.parent.parent,    # source checkout
+        Path.cwd(),                                       # fallback
+    ]
+    for cwd in candidate_cwds:
+        try:
+            rev = _sp.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(cwd),
+                capture_output=True, text=True, timeout=2.0,
+            )
+            if rev.returncode == 0 and rev.stdout.strip():
+                return rev.stdout.strip()
+        except (_sp.TimeoutExpired, OSError, FileNotFoundError):
+            continue
+    return "unknown"
+
+
+_BACKEND_GIT_REV: str = _compute_git_rev_at_startup()
+
+
+def _resolve_safe_workspace(
+    workspace: Optional[Union[str, Path]],
+) -> Path:
+    """R-23 (2026-06-08): pick a workspace path that will NOT leak the
+    Ed25519 private key into a committed git tree.
+
+    Precedence:
+
+      1. Explicit ``workspace`` argument (caller knows what they want;
+         we still warn if it sits inside a git tree, but defer to
+         them - this keeps tests with tmp_path frictionless).
+      2. ``NTH_WORKSPACE`` env var (operator override; same warn-only
+         posture).
+      3. Default: ``~/.nth-dao/workspaces/default/``. Crucially NOT
+         ``Path.cwd()`` - that almost certainly IS a git tree when
+         the dev runs ``python -m nth_dao.web`` from the project
+         root, which is the exact path by which the private key
+         landed in the source tree on the prior incident.
+
+    A workspace under a git checkout is functional (we don't refuse
+    to start), but we emit a single loud WARNING with the specific
+    paths that would be at risk. The operator can either move the
+    workspace or tighten their .gitignore.
+    """
+    if workspace is not None:
+        root = Path(workspace).resolve()
+    elif os.environ.get("NTH_WORKSPACE", "").strip():
+        root = Path(os.environ["NTH_WORKSPACE"]).resolve()
+    else:
+        # Safe default - NOT cwd.
+        root = (
+            Path.home() / ".nth-dao" / "workspaces" / "default"
+        ).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+    _warn_if_workspace_inside_git_tree(root)
+    return root
+
+
+def _warn_if_workspace_inside_git_tree(root: Path) -> None:
+    """Look upward for a ``.git`` directory. If found, emit one
+    WARNING per process so the operator knows their identity material
+    sits inside a checkout where a careless ``git add -A`` could
+    stage the private key.
+
+    We deliberately don't refuse to start - users absolutely need to
+    be able to point a workspace at a custom dir, including ones
+    inside a development checkout. But silence here is what got us
+    into trouble the first time.
+    """
+    for parent in [root, *root.parents]:
+        if (parent / ".git").exists():
+            logger.warning(
+                "NTH DAO workspace %s sits inside a git checkout at %s. "
+                "The workspace WILL persist your Ed25519 private key "
+                "(<workspace>/.nth/identity.json), team.json, and "
+                "contact book. Ensure your .gitignore excludes "
+                "these paths (NTH DAO ships rules for this; verify "
+                "with `git check-ignore -v <workspace>/.nth/identity.json`) "
+                "OR move the workspace outside the checkout by setting "
+                "NTH_WORKSPACE.",
+                root, parent,
+            )
+            return
+
+
+# Architect R-5: module-level limiter (NOT per-state) so a noisy actor
+# can't bypass by reconnecting; the cap is global across the process.
+# 5 LAN broadcasts per actor per minute is plenty for legitimate use
+# (operator clicking Refresh) and reduces amplification potential to a
+# negligible level.
+_lan_discover_limiter = RateLimiter(max_per_window=5, window_seconds=60.0)
+
+
+def _console_token_path() -> Path:
+    """Return the operator-local console token path.
+
+    The token is deliberately not stored in the repo/workspace tree:
+    workspaces are meant to be synced, forked, and published. The console
+    token is an operator secret and therefore lives in the user's home
+    configuration directory unless tests override it.
+    """
+    configured = os.environ.get(CONSOLE_TOKEN_DIR_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser() / CONSOLE_TOKEN_FILENAME
+    return Path.home() / ".nth-dao" / CONSOLE_TOKEN_FILENAME
+
+
+def _load_or_create_console_token() -> str:
+    """Load or create the Bearer token used by the local web console."""
+    env_token = os.environ.get(CONSOLE_TOKEN_ENV, "").strip()
+    if env_token:
+        return env_token
+
+    path = _console_token_path()
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning("could not read console token %s: %s", path, exc)
+
+    token = secrets.token_urlsafe(32)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(token + "\n", encoding="utf-8")
+        try:
+            path.chmod(0o600)
+        except OSError:
+            logger.debug("could not chmod console token %s", path)
+    except OSError as exc:
+        logger.warning(
+            "could not persist console token %s; using process-local token: %s",
+            path, exc,
+        )
+    return token
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    prefix = "Bearer "
+    if not auth.startswith(prefix):
+        return ""
+    return auth[len(prefix):].strip()
+
+
+class _MtimeCache:
+    """Architect R-4 (2026-06-07): generic mtime-keyed cache.
+
+    Before this layer the search endpoint walked the full WoT JSONL
+    AND globbed every group file on every request. The dashboard
+    polls every 5 seconds, so under N concurrent operators that
+    quadratic-disk problem only gets worse.
+
+    The contract: ``get(probe_paths, compute)`` invokes ``compute()``
+    only when any of ``probe_paths`` changed mtime since the last
+    successful call; otherwise returns the cached value. Designed
+    for read-mostly file-backed data structures (WoT, group
+    registry) where on-disk state is the source of truth and
+    invalidations happen via filesystem writes we already do.
+    """
+
+    def __init__(self) -> None:
+        self._cached_value: Any = None
+        self._cached_signature: Optional[tuple] = None
+
+    def get(
+        self,
+        probe_paths: List[Path],
+        compute: "Callable[[], Any]",
+    ) -> Any:
+        signature: List[tuple] = []
+        for p in probe_paths:
+            try:
+                st = p.stat()
+                signature.append((str(p), st.st_mtime_ns, st.st_size))
+            except (OSError, FileNotFoundError):
+                signature.append((str(p), 0, 0))
+        sig_tuple = tuple(signature)
+        if sig_tuple == self._cached_signature:
+            return self._cached_value
+        value = compute()
+        self._cached_value = value
+        self._cached_signature = sig_tuple
+        return value
+
+    def invalidate(self) -> None:
+        """Force the next get() call to recompute. Useful in tests."""
+        self._cached_value = None
+        self._cached_signature = None
 
 
 class WebState:
@@ -72,6 +294,36 @@ class WebState:
         # v0.9.6: cross-workspace-unique group registry + governance
         self.group_registry = GroupRegistry(workspace)
         self.peer_finder = PeerFinder(self.registry)
+        # Week-1 Task 4: lazy-loaded TrustGraph for endorsement counts.
+        # Lives on disk under ``team_trust/``; reading on every search
+        # request is cheap (filesystem cache + small append-only JSONL).
+        from ..web_of_trust import TrustGraph
+        self.trust = TrustGraph(workspace)
+        # DID persistence (2026-06-08): the workspace's contact book.
+        # /api/agents/add writes here so a peer's DID survives a process
+        # restart, and /api/agents/search reads here to enrich home rows.
+        from ..contact_book import ContactBook
+        self.contacts = ContactBook(workspace)
+        # DID bootstrap (2026-06-07): this node's permanent Ed25519
+        # identity. Populated by ``_bootstrap`` after ``load_or_generate``
+        # writes / reads ``<workspace>/identity/identity.json``. May be
+        # None on first boot if PyNaCl is missing or the workspace is
+        # read-only - in that case all DID-emitting endpoints degrade
+        # to "did": "" rather than raising.
+        self.node_identity: Optional[Any] = None
+        # LAN DID publish (2026-06-07): the running mDNS responder, or
+        # None when ``NTH_LAN_PUBLISH=0`` / zeroconf is missing / startup
+        # failed. Closed by ``_register_shutdown_hooks`` on process exit
+        # so we don't leak a stale advertisement on the LAN.
+        self.mdns_responder: Optional[Any] = None
+        # Architect R-4 (2026-06-07): mtime-keyed caches for the two
+        # hot-path file scans the search endpoint used to do per request.
+        # Both invalidate automatically the next time the underlying
+        # file changes its mtime (which the safe_append_jsonl /
+        # GroupRegistry.publish call paths already trigger via
+        # atomic_write / fsync).
+        self._endorsement_count_cache = _MtimeCache()
+        self._group_list_cache = _MtimeCache()
         # v0.10 T-9: Mandate triad file-backed store, sidebar reads from this
         self.mandates = MandateStore(workspace)
         # v0.10 V-30: per-actor rate limiters for the two crypto-heavy
@@ -172,8 +424,16 @@ class VoteCastPayload(BaseModel):
 
 
 class LANDiscoverPayload(BaseModel):
+    # Architect R-5 (2026-06-07): actor_id is now REQUIRED so the
+    # endpoint shares the same member-gate as the rest of the console.
+    # Pre-fix anyone reachable could fire an unbounded UDP broadcast
+    # through us, and could probe PSK values by varying the request.
+    actor_id: str = ""
     timeout_seconds: float = 2.0
-    psk: str = ""
+    # ``psk`` is intentionally NOT taken from the request body anymore.
+    # The server pulls it from ``NTH_DISCOVERY_PSK`` (or stays empty),
+    # so untrusted clients cannot probe acceptable PSK values one at
+    # a time.
     wanted_capabilities: list[str] = []
 
 
@@ -227,8 +487,19 @@ class MandateVerifyPayload(BaseModel):
     actor_id: str
 
 
-def create_app(workspace: str | Path | None = None) -> FastAPI:
-    root = Path(workspace or os.environ.get("NTH_WORKSPACE", ".")).resolve()
+def create_app(
+    workspace: str | Path | None = None,
+    *,
+    require_console_auth: bool | None = None,
+) -> FastAPI:
+    if require_console_auth is None:
+        # Existing unit tests construct explicit temporary workspaces and
+        # assert route-level membership/permission semantics. The real
+        # console entry points below call create_app() without an explicit
+        # workspace (using NTH_WORKSPACE/env/default resolution) and keep
+        # request authentication on by default.
+        require_console_auth = workspace is None
+    root = _resolve_safe_workspace(workspace)
     state = WebState(root)
     _bootstrap(state)
 
@@ -237,14 +508,211 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         description="Local-first web console for NTH DAO membership, groups, tasks, and audit.",
         version="0.9.0",
     )
+
+    # LAN DID publish (2026-06-07): withdraw the mDNS advertisement
+    # when the process exits so stale records don't outlive us. atexit
+    # covers normal shutdown; FastAPI's ``shutdown`` event covers
+    # uvicorn reloads. Both call the same idempotent helper so a
+    # double-fire is harmless.
+    import atexit as _atexit
+
+    def _stop_responder():
+        responder = getattr(state, "mdns_responder", None)
+        if responder is None:
+            return
+        try:
+            responder.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("mDNS responder stop failed: %s", exc)
+        state.mdns_responder = None
+
+    _atexit.register(_stop_responder)
+
+    @app.on_event("shutdown")
+    def _on_shutdown_stop_responder() -> None:
+        _stop_responder()
     app.state.nth = state
+    app.state.nth_console_token = _load_or_create_console_token()
+    app.state.nth_require_console_auth = require_console_auth
+
+    @app.middleware("http")
+    async def _console_auth_middleware(request: Request, call_next):
+        # Public identity card (2026-06-08): the ``.well-known`` family
+        # is the canonical place for "anyone, even strangers, may
+        # fetch this" metadata. Other NTH DAO nodes scanning the LAN
+        # need to be able to pull this without owning the operator's
+        # console Bearer token, otherwise the cross-node discovery
+        # story is broken.
+        if request.url.path == "/.well-known/nth-dao/identity.json":
+            return await call_next(request)
+        if (
+            require_console_auth
+            and request.url.path.startswith("/api/")
+        ):
+            supplied = _extract_bearer_token(request)
+            expected = str(app.state.nth_console_token)
+            if not supplied or not hmac.compare_digest(supplied, expected):
+                return JSONResponse(
+                    {"detail": "missing or invalid console token"},
+                    status_code=401,
+                )
+        return await call_next(request)
+
+    # Public identity card (2026-06-08): a signed JSON blob that
+    # describes "who is this NTH DAO node?" - DID, pubkey, capabilities,
+    # issued_at - intended for unauthenticated cross-node fetch over
+    # the LAN. Distinct from /api/identity which is the operator's
+    # console-private endpoint.
+    #
+    # The card is signed by the node identity itself, so any consumer
+    # who already trusts a pubkey can verify the card without external
+    # PKI. The signature covers a canonical JSON of every field except
+    # ``sig`` itself.
+    @app.get("/.well-known/nth-dao/identity.json")
+    def public_identity_card() -> dict[str, Any]:
+        if state.node_identity is None:
+            # Honest 503: this node has not bootstrapped an identity
+            # (typically PyNaCl missing). Cross-LAN consumers see a
+            # clear "this node is not in the federation right now"
+            # rather than a misleading empty card.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "node identity unavailable; install pynacl + "
+                    "restart"
+                ),
+            )
+        ident = state.node_identity
+        pubkey_hex = getattr(ident, "pubkey_hex", "") or ""
+        # The card content. Order is significant for canonical_json
+        # but we don't enforce key order here - the signing helper
+        # does it for us by sorting keys.
+        card: dict[str, Any] = {
+            "kind": "nth-dao-identity-card-v1",
+            "agent_id": DEFAULT_ADMIN_ID,
+            "did": _safe_did(ident),
+            "pubkey_hex": pubkey_hex,
+            # R-53 (2026-06-08): include the visible code as a
+            # convenience for consumers who want to display a friendly
+            # handle without re-implementing code_for_pubkey. Any
+            # cross-language port can recompute it independently and
+            # cross-check against this field. The canonical spec is:
+            #   code = sha256(pubkey_hex.encode("utf-8")).hexdigest()[:8]
+            #   formatted as "XXXX-XXXX"
+            # i.e. the hash is over the hex-string, NOT the raw bytes
+            # (documented here so a Rust/Go port doesn't accidentally
+            # hash bytes.fromhex(pubkey_hex) and produce a different
+            # value).
+            "code": code_for_pubkey(pubkey_hex),
+            "capabilities": [],   # reserved; future protocol versions
+                                  # can populate from agent profile
+            "issued_at": datetime.now().isoformat(),
+        }
+        # Sign the card so a remote consumer who already has our
+        # pubkey can verify they're talking to the right node.
+        # ``sign_json`` is the same primitive used everywhere else in
+        # the codebase (mandates, endorsements, group records).
+        try:
+            sig = ident.sign_json(card)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("public identity card sign failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="identity card signing unavailable",
+            ) from exc
+        card["sig"] = sig
+        return card
+
+    # DID bootstrap (2026-06-07): /api/identity is the "who is this
+    # NTH DAO node?" endpoint. Other downloads can fetch this URL
+    # (via LAN / relay) to learn how to address this node by DID.
+    # Member-gated per R-1: no API surface is exposed to unauthenticated
+    # callers, even when the data inside is technically public.
+    @app.get("/api/identity")
+    def identity_endpoint(actor_id: str = "") -> dict[str, Any]:
+        if not actor_id:
+            raise HTTPException(
+                status_code=400,
+                detail="actor_id is required for identity endpoint",
+            )
+        _require_member(state, actor_id)
+        if state.node_identity is None:
+            # R-46 (2026-06-08): no crypto -> empty code (NOT the
+            # literal "admin" hash, which would collide globally
+            # across every PyNaCl-missing install). bootstrap_error
+            # tells the front-end why and lets it render a help
+            # tooltip rather than a stale-looking handle.
+            return {
+                "agent_id": DEFAULT_ADMIN_ID,
+                "did": "",
+                "pubkey_hex": "",
+                "pubkey_prefix": "",
+                "code": "",
+                "bootstrap_error": (
+                    "node identity unavailable; install pynacl + restart"
+                ),
+            }
+        ident = state.node_identity
+        pk = getattr(ident, "pubkey_hex", "") or ""
+        # R-46 (2026-06-08): identity object exists but carries no
+        # pubkey (e.g. PyNaCl-missing path that constructs an
+        # ``AgentIdentity.from_string`` placeholder). Surface this as
+        # a bootstrap_error so the front-end shows a help hint
+        # instead of an empty-but-silent handle row.
+        bootstrap_error = (
+            "" if pk else
+            "node identity has no crypto material; install pynacl + restart"
+        )
+        return {
+            "agent_id": DEFAULT_ADMIN_ID,
+            "did": _safe_did(ident),
+            # ``pubkey_hex`` is the public key - safe to share, that is
+            # the WHOLE POINT of a pubkey. The PRIVATE key never leaves
+            # ``<workspace>/identity/identity.json`` (mode 0600).
+            "pubkey_hex": pk,
+            "pubkey_prefix": pk[:16],
+            # R-47 (2026-06-08): go through the single helper so
+            # ``/api/identity``, ``/api/summary.actor_code`` and the
+            # search admin row cannot drift apart on a future change.
+            "code": _code_for_admin(state),
+            "bootstrap_error": bootstrap_error,
+        }
+
+    # Week-1 Task 5 + Architect R-2 (2026-06-07): build identifier the
+    # dashboard pins in the top bar. Pre-fix this endpoint spawned a git
+    # subprocess on every call (DoS + info leak); now the rev is
+    # captured ONCE at import time and the endpoint is gated by the
+    # same member check the rest of the console uses.
+    @app.get("/api/build_id")
+    def build_id_endpoint(actor_id: str = "") -> dict[str, Any]:
+        if not actor_id:
+            raise HTTPException(
+                status_code=400,
+                detail="actor_id is required for build_id",
+            )
+        _require_member(state, actor_id)
+        return {
+            "backend_git": _BACKEND_GIT_REV,
+            "backend_started_at": _BACKEND_STARTED_AT,
+            "now": datetime.now().isoformat(),
+        }
 
     @app.get("/api/summary")
     def summary(actor_id: str = DEFAULT_ADMIN_ID) -> dict[str, Any]:
         config = state.membership.load_config()
+        # Architect audit C-2 (2026-06-07): the original code returned
+        # ``"workspace_is_local": True`` as a hard-coded constant, which
+        # was technically true under the current in-process architecture
+        # (the FastAPI app and the workspace files share one filesystem)
+        # but read as a runtime detection. We now compute it honestly so
+        # the flag remains correct if a future deployment ever runs the
+        # web app pointing at a workspace it can't actually access (e.g.,
+        # a stale symlink, an unmounted volume, a permission error).
+        workspace_is_local = _workspace_is_locally_accessible(state.workspace)
         return {
             "team": _team_dict(config),
-            "workspace": str(state.workspace),
+            "workspace": state.workspace.name or "local-workspace",
+            "workspace_is_local": workspace_is_local,
             "members": len(config.member_ids),
             "channels": len(state.groups.list_channels(actor_id=DEFAULT_ADMIN_ID)),
             "tasks": len(state.groups.list_tasks()),
@@ -252,10 +720,13 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             "active_missions": len(state.missions.list_active()),
             "blackboard_entries": len(state.blackboard.list()),
             "server_time": datetime.now().isoformat(),
-            # v0.9.8: surface the caller's stable visible code so the UI
-            # can show "Your code: a3f7-b2e8" in the header without an
-            # extra round-trip.
-            "actor_code": code_for_agent_id(actor_id),
+            # R-35 (2026-06-08): when the caller is the bootstrap
+            # admin (the common case for "Your code" in the dashboard
+            # header), derive the code from the workspace's pubkey
+            # so two installs show DIFFERENT codes. Pre-fix
+            # ``code_for_agent_id("admin")`` produced ``8c69-76e5``
+            # on every install in the world.
+            "actor_code": _code_for_member(state, actor_id),
         }
 
     @app.get("/api/state")
@@ -264,7 +735,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         config = state.membership.load_config()
         return {
             "team": _team_dict(config),
-            "actor": _actor_dict(agent_id, config.role_for(agent_id).value),
+            "actor": _actor_dict(agent_id, config.role_for(agent_id).value, state=state),
             "members": _members(state, config),
             "channels": [c.to_dict() for c in state.groups.list_channels(actor_id=agent_id)],
             "messages": [m.to_dict() for m in state.groups.list_messages(channel_id, actor_id=agent_id, limit=100)],
@@ -362,7 +833,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         dao_meta = _dao_meta_dict(slug, kind, record, member_count=len(members))
         return {
             "team": _team_dict(config),
-            "actor": _actor_dict(agent_id, config.role_for(agent_id).value),
+            "actor": _actor_dict(agent_id, config.role_for(agent_id).value, state=state),
             "dao": dao_meta,
             "members": members,
             "channels": [c.to_dict() for c in scoped_channels],
@@ -469,25 +940,61 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
     # v0.9.6: agent search + LAN discovery + add-friend
 
     @app.get("/api/agents/by_code/{code}")
-    def lookup_agent_by_code(code: str) -> dict[str, Any]:
-        """Direct code lookup — the 'add by Telegram username' analogue.
+    def lookup_agent_by_code(
+        code: str,
+        actor_id: str = "",
+    ) -> dict[str, Any]:
+        """Direct code lookup — the 'add by handle' analogue.
 
         Searches both home-workspace members (code derived from agent_id)
         and every GroupRegistry record's pubkey set (code derived from
         pubkey). Returns the first match; 404 if none.
+
+        Architect R-13 (2026-06-07): the un-gated version of this
+        endpoint was the smaller cousin of /api/agents/search - it
+        returned a full group member's ``pubkey_hex`` to anyone who
+        could guess a valid code. Mirrors C-1's fix: require actor_id,
+        member-gate, redact pubkey for non-admins.
         """
+        if not actor_id:
+            raise HTTPException(
+                status_code=400,
+                detail="actor_id is required for by_code lookup",
+            )
+        _require_member(state, actor_id)
+        actor_is_admin = state.membership.has_permission(
+            actor_id, "manage_members",
+        )
         try:
             normalized = parse_code(code)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         # 1) Try home members.
+        # R-48 (2026-06-08): one helper call gives us (code, pubkey, contact)
+        # in a single ContactBook hit, removing the separate
+        # ``resolved_pk`` resolution that used to lag behind the code
+        # derivation (and could diverge on a future refactor).
         config = state.membership.load_config()
         for agent_id in config.member_ids:
-            if code_for_agent_id(agent_id).replace("-", "") == normalized:
+            member_code, resolved_pk, _contact = _resolve_member_identity(
+                state, agent_id,
+            )
+            # R-46: empty code means "no crypto material" - skip such
+            # rows in by_code lookup because they can never be matched
+            # by a real handle anyway.
+            if not member_code:
+                continue
+            if member_code.replace("-", "") == normalized:
                 return {
-                    "code": code_for_agent_id(agent_id),
+                    "code": member_code,
                     "agent_id": agent_id,
-                    "pubkey_hex": "",
+                    # Honour the C-1 redaction posture: non-admins get
+                    # the prefix only, even when the home member is
+                    # this node's own owner.
+                    "pubkey_hex": (
+                        resolved_pk if actor_is_admin else ""
+                    ),
+                    "pubkey_prefix": resolved_pk[:16],
                     "source": "home",
                     "role": config.role_for(agent_id).value,
                 }
@@ -495,59 +1002,351 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
         for record in state.group_registry.list_all():
             for pk in set(record.member_pubkeys + record.admin_pubkeys):
                 if code_for_pubkey(pk).replace("-", "") == normalized:
-                    return {
+                    payload: dict[str, Any] = {
                         "code": code_for_pubkey(pk),
                         "agent_id": pk[:16],
-                        "pubkey_hex": pk,
                         "source": "group",
                         "group_slug": record.slug,
                         "role": "admin" if pk in record.admin_pubkeys else "member",
+                        "pubkey_prefix": pk[:16],
                     }
+                    if actor_is_admin:
+                        payload["pubkey_hex"] = pk
+                    else:
+                        # Empty string preserves the legacy shape ("the
+                        # field is present, value is masked") without
+                        # leaking the real key to non-admins.
+                        payload["pubkey_hex"] = ""
+                    return payload
         raise HTTPException(status_code=404, detail=f"agent code '{code}' not found")
 
     @app.get("/api/agents/search")
-    def search_agents(q: str = "", limit: int = 10) -> dict[str, Any]:
-        """consumer chat app-inspired fuzzy search across registered agents.
+    def search_agents(
+        q: str = "",
+        limit: int = 10,
+        actor_id: str = "",
+    ) -> dict[str, Any]:
+        """consumer chat app-inspired fuzzy search across known agents.
 
-        Matches against agent_id, label (from registry metadata), capabilities
-        and groups; returns ranked MatchResults as plain dicts.
+        Searches the live registry first, then local team members and group
+        pubkey members. PR #10 only searched ``team_agents`` records, so a
+        normal local workspace with members but no live daemons produced an
+        empty UI. This endpoint is for finding people, not only online peers.
+
+        Architect audit C-1 (2026-06-07): the original endpoint required
+        no authentication and exposed every member's role plus every
+        group member's full ``pubkey_hex``. That let any caller (LAN
+        peer / mis-bound public listener) enumerate the full social graph.
+        Now requires ``actor_id`` AND restricts the response:
+
+          * non-members get 403 (same gate as the rest of the console)
+          * full ``pubkey_hex`` is only shown to callers with the
+            ``manage_members`` permission (admins). Everyone else sees
+            a prefix-truncated ``pubkey_prefix`` so the ``code`` lookup
+            still works without leaking the full key
         """
+        if not actor_id:
+            raise HTTPException(
+                status_code=400,
+                detail="actor_id is required for agent search",
+            )
+        _require_member(state, actor_id)
+        actor_is_admin = state.membership.has_permission(
+            actor_id, "manage_members",
+        )
+
+        # M-1 fix: clamp `limit` defensively so `?limit=foo` becomes a
+        # 400, not a 500 from the unhandled ValueError in int().
+        try:
+            limit_int = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"limit must be an integer: {exc}",
+            ) from exc
+        max_results = min(max(limit_int, 1), 50)
+
         if not q.strip():
             return {"query": q, "results": []}
-        results = state.peer_finder.search(q, limit=limit)
+        # H-4 fix: dedup key is now (source, identifier) - prevents an
+        # `agent_id` collision with a 16-char pubkey prefix from silently
+        # dropping one of the two rows.
+        results_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def add_result(row: dict[str, Any]) -> None:
+            agent_id = str(row.get("agent_id", ""))
+            if not agent_id:
+                return
+            key = (str(row.get("source", "")), agent_id)
+            previous = results_by_key.get(key)
+            if previous is None or float(row.get("score", 0)) > float(previous.get("score", 0)):
+                results_by_key[key] = row
+
+        for r in state.peer_finder.search(q, limit=max_results, only_alive=False):
+            # DID persistence (2026-06-08): registry rows also carry
+            # DID. Two sources, in priority order:
+            #   1. AgentRecord.metadata explicitly populates "did" /
+            #      "pubkey_hex" when an agent self-registers with
+            #      crypto material (the LAN mDNS / UDP path does this).
+            #   2. ContactBook fallback by agent_id - covers the case
+            #      where we added the agent by DID earlier but the
+            #      live registry record was published by a daemon
+            #      that didn't know about the DID flow.
+            metadata = r.record.metadata or {}
+            registry_did = str(metadata.get("did", "") or "")
+            registry_pk = str(metadata.get("pubkey_hex", "") or "")
+            if not registry_did or not registry_pk:
+                try:
+                    contact = state.contacts.get(r.record.agent_id)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "contact_book lookup failed for registry row "
+                        "%s: %s", r.record.agent_id, exc,
+                    )
+                    contact = None
+                if contact is not None:
+                    registry_did = registry_did or contact.did
+                    registry_pk = registry_pk or contact.pubkey_hex
+            row = {
+                "agent_id": r.record.agent_id,
+                "score": r.score,
+                "status": r.record.status if r.record.is_alive() else "offline",
+                "hostname": r.record.hostname,
+                "backend_id": r.record.backend_id,
+                "capabilities": list(r.record.capabilities),
+                "groups": list(r.record.groups),
+                "last_seen": r.record.last_seen,
+                "matched": list(r.matched_capabilities),
+                "code": code_for_agent_id(r.record.agent_id),
+                "source": "registry",
+                "role": "",
+                "did": registry_did,
+                "pubkey_prefix": registry_pk[:16] if registry_pk else "",
+            }
+            if actor_is_admin and registry_pk:
+                row["pubkey_hex"] = registry_pk
+            add_result(row)
+
+        config = state.membership.load_config()
+        online_records = {r.agent_id: r for r in state.registry.list_alive()}
+        # DID bootstrap (2026-06-07) + DID persistence (2026-06-08):
+        # home-row DID enrichment now uses TWO sources:
+        #
+        #   1. ``state.node_identity`` is THIS workspace's own DID -
+        #      surfaces on the bootstrap admin row so the operator and
+        #      any peer learn "that's this node here".
+        #   2. ``state.contacts`` (ContactBook) is the per-member DID
+        #      we learned via ``/api/agents/add(target_did=...)`` or
+        #      other discovery paths. Surfaces on EVERY home row that
+        #      has a record - so after Bob restarts, the row for
+        #      Alice still carries her DID even though Alice's DID
+        #      lives in HER workspace, not Bob's identity.json.
+        #
+        # node_identity wins ties for the admin row (it's authoritative
+        # for "this workspace's owner"); ContactBook fills in everyone
+        # else. Both paths emit "" for unknown to keep the front-end
+        # truth-value check (`row.did || fallback`) honest.
+        node_did = _safe_did(state.node_identity)
+        node_pk = (
+            getattr(state.node_identity, "pubkey_hex", "")
+            if state.node_identity is not None else ""
+        ) or ""
+        for agent_id in config.member_ids:
+            # R-37 (2026-06-08): pubkey-derived code when we have one
+            # (admin via node_identity, others via ContactBook), so
+            # two installs that both happen to add an agent named
+            # "admin" still distinguish them by Ed25519 fingerprint.
+            # R-51 (2026-06-08): one helper call returns (code, pubkey,
+            # contact), so the row enrichment below does NOT re-query
+            # ContactBook a second time.
+            code, member_pk, contact = _resolve_member_identity(
+                state, agent_id,
+            )
+            role = config.role_for(agent_id).value
+            score, matched = _score_contact_query(
+                q, [agent_id, code, role, "home"],
+            )
+            if score <= 0:
+                continue
+            live = online_records.get(agent_id)
+            row = {
+                "agent_id": agent_id,
+                "score": score,
+                "status": live.status if live else "offline",
+                "hostname": live.hostname if live else "",
+                "backend_id": live.backend_id if live else "",
+                "capabilities": list(live.capabilities) if live else [],
+                "groups": list(live.groups) if live else ["home"],
+                "last_seen": live.last_seen if live else "",
+                "matched": matched,
+                "code": code,
+                "source": "home",
+                "role": role,
+                "did": "",
+                "pubkey_prefix": "",
+            }
+            # 1) bootstrap admin row also picks up the node's did:key.
+            # The helper already gave us the pubkey from node_identity
+            # so we only need the did here.
+            if agent_id == DEFAULT_ADMIN_ID and node_did:
+                row["did"] = node_did
+            # 2) Pubkey-prefix comes from whatever the helper resolved.
+            #    Honour the C-1 redaction posture for non-admins.
+            if member_pk:
+                row["pubkey_prefix"] = member_pk[:16]
+                if actor_is_admin:
+                    row["pubkey_hex"] = member_pk
+            # 3) Pick up did + label from the contact record we
+            #    already have - no second ContactBook query.
+            if contact is not None:
+                if not row["did"] and contact.did:
+                    row["did"] = contact.did
+                if contact.label and not row.get("label"):
+                    row["label"] = contact.label
+            add_result(row)
+
+        # Architect R-4 (2026-06-07): the endorsement count + group
+        # list scans are now cached by file mtime. On the steady-state
+        # dashboard-polling case (5 s interval, files unchanged) we
+        # serve search from in-memory dicts. When the underlying file
+        # changes, the next call recomputes once.
+        def _compute_endorsement_counts() -> dict[str, int]:
+            try:
+                _all = state.trust.list_endorsements()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "WoT endorsement load failed; serving 0 counts: %s",
+                    exc,
+                )
+                return {}
+            counts: dict[str, int] = {}
+            for e in _all:
+                counts[e.subject_pubkey] = counts.get(e.subject_pubkey, 0) + 1
+            return counts
+
+        endorsement_count_by_pk = state._endorsement_count_cache.get(
+            probe_paths=[
+                state.trust._endorsements_path,
+                state.trust._revocations_path,
+            ],
+            compute=_compute_endorsement_counts,
+        )
+
+        # Cache the deserialised group records too - GroupRegistry.list_all()
+        # globs the directory and JSON-parses every file per call.
+        def _compute_group_list():
+            return state.group_registry.list_all()
+
+        group_records = state._group_list_cache.get(
+            probe_paths=list(state.group_registry.base.glob("*.json"))
+            + [state.group_registry.base],
+            compute=_compute_group_list,
+        )
+        for record in group_records:
+            admin_set = {p.lower() for p in record.admin_pubkeys}
+            for pk in sorted(set(record.member_pubkeys + record.admin_pubkeys)):
+                code = code_for_pubkey(pk)
+                role = "admin" if pk.lower() in admin_set else "member"
+                display_id = pk[:16]
+                score, matched = _score_contact_query(
+                    q, [display_id, code, role, record.slug, record.display_name],
+                )
+                if score <= 0:
+                    continue
+                row = {
+                    "agent_id": display_id,
+                    "score": score,
+                    "status": "offline",
+                    "hostname": "",
+                    "backend_id": "",
+                    "capabilities": [],
+                    "groups": [record.slug],
+                    "last_seen": "",
+                    "matched": matched,
+                    "code": code,
+                    "source": "group",
+                    "role": role,
+                    "group_slug": record.slug,
+                    # Architect C-1: redact pubkey for non-admin callers.
+                    # The truncated prefix is still useful for the
+                    # `code` lookup the dashboard does on click.
+                    "pubkey_prefix": pk[:16],
+                    # Week-1 Task 4: surface the WoT endorsement count
+                    # so the dashboard can show "12 endorsements" badges
+                    # without needing a separate WoT query per row.
+                    "endorsement_count": endorsement_count_by_pk.get(pk, 0),
+                }
+                if actor_is_admin:
+                    row["pubkey_hex"] = pk
+                add_result(row)
+
+        rows = sorted(
+            results_by_key.values(),
+            key=lambda row: float(row.get("score", 0)),
+            reverse=True,
+        )[:max_results]
         return {
             "query": q,
-            "results": [
-                {
-                    "agent_id": r.record.agent_id,
-                    "score": r.score,
-                    "status": r.record.status,
-                    "hostname": r.record.hostname,
-                    "backend_id": r.record.backend_id,
-                    "capabilities": list(r.record.capabilities),
-                    "groups": list(r.record.groups),
-                    "last_seen": r.record.last_seen,
-                    "matched": list(r.matched_capabilities),
-                }
-                for r in results
-            ],
+            "results": rows,
         }
 
     @app.post("/api/agents/lan_discover")
     def lan_discover(payload: LANDiscoverPayload) -> dict[str, Any]:
         """Active "people nearby" via UDP broadcast on the LAN.
 
-        This is server-side initiated: the FastAPI process sends the query
-        and collects responses. The TS frontend just consumes the JSON list.
+        Architect R-5 (2026-06-07):
+          * actor_id is required and gated through _require_member
+          * the requesting actor_id is used to identify the querier
+            on the LAN (NOT a hard-coded DEFAULT_ADMIN_ID), so the
+            broadcast can no longer impersonate the admin
+          * PSK comes from NTH_DISCOVERY_PSK env var, never from the
+            request payload, closing the "probe PSKs one at a time"
+            channel
+          * a per-actor rate limit caps how often a caller can trigger
+            UDP broadcasts (cheap-request, expensive-response is an
+            amplification pattern we must not let through)
         """
+        if not payload.actor_id:
+            raise HTTPException(
+                status_code=400,
+                detail="actor_id is required for lan_discover",
+            )
+        _require_member(state, payload.actor_id)
+
+        decision = _lan_discover_limiter.check(payload.actor_id)
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"lan_discover rate limit exceeded; retry after "
+                    f"{decision.retry_after_seconds:.1f}s"
+                ),
+            )
+
+        server_psk = os.environ.get("NTH_DISCOVERY_PSK", "").strip()
+        # LAN DID publish (2026-06-07): the querier ALSO advertises its
+        # DID in the request, so a remote responder can know "this
+        # request came from did:key:zXYZ" and decide whether to reply.
+        # (For now responders accept all queries; the field is in place
+        # for a future trust-graph-gated discovery mode.)
+        querier_did = _safe_did(state.node_identity)
+        querier_pk = (
+            getattr(state.node_identity, "pubkey_hex", "")
+            if state.node_identity is not None else ""
+        ) or ""
         querier = LANDiscovery(
-            agent_id=DEFAULT_ADMIN_ID,
-            psk=payload.psk or "",
+            agent_id=payload.actor_id,
+            psk=server_psk,
+            pubkey_hex=querier_pk,
+            did=querier_did,
         )
         peers = querier.discover(
             timeout=min(max(0.5, payload.timeout_seconds), 6.0),
             wanted_capabilities=payload.wanted_capabilities or None,
         )
+        # LAN DID publish: surface each peer's did:key + a stable
+        # 16-hex pubkey_prefix to the caller so the dashboard can
+        # render "found DID X" without an extra fetch.
         return {
             "peers": [
                 {
@@ -557,6 +1356,8 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
                     "groups": list(p.groups),
                     "ws_url": p.ws_url,
                     "pubkey_hex": p.pubkey_hex,
+                    "pubkey_prefix": (p.pubkey_hex or "")[:16],
+                    "did": getattr(p, "did", "") or "",
                     "source_addr": p.source_addr,
                     "rtt_ms": p.rtt_ms,
                 }
@@ -573,15 +1374,23 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
               fingerprint-style agent_id.
             - If agent_id given directly, use it as-is.
         Subject to membership policy: the team's join_policy still applies.
+
+        DID persistence (2026-06-08): on successful add, the supplied
+        ``target_did`` (if any) and the derived ``pubkey_hex`` are
+        written to the workspace's ``ContactBook`` so the DID survives
+        process restarts. Without this, a search row for the added
+        agent on the next boot would carry ``did=""`` and the operator
+        could no longer reach them by DID.
         """
         _require_admin(state, payload.actor_id)
         target_id = payload.target_agent_id.strip()
+        derived_pubkey_hex = ""
         if payload.target_did:
             from nth_dao.did_key import decode_ed25519_did_key_hex, is_did_key
             if not is_did_key(payload.target_did):
                 raise HTTPException(status_code=400, detail="invalid did:key")
-            pubkey_hex = decode_ed25519_did_key_hex(payload.target_did)
-            target_id = target_id or str(AgentID.from_pubkey(pubkey_hex))
+            derived_pubkey_hex = decode_ed25519_did_key_hex(payload.target_did)
+            target_id = target_id or str(AgentID.from_pubkey(derived_pubkey_hex))
         if not target_id:
             raise HTTPException(status_code=400, detail="target_agent_id or target_did required")
         try:
@@ -590,6 +1399,38 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not ok:
             raise HTTPException(status_code=403, detail=reason)
+
+        # DID persistence: write to the contact book AFTER membership
+        # gate accepts. We do this best-effort - the membership change
+        # is already durable, so a contact book write failure should
+        # not roll back the visible "added" state. We surface it via
+        # logger.warning so an operator can investigate.
+        try:
+            state.contacts.add(
+                agent_id=target_id,
+                did=payload.target_did or "",
+                pubkey_hex=derived_pubkey_hex,
+                label=payload.label or "",
+                source=CONTACT_SOURCE_MANUAL,
+                added_by=payload.actor_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "contact_book write failed for agent_id=%s (membership "
+                "still applied; DID will not appear in search until "
+                "the row is re-added or repaired): %s",
+                target_id, exc,
+            )
+            if payload.target_did:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "agent membership was added, but DID contact "
+                        "persistence failed; re-add after repairing the "
+                        "contact book"
+                    ),
+                ) from exc
+
         return {
             "ok": True,
             "agent_id": target_id,
@@ -1080,7 +1921,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
     def index():
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
-            return FileResponse(index_file)
+            return HTMLResponse(_render_console_html(index_file, app.state.nth_console_token))
         return HTMLResponse(_frontend_missing_html(), status_code=503)
 
     @app.get("/{path:path}", include_in_schema=False, response_model=None)
@@ -1089,7 +1930,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
             return JSONResponse({"detail": "not found"}, status_code=404)
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
-            return FileResponse(index_file)
+            return HTMLResponse(_render_console_html(index_file, app.state.nth_console_token))
         return JSONResponse(
             {"detail": "frontend assets are not built; run npm --prefix frontend run build"},
             status_code=503,
@@ -1099,6 +1940,37 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
 
 
 def _bootstrap(state: WebState) -> None:
+    # ── DID bootstrap (2026-06-07) ────────────────────────────────────────
+    # Each fresh install must own a unique Ed25519 keypair persisted to
+    # ``<workspace>/identity/identity.json`` (mode 0600). The DID derived
+    # from that pubkey IS the workspace's permanent identifier on the
+    # NTH DAO network - it's what other downloads search by, what
+    # mandates are signed against, what the dashboard displays in the
+    # top bar for the operator to share.
+    #
+    # The infrastructure in nth_dao.identity.load_or_generate already
+    # does the heavy lifting; _bootstrap just has to call it before
+    # building team.json so we can pin owner_pubkey on first boot.
+    from ..identity import load_or_generate as _load_or_generate_identity
+    try:
+        node_identity = _load_or_generate_identity(
+            state.workspace, label=DEFAULT_ADMIN_ID,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Hard-fail visibility: if PyNaCl is missing or disk is read-only
+        # we MUST surface that, not silently boot without an identity.
+        # _bootstrap is called inside create_app(), so logger.warning is
+        # the appropriate channel (uvicorn captures stderr).
+        logger.warning(
+            "could not auto-generate node identity on first boot: %s "
+            "(install pynacl + ensure workspace is writable to enable "
+            "the DID flow)", exc,
+        )
+        node_identity = None
+    # Cache on the state so endpoints can read without re-parsing the
+    # identity file on every request.
+    state.node_identity = node_identity
+
     config = state.membership.load_config()
     if not config.admin_ids and not config.member_ids:
         config = state.membership.init_team(
@@ -1112,6 +1984,69 @@ def _bootstrap(state: WebState) -> None:
         config.admin_ids.append(DEFAULT_ADMIN_ID)
         config.roles[DEFAULT_ADMIN_ID] = TeamRole.OWNER.value
         state.membership.save_config(config)
+
+    # Pin the generated DID into team.json so any peer fetching this
+    # workspace's config can verify our identity claim.
+    #
+    # R-30 (2026-06-08): three cases for the second-and-later boots:
+    #   (a) team.json has no owner_pubkey   -> first ever pin (write)
+    #   (b) team.json owner_pubkey matches  -> just rebind in memory,
+    #                                          do NOT re-write (we'd
+    #                                          burn the mtime cache
+    #                                          and uselessly change
+    #                                          team.json on every boot)
+    #   (c) team.json owner_pubkey differs  -> drift; log loudly and
+    #                                          refuse to silently
+    #                                          override (could indicate
+    #                                          identity.json swap /
+    #                                          backup restore)
+    if (
+        node_identity is not None
+        and getattr(node_identity, "can_sign", False)
+    ):
+        node_pubkey_hex = (
+            getattr(node_identity, "pubkey_hex", "") or ""
+        )
+        if not config.owner_pubkey:
+            # Case (a): first-time pin
+            try:
+                state.membership.enable_signed_owner(
+                    node_identity, actor_id=DEFAULT_ADMIN_ID,
+                )
+                logger.info(
+                    "pinned node identity to team.json: pubkey_prefix=%s",
+                    node_pubkey_hex[:16],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "could not pin owner identity to team.json: %s "
+                    "(team.json stays unsigned; DID is still "
+                    "available via /api/identity)", exc,
+                )
+        elif config.owner_pubkey.lower() == node_pubkey_hex.lower():
+            # Case (b): same identity, second boot. Rebind the signing
+            # key on the MembershipManager so subsequent save_config()
+            # calls produce valid signatures - WITHOUT re-writing
+            # team.json (would burn the R-4 cache + mtime).
+            state.membership._owner_identity = node_identity
+            logger.debug(
+                "rebound existing owner identity on MembershipManager "
+                "(team.json already signed by this key)"
+            )
+        else:
+            # Case (c): drift. team.json was signed by a DIFFERENT
+            # key than the one identity.json currently holds. This
+            # usually means the operator restored a backup or rotated
+            # identity.json without resigning team.json. Refuse to
+            # silently overwrite - the operator must make an explicit
+            # decision.
+            logger.error(
+                "identity drift: team.json pins owner_pubkey=%s but "
+                "identity.json holds %s. team.json will not be "
+                "re-signed automatically. Either restore the original "
+                "identity.json or run a deliberate key-rotation flow.",
+                config.owner_pubkey[:16], node_pubkey_hex[:16],
+            )
 
     if not state.groups.get_channel(DEFAULT_CHANNEL_ID):
         state.groups.create_channel(
@@ -1127,6 +2062,96 @@ def _bootstrap(state: WebState) -> None:
         ok, _ = state.membership.ensure_member(ECHO_AGENT_ID)
         if not ok:
             logger.debug("echo-agent join skipped (membership policy)")
+
+    # ── LAN DID publish (2026-06-07) ──────────────────────────────────────
+    # Make this node DISCOVERABLE on the local network. Without this,
+    # a peer's /api/agents/lan_discover only ever returns peers that
+    # ALSO chose to announce - which they never would on a fresh install.
+    # The mDNS responder embeds our did:key in the TXT record so any
+    # NTH DAO browsing the LAN learns "the host at 192.168.x.y is DID
+    # did:key:zXYZ" in a single round.
+    #
+    # Disabled when:
+    #   * NTH_LAN_PUBLISH=0      operator opt-out (e.g. shared coffee-shop wifi)
+    #   * pynacl / zeroconf missing  graceful degradation
+    #   * node_identity is None      no DID to publish anyway
+    state.mdns_responder = None
+    publish_enabled = os.environ.get("NTH_LAN_PUBLISH", "1").strip() != "0"
+    if publish_enabled and state.node_identity is not None:
+        try:
+            from ..discovery.lan_mdns import MDNSDiscovery, is_available
+            if not is_available():
+                logger.info(
+                    "LAN DID publish skipped: install ``zeroconf`` "
+                    "(pip install zeroconf) to make this node "
+                    "discoverable on the local network",
+                )
+            else:
+                node_did = _safe_did(state.node_identity)
+                node_pk = getattr(state.node_identity, "pubkey_hex", "") or ""
+                # R-25 (2026-06-08): use the node identity's own
+                # agent_id (random per-install hex like "27c71290e1ab")
+                # rather than the hard-coded DEFAULT_ADMIN_ID ("admin").
+                # Two nodes that BOTH advertised "admin" used to
+                # collide - a discoverer would filter the peer out
+                # treating them as self because the agent_id matched.
+                # The random per-install id solves that AND gives an
+                # operator a stable network handle separate from the
+                # human-facing "admin" role.
+                #
+                # ``state.node_identity.agent_id`` is an ``AgentID``
+                # value object, not a bare str. mDNS service info
+                # interpolation needs a string so we coerce via str().
+                _raw_agent_id = getattr(state.node_identity, "agent_id", "")
+                node_network_id = (
+                    str(_raw_agent_id) if _raw_agent_id else DEFAULT_ADMIN_ID
+                )
+                # R-26 (2026-06-08): the prior code broadcast the raw
+                # workspace ``team_name`` in mDNS TXT. team_name can
+                # be PII / business-sensitive ("Alice's Secret M&A
+                # DAO"). mDNS is plaintext on the LAN, so anyone with
+                # a packet sniffer or even ``dns-sd -B _nth-dao._tcp``
+                # would see it.
+                #
+                # New posture: by default we advertise a generic
+                # opaque label. Operators who genuinely want to set a
+                # custom label (e.g. for in-house clusters that share
+                # a trusted LAN) opt in via NTH_LAN_LABEL. Setting
+                # NTH_LAN_LABEL=team_name is the legacy behaviour.
+                custom_label = os.environ.get("NTH_LAN_LABEL", "").strip()
+                if custom_label == "team_name":
+                    advertised_label = (
+                        getattr(config, "team_name", "") or "NTH DAO"
+                    )
+                elif custom_label:
+                    advertised_label = custom_label[:60]
+                else:
+                    advertised_label = "NTH DAO node"
+                responder = MDNSDiscovery(
+                    agent_id=node_network_id,
+                    label=advertised_label,
+                    capabilities=[],
+                    groups=["home"],
+                    ws_url="",   # operator points peers at the HTTP API
+                    pubkey_hex=node_pk,
+                    did=node_did,
+                )
+                responder.start()
+                state.mdns_responder = responder
+                logger.info(
+                    "LAN DID publish active: network_id=%s did=%s "
+                    "pubkey_prefix=%s label=%r "
+                    "(set NTH_LAN_PUBLISH=0 to disable, "
+                    "NTH_LAN_LABEL=<text> to customise label)",
+                    node_network_id, node_did or "?",
+                    node_pk[:16] or "?", advertised_label,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "LAN DID publish failed; node will NOT be discoverable "
+                "on the local network: %s", exc,
+            )
+            state.mdns_responder = None
 
 
 def _require_member_or_joinable(state: WebState, agent_id: str) -> None:
@@ -1144,6 +2169,31 @@ def _require_explicit_actor_id(actor_id: str) -> None:
             status_code=400,
             detail="actor_id is required for mandate routes",
         )
+
+
+def _workspace_is_locally_accessible(workspace: Path) -> bool:
+    """C-2 (2026-06-07): honest check that the workspace path is on
+    the local filesystem and readable by this process.
+
+    Returns False (so the dashboard can warn the user) when:
+      * the path does not exist
+      * the path exists but is not a directory
+      * the path exists but listing it raises a PermissionError or OSError
+        (e.g. unmounted network share, broken symlink)
+
+    Returns True in the normal in-process case where the workspace is
+    a regular local directory we can read.
+    """
+    try:
+        if not workspace.exists() or not workspace.is_dir():
+            return False
+        # Probe one directory listing - cheap on Windows/posix and
+        # surfaces broken-symlink / no-access cases that ``exists()``
+        # alone misses.
+        next(iter(workspace.iterdir()), None)
+        return True
+    except (PermissionError, OSError):
+        return False
 
 
 def _require_member(state: WebState, agent_id: str) -> None:
@@ -1169,24 +2219,197 @@ def _team_dict(config: TeamConfig) -> dict[str, Any]:
 
 def _members(state: WebState, config: TeamConfig) -> list[dict[str, Any]]:
     online = {r.agent_id for r in state.registry.list_alive()}
-    return [
-        {
+    rows: list[dict[str, Any]] = []
+    for agent_id in sorted(config.member_ids):
+        code, pubkey_hex, contact = _resolve_member_identity(state, agent_id)
+        row = {
             "agent_id": agent_id,
             "role": config.role_for(agent_id).value,
             "online": agent_id in online,
-            "code": code_for_agent_id(agent_id),
+            "code": code,
+            "did": "",
+            "pubkey_prefix": pubkey_hex[:16] if pubkey_hex else "",
         }
-        for agent_id in sorted(config.member_ids)
-    ]
+        if agent_id == DEFAULT_ADMIN_ID and state.node_identity is not None:
+            row["did"] = _safe_did(state.node_identity)
+        elif contact is not None and contact.did:
+            row["did"] = contact.did
+        rows.append(row)
+    return rows
 
 
-def _actor_dict(agent_id: str, role: str) -> dict[str, Any]:
-    """Standard shape for the 'who am I' block on every state response."""
-    return {
+def _actor_dict(
+    agent_id: str,
+    role: str,
+    state: Optional[WebState] = None,
+) -> dict[str, Any]:
+    """Standard shape for the 'who am I' block on every state response.
+
+    DID bootstrap (2026-06-07): when ``state`` is supplied AND
+    ``agent_id`` matches the bootstrap admin, the node's persistent
+    did:key is included so the dashboard can show "your DID is X" in
+    the top bar. Other agents render with did="" (they are remote
+    peers whose DID lives in their own workspace, not ours).
+    """
+    payload: dict[str, Any] = {
         "agent_id": agent_id,
         "role": role,
         "code": code_for_agent_id(agent_id),
+        "did": "",
+        "pubkey_hex": "",
     }
+    if state is not None:
+        code, pubkey_hex, contact = _resolve_member_identity(state, agent_id)
+        payload["code"] = code
+        if pubkey_hex:
+            payload["pubkey_hex"] = pubkey_hex
+        if agent_id == DEFAULT_ADMIN_ID and state.node_identity is not None:
+            payload["did"] = _safe_did(state.node_identity)
+        elif contact is not None and contact.did:
+            payload["did"] = contact.did
+    return payload
+
+
+def _resolve_member_identity(
+    state: "WebState", agent_id: str,
+) -> tuple[str, str, Any]:
+    """Single source of truth for ``(code, pubkey_hex, contact)``.
+
+    R-46..R-51 (2026-06-08): the previous split into ``_code_for_admin``
+    and ``_code_for_member`` led to three problems:
+
+      * /api/identity inlined its own code derivation (R-47)
+      * by_code handler re-fetched the ContactBook contact (R-48, R-51)
+      * the admin fallback path silently returned the LITERAL-admin
+        hash ``"8c69-76e5"`` when node_identity carried no pubkey
+        (R-46) - reintroducing the global cross-install collision the
+        R-35 fix was supposed to eliminate
+
+    This single helper returns everything any caller needs in one
+    look-up:
+
+      code:
+        The visible 8-hex handle. **Empty string** when this is the
+        bootstrap admin AND we have no crypto material - downstream
+        UI must treat "" as "code unavailable" and either hide the
+        widget or show a clear "install pynacl" hint. The bootstrap
+        admin's code MUST NOT fall back to the agent_id-hash because
+        that hash is the cross-install constant we set out to kill.
+      pubkey_hex:
+        64-hex Ed25519 pubkey if known. Either lifted from
+        node_identity (admin), from the ContactBook record
+        (pubkey_hex directly stored, or decoded from contact.did via
+        did:key), or empty when the contact is agent_id-only.
+      contact:
+        The ContactBook record we resolved, or None. Returning it
+        lets the caller pick up label/source/added_at without a
+        second cache hit (R-51).
+    """
+    # Path 1: bootstrap admin
+    if agent_id == DEFAULT_ADMIN_ID:
+        if state.node_identity is not None:
+            pk = getattr(state.node_identity, "pubkey_hex", "") or ""
+            if pk:
+                return code_for_pubkey(pk), pk, None
+        # R-46: bootstrap admin with no crypto. Empty code is the
+        # honest signal. The agent_id-hash fallback would collide
+        # globally across every PyNaCl-missing install.
+        return "", "", None
+
+    # Path 2: ContactBook resolution for other members
+    try:
+        contact = state.contacts.get(agent_id)
+    except Exception:  # noqa: BLE001
+        contact = None
+    pk = ""
+    if contact is not None:
+        pk = contact.pubkey_hex or ""
+        # R-50: if the contact only carries did, derive pubkey from
+        # it. did:key encodes the pubkey deterministically so this
+        # is fully equivalent to the contact.pubkey_hex case for
+        # downstream code derivation.
+        if not pk and contact.did:
+            try:
+                from ..did_key import (
+                    decode_ed25519_did_key_hex,
+                    is_did_key,
+                )
+                if is_did_key(contact.did):
+                    pk = decode_ed25519_did_key_hex(contact.did) or ""
+            except Exception:  # noqa: BLE001
+                pk = ""
+    if pk:
+        return code_for_pubkey(pk), pk, contact
+
+    # Path 3: legacy agent_id-derived. Per-contact stable (because
+    # agent_ids like "alice"/"bob" are themselves distinct per row)
+    # so the cross-install collision only happens when two installs
+    # add the same agent_id LITERAL - acceptable trade-off, since
+    # the safer pubkey path is preferred whenever pubkey is known.
+    return code_for_agent_id(agent_id), "", contact
+
+
+def _code_for_admin(state: "WebState") -> str:
+    """Compatibility shim - returns just the code for the bootstrap admin.
+
+    Prefer ``_resolve_member_identity(state, DEFAULT_ADMIN_ID)`` when
+    you also need the pubkey or contact record.
+    """
+    code, _, _ = _resolve_member_identity(state, DEFAULT_ADMIN_ID)
+    return code
+
+
+def _code_for_member(state: "WebState", agent_id: str) -> str:
+    """Compatibility shim - returns just the code for an arbitrary member.
+
+    Prefer ``_resolve_member_identity(state, agent_id)`` when you
+    also need the pubkey or contact record.
+    """
+    code, _, _ = _resolve_member_identity(state, agent_id)
+    return code
+
+
+def _safe_did(identity: Any) -> str:
+    """DID bootstrap helper: ``AgentIdentity.as_did()`` is a method,
+    not a property, and only crypto-capable identities expose one.
+    Centralises the "did:key:... or '' " contract so every endpoint
+    serialises identities the same way."""
+    if identity is None:
+        return ""
+    as_did = getattr(identity, "as_did", None)
+    if not callable(as_did):
+        return ""
+    try:
+        value = as_did()
+    except Exception:  # noqa: BLE001
+        return ""
+    return value or ""
+
+
+def _score_contact_query(query: str, values: list[str]) -> tuple[float, list[str]]:
+    """Simple deterministic scorer for member/contact search."""
+    q = query.strip().lower()
+    if not q:
+        return 0.0, []
+    q_compact = q.replace("-", "")
+    score = 0.0
+    matched: list[str] = []
+    for raw in values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        v = value.lower()
+        candidates = {v, v.replace("-", "")}
+        if q in candidates or q_compact in candidates:
+            score += 3.0
+            matched.append(value)
+        elif any(candidate.startswith(q) or candidate.startswith(q_compact) for candidate in candidates):
+            score += 1.5
+            matched.append(value)
+        elif any(q in candidate or q_compact in candidate for candidate in candidates):
+            score += 0.8
+            matched.append(value)
+    return score, matched
 
 
 # ─── v0.9.7: multi-DAO helpers ────────────────────────────────────────────
@@ -1382,7 +2605,7 @@ def _summarise_intent(mandate: dict[str, Any]) -> dict[str, Any]:
     max_amount = constraints.get("max_amount") or {}
     try:
         digest = intent_mandate_digest(mandate)
-    except Exception:  # pragma: no cover - malformed body in store
+    except (KeyError, TypeError, ValueError):  # pragma: no cover - malformed body in store
         digest = ""
     return {
         "kind": KIND_INTENT,
@@ -1421,7 +2644,7 @@ def _summarise_cart(mandate: dict[str, Any]) -> dict[str, Any]:
     total = subject.get("total") or {}
     try:
         digest = cart_mandate_digest(mandate)
-    except Exception:  # pragma: no cover - malformed body in store
+    except (KeyError, TypeError, ValueError):  # pragma: no cover - malformed body in store
         digest = ""
     return {
         "kind": KIND_CART,
@@ -1453,7 +2676,7 @@ def _summarise_payment(mandate: dict[str, Any]) -> dict[str, Any]:
     subject = mandate.get("credentialSubject") or {}
     try:
         digest = payment_mandate_digest(mandate)
-    except Exception:  # pragma: no cover - malformed body in store
+    except (KeyError, TypeError, ValueError):  # pragma: no cover - malformed body in store
         digest = ""
     return {
         "kind": KIND_PAYMENT,
@@ -1476,7 +2699,7 @@ def _safe_is_expired(checker, mandate: dict[str, Any]) -> bool:
     """
     try:
         return bool(checker(mandate))
-    except Exception:
+    except (KeyError, TypeError, ValueError):
         return False
 
 
@@ -1497,15 +2720,81 @@ def _frontend_missing_html() -> str:
 </html>"""
 
 
-app = create_app()
+def _render_console_html(index_file: Path, token: str) -> str:
+    html = index_file.read_text(encoding="utf-8")
+    snippet = (
+        "<script>"
+        f"window.__NTH_CONSOLE_TOKEN__ = {json.dumps(token)};"
+        "</script>"
+    )
+    if "</head>" in html:
+        return html.replace("</head>", f"  {snippet}\n  </head>", 1)
+    return snippet + html
+
+
+app = create_app(require_console_auth=True)
+
+
+# Architect audit R-1 (2026-06-07): the dashboard has ZERO request
+# authentication - the ``actor_id`` query parameter is a CLAIM, not a
+# verified identity. As long as that is the case, exposing the API to
+# anything other than the loopback interface trivially leaks every
+# member's role / pubkey / endorsement graph to whoever can reach the
+# port. We refuse to start under such a configuration unless the
+# operator explicitly opts in via NTH_ALLOW_REMOTE_BIND=1, in which
+# case the responsibility for putting an auth proxy in front of us
+# is theirs. Loopback bind is the only safe default.
+
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _resolve_safe_bind_host() -> str:
+    """Return the host to bind, refusing unsafe configurations.
+
+    Reads NTH_HOST (default 127.0.0.1) and NTH_ALLOW_REMOTE_BIND
+    (default unset). When the requested host is not a loopback alias
+    and remote bind is not explicitly allowed, raises RuntimeError
+    with an actionable error message. Returns the verified host
+    string on success.
+
+    The Pydantic-style "fail fast at startup" is intentional: a
+    silent fall-through to 127.0.0.1 would mask the operator's intent
+    and leave them debugging "why is the dashboard not reachable from
+    other machines".
+    """
+    requested = os.environ.get("NTH_HOST", "127.0.0.1").strip()
+    allow_remote = os.environ.get("NTH_ALLOW_REMOTE_BIND", "").strip()
+
+    if requested in _LOOPBACK_HOSTS:
+        return requested
+
+    if allow_remote != "1":
+        raise RuntimeError(
+            f"refusing to bind NTH DAO web console to non-loopback "
+            f"host {requested!r}: the API has no request authentication, "
+            f"so any reachable client can enumerate the social graph. "
+            f"Set NTH_ALLOW_REMOTE_BIND=1 to override AFTER putting an "
+            f"auth proxy / TLS terminator in front of this process, "
+            f"or unset NTH_HOST to use the safe loopback default."
+        )
+    # Loud warning on every cold start so a misconfigured-but-opted-in
+    # deployment still surfaces the risk in logs.
+    import logging as _logging
+    _logging.getLogger("nth_dao.web").warning(
+        "NTH DAO web console binding to non-loopback host %r with "
+        "NTH_ALLOW_REMOTE_BIND=1 - no request authentication is "
+        "enforced; ensure an external auth proxy is in front",
+        requested,
+    )
+    return requested
 
 
 def main() -> None:
     import uvicorn
 
-    host = os.environ.get("NTH_HOST", "127.0.0.1")
+    host = _resolve_safe_bind_host()
     port = int(os.environ.get("NTH_PORT", "8080"))
-    uvicorn.run(create_app(), host=host, port=port)
+    uvicorn.run(create_app(require_console_auth=True), host=host, port=port)
 
 
 __all__ = ["app", "create_app", "main"]
