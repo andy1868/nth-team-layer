@@ -756,6 +756,9 @@ class TaskMarketplace:
                         f"Signature: {order.creator_sig}"
                     )
                 for t in targets:
+                    # Never broadcast to self
+                    if t.agent_id == self.agent_id:
+                        continue
                     if getattr(t, "accepting_tasks", False):
                         try:
                             channel.dm(

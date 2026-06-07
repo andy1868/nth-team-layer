@@ -40,6 +40,9 @@ DEFAULT_AGENTS_DIR = "team_agents"
 # clocks that differ by up to 30 s.  Without this buffer, agent B may
 # incorrectly mark agent A as dead simply because B's clock is ahead.
 CLOCK_SKEW_TOLERANCE_SECONDS = 30
+# Upper bound on future timestamps — anything more than 5 minutes in the
+# future is treated as invalid (tampered / misconfigured clock).
+FUTURE_STALE_SECONDS = 300
 
 
 @dataclass
@@ -63,9 +66,6 @@ class AgentRecord:
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
     instance_token: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
-    # S2: integrity protection — optional signature over the record payload.
-    # When set, consumers SHOULD verify before trusting capabilities/status.
-    signature: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,13 +82,19 @@ class AgentRecord:
     def is_alive(self, max_stale_seconds: int = 90) -> bool:
         """True iff last_seen is within max_stale_seconds of now.
 
-        Adds CLOCK_SKEW_TOLERANCE_SECONDS buffer to account for clock
-        drift between machines sharing the filesystem-backed registry.
+        Applies CLOCK_SKEW_TOLERANCE_SECONDS buffer for multi-machine
+        clock drift, and rejects timestamps more than FUTURE_STALE_SECONDS
+        in the future (tampered / misconfigured clock).
         """
         try:
             last = datetime.fromisoformat(self.last_seen)
+            delta = (datetime.now() - last).total_seconds()
+            # Reject far-future timestamps (tampered or misconfigured clock)
+            if delta < -FUTURE_STALE_SECONDS:
+                return False
+            # Accept within stale window + clock-skew buffer
             effective = max_stale_seconds + CLOCK_SKEW_TOLERANCE_SECONDS
-            return (datetime.now() - last).total_seconds() < effective
+            return delta < effective
         except Exception:
             return False
 
@@ -281,41 +287,6 @@ class AgentRegistry:
                 except OSError as e:
                     logger.warning("cleanup unlink %s failed: %s", f, e)
         return removed
-
-    def verify_all_records(self, did_key: str) -> Dict[str, bool]:
-        """Verify Ed25519 signatures on all agent records in the registry.
-
-        Args:
-            did_key: W3C did:key string of the identity whose signatures to verify.
-
-        Returns:
-            {agent_id: True if signature valid or absent, False if invalid}
-        """
-        from ..identity import AgentIdentity
-        try:
-            verifier = AgentIdentity.from_did(did_key)
-        except Exception as e:
-            logger.warning("verify_all_records: invalid did_key: %s", e)
-            return {}
-
-        results: Dict[str, bool] = {}
-        for f in sorted(self.agents_dir.glob("*.json")):
-            data = safe_load_json(f, fallback=None)
-            if data is None:
-                continue
-            sig = data.get("signature", "")
-            if not sig:
-                # Unsigned records: no integrity claim → OK (trusting filesystem).
-                results[f.stem] = True
-                continue
-            try:
-                # Payload is everything except the signature itself
-                payload = {k: v for k, v in data.items() if k != "signature"}
-                results[f.stem] = verifier.verify_json(payload, sig)
-            except Exception as e:
-                logger.warning("verify_all_records: %s error: %s", f.stem, e)
-                results[f.stem] = False
-        return results
 
     #
 

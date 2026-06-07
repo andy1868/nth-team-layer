@@ -106,7 +106,7 @@ class PeerFinder:
         only_alive: bool = True,
         min_match: int = 1,
     ) -> Optional[MatchResult]:
-        """返回最佳匹配；min_match=N 要求至少匹中 N 个 capability。"""
+        """Return best match; min_match=N requires at least N capability hits."""
         results = self.rank(
             needed_capabilities=needed_capabilities,
             prefer_idle=prefer_idle,
@@ -128,12 +128,14 @@ class PeerFinder:
         only_alive: bool = True,
         min_match: int = 1,
     ) -> List[MatchResult]:
-        """按 score 排序的匹配结果。
+        """Results sorted by score descending.
 
         Args:
-            min_match: 最少需要匹中的 capability 数。默认 1（至少 1 个 cap 匹中）。
-                       传 0 时退化为"任何活着的 agent"——之前 min_score=0.5 的旧行为
-                       会返回 0 个 cap 匹中但 idle 的 agent，这是 H-6 的坑。
+            min_match: Minimum number of capability hits required.
+                       Default 1 (at least 1 cap must match).
+                       Pass 0 to match any alive agent — previously
+                       min_score=0.5 returned agents with 0 matched caps
+                       but idle status, which was the H-6 pitfall.
         """
         candidates = (
             self.registry.list_alive() if only_alive else self.registry.list_all()
@@ -246,7 +248,7 @@ class PeerFinder:
     ) -> List[MatchResult]:
         """Find agents whose capabilities complement *agent_id*'s needs.
 
-        Matching is purely based on ``seeking`` × ``capabilities``:
+        Matching is purely based on ``seeking`` x ``capabilities``:
 
         * **incoming**: other agent HAS a capability that *agent_id* is SEEKING.
           (Who can help me?)
@@ -260,6 +262,11 @@ class PeerFinder:
         complement filtering (it describes accepted action types, not
         capabilities).
         """
+        if direction not in ("bidirectional", "incoming", "outgoing"):
+            raise ValueError(
+                f"direction must be 'bidirectional', 'incoming', or 'outgoing', "
+                f"got {direction!r}"
+            )
         all_agents = self.registry.list_alive()
         my_record = None
         for r in all_agents:
