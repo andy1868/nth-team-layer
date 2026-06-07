@@ -42,38 +42,38 @@ integrators:
 Validation for this beta: Python suite `1067 passed, 11 skipped`;
 frontend Vitest `2 passed`; production frontend build passed.
 
-## What's New in 0.9.6 — Unique group names, governance votes, QQ-style UI
+## What's New in 0.9.6 - Unique group names, governance votes, chat-native collaboration UI
 
 Three Python additions for the protocol layer, plus four TS panels for the
-QQ/WeChat-style user experience the project has been missing.
+consumer chat app-inspired collaboration experience for agents and humans.
 
 **Protocol additions (Python):**
 
-- **`GroupRegistry` with workspace-unique slugs** — names normalize
-  (`Frontend Team!` → `frontend-team`); two groups can't share a slug
+- **`GroupRegistry` with workspace-unique slugs** - names normalize
+  (`Frontend Team!` -> `frontend-team`); two groups can't share a slug
   within a workspace. Records are signed by the founder.
-- **Policy-vote governance** — `PolicyChangeProposal` signed by a
+- **Policy-vote governance** - `PolicyChangeProposal` signed by a
   member; other members append signed yes/no/abstain votes; passes when
   > 50% of distinct member pubkeys vote yes. `apply_proposal` rebuilds
   the GroupRecord re-signed by an admin.
 - **14 new web API endpoints** in `nth_dao/web/`: agent fuzzy search,
   LAN discovery proxy, add-by-DID, group CRUD + search, governance
-  propose/vote. All write endpoints use "server prepares unsigned →
-  client signs locally → client posts back" so private keys never
+  propose/vote. All write endpoints use "server prepares unsigned ->
+  client signs locally -> client posts back" so private keys never
   cross the wire.
 
 **UI additions (TS, per the iron rule):**
 
-`frontend/src/panels/` — drop into your React app:
+`frontend/src/panels/` - drop into your React app:
 
-- `ContactsPanel` — search agents by name / capability; add by exact
+- `ContactsPanel` - search agents by name / capability; add by exact
   agent_id or did:key.
-- `NearbyPanel`   — UDP LAN "people nearby", with optional pre-shared key.
-- `GroupsPanel`   — list / search / create unique groups; color-coded
+- `NearbyPanel`   - UDP LAN "people nearby", with optional pre-shared key.
+- `GroupsPanel`   - list / search / create unique groups; color-coded
   policy badges.
-- `GovernancePanel` — propose policy changes; vote yes/no/abstain.
-- `ContactShell`  — top tab bar that hosts all four.
-- `qq-style.css`  — standalone styles, leaves existing styles untouched.
+- `GovernancePanel` - propose policy changes; vote yes/no/abstain.
+- `ContactShell`  - top tab bar that hosts all four.
+- `chat-panels.css`  - standalone styles, leaves existing styles untouched.
 
 ```tsx
 import { ContactShell } from "./panels";
@@ -93,37 +93,37 @@ function App() {
 The host app supplies a `sign(payload)` helper from whatever wallet
 infrastructure it has. Browse-only mode renders without signing.
 
-## What's New in 0.9.5 — DID:key, AgentLedger, Guardian recovery, A2A boundary
+## What's New in 0.9.5 - DID:key, AgentLedger, Guardian recovery, A2A boundary
 
 Five additive deliverables, zero breaking changes:
 
-- **W3C did:key alignment** — `AgentIdentity.as_did()` emits real
-  `did:key:z…` strings (base58btc + multicodec 0xed 0x01). Pure stdlib
+- **W3C did:key alignment** - `AgentIdentity.as_did()` emits real
+  `did:key:z...` strings (base58btc + multicodec 0xed 0x01). Pure stdlib
   encode/decode. `MissionTemplate.publisher_did` is now a usable DID.
-- **`AgentLedger`** — per-pubkey-fingerprint append-only event ledger
+- **`AgentLedger`** - per-pubkey-fingerprint append-only event ledger
   under `sidechain/agents/<fp>/`. Records step claim/complete/failed,
   handoffs given/received, reviews given/received, endorsements.
   Deterministic reducer folds events into `{missions_owned,
   steps_completed, success_rate, handoffs_*, templates_used, categories,
   total_token_cost}`. Step one toward the Achievements / signed
   contribution credentials layer.
-- **Guardian-based social recovery** — N-of-M peers can collectively
+- **Guardian-based social recovery** - N-of-M peers can collectively
   sign a `KeyReplacementProof` that re-binds an `agent_id` to a fresh
   pubkey. Owner publishes a signed `GuardianSet(pubkeys, threshold)`;
   losing the key no longer means losing the identity, provided you have
   trusted friends.
-- **A2A boundary translation** — `nth_dao/a2a/translate.py` converts
+- **A2A boundary translation** - `nth_dao/a2a/translate.py` converts
   `MissionTemplate ↔ A2A Skill`, `Mission ↔ A2A Task`, assembles an
   AgentCard for `/.well-known/agent.json`. Pure data transformations
   only; the HTTP/JSON-RPC server lives in the separate
   `nth-dao-a2a-adapter` package (v0.10.0+).
-- **Conformance vectors expanded** — 22 → 31 vectors / 6 → 11 categories.
+- **Conformance vectors expanded** - 22 -> 31 vectors / 6 -> 11 categories.
   Channel messages, Invitations, TeamConfig, did:key, LAN psk_tag now
   have canonical-bytes coverage.
 
 ```python
 # DID
-print(alice.as_did())              # → "did:key:z6Mk..."
+print(alice.as_did())              # -> "did:key:z6Mk..."
 restored = nth.AgentIdentity.from_did("did:key:z6Mk...")  # verify-only
 
 # AgentLedger
@@ -137,7 +137,7 @@ gs = nth.publish_guardian_set(alice, [g1.pubkey, g2.pubkey, g3.pubkey], threshol
 proof = nth.begin_key_replacement(gs, new_alice.pubkey_hex, reason="laptop lost")
 proof.signatures.append(nth.sign_replacement(g1, proof))
 proof.signatures.append(nth.sign_replacement(g2, proof))
-valid, reason = nth.verify_replacement(proof, gs)   # → (True, "ok")
+valid, reason = nth.verify_replacement(proof, gs)   # -> (True, "ok")
 
 # A2A boundary
 from nth_dao.a2a import agent_card_from, a2a_task_from_mission
@@ -146,25 +146,25 @@ card = agent_card_from(agent_did=alice.as_did(), name="Alice",
 task = a2a_task_from_mission(mission)  # ready to ship over JSON-RPC
 ```
 
-## What's New in 0.9.4 — Sustainability sprint
+## What's New in 0.9.4 - Sustainability sprint
 
 No new protocol surface. We filled the six holes that prevented NTH DAO
 from outliving its single maintainer:
 
-- **`SECURITY.md` + key recovery** — `nth_dao.export_recovery_kit(identity,
+- **`SECURITY.md` + key recovery** - `nth_dao.export_recovery_kit(identity,
   password)` and `import_recovery_kit(kit, password)`. libsodium
   `crypto_secretbox` + Argon2id. Lose your identity, restore from a
   passphrase-encrypted blob.
-- **`docs/MIGRATIONS.md` + migration test runner** — forward-compat policy
+- **`docs/MIGRATIONS.md` + migration test runner** - forward-compat policy
   for 0.9.x, per-version delta, automated 0.9.0-fixture regression tests.
-- **`nth-status` + `nth-metrics` CLI** — text/JSON workspace snapshot;
+- **`nth-status` + `nth-metrics` CLI** - text/JSON workspace snapshot;
   Prometheus exposition-format `/metrics` HTTP endpoint. Pure stdlib.
-- **`requirements/*.lock.txt`** — pinned transitive deps per extra
+- **`requirements/*.lock.txt`** - pinned transitive deps per extra
   (`crypto`, `ux`, `web`, `dev`). Reproducible builds.
-- **`nth_dao/conformance/`** — 22 wire-protocol test vectors in 6 categories.
+- **`nth_dao/conformance/`** - 22 wire-protocol test vectors in 6 categories.
   A non-Python port is "wire-compatible" when it produces zero failures.
   See `docs/CONFORMANCE.md`.
-- **`docs/research/A2A_ALIGNMENT.md`** — side-by-side vs Google's
+- **`docs/research/A2A_ALIGNMENT.md`** - side-by-side vs Google's
   Agent2Agent protocol (Linux Foundation, 150+ orgs). Our protocol stays
   distinct; an A2A adapter is targeted for v0.10.0+.
 
@@ -183,10 +183,10 @@ python -c "import nth_dao as nth; \
     > ~/secrets/alice.recovery.json
 ```
 
-## What's New in 0.9.3 — Mission Template registry
+## What's New in 0.9.3 - Mission Template registry
 
 This release lifts `MissionStore` from a one-shot quest board into a
-reusable, signed, rateable template registry — the "decentralized App
+reusable, signed, rateable template registry - the "decentralized App
 Store" layer in the project vision.
 
 ```python
@@ -222,23 +222,23 @@ for m in store.my_history("bob"):
 
 Highlights:
 
-- **`MissionTemplate`** — semver-versioned, publisher-signed, F-Droid-style
+- **`MissionTemplate`** - semver-versioned, publisher-signed, F-Droid-style
   one-file-per-version layout. Tampering invalidates signature; deprecation
   is publisher-only.
-- **`MissionReview`** — signed, append-only `reviews/*.jsonl` ledger per
+- **`MissionReview`** - signed, append-only `reviews/*.jsonl` ledger per
   template version. EWMA aggregation surfaces recent reviews while keeping
   historical record.
-- **`template_lock`** — Nix-flake-lock-style snapshot of `publisher_sig` at
+- **`template_lock`** - Nix-flake-lock-style snapshot of `publisher_sig` at
   instantiation time. A running mission stays reproducible even if the
   publisher republishes or deprecates.
-- **`browse_templates`** — F-Droid-style discovery: filter by `category`,
+- **`browse_templates`** - F-Droid-style discovery: filter by `category`,
   `tags`, `min_average_rating`; sort by `rating` / `recent` / `popularity`.
-- **`archive_completed(older_than_days=30)`** — atomic move of terminal
+- **`archive_completed(older_than_days=30)`** - atomic move of terminal
   missions to `archive/YYYY-MM/`, keeps the active query path fast.
-- **`my_history(agent_id)`** — walks active + archive; first step toward
+- **`my_history(agent_id)`** - walks active + archive; first step toward
   the AgentLedger / Achievement layer (v0.9.4+).
 - **5 reserved fields** (`owner_did`, `legal_jurisdiction`, `governing_arbiter`,
-  `credentials_required`, …) ready for the Layer-3 social-collaboration
+  `credentials_required`, ...) ready for the Layer-3 social-collaboration
   story without on-disk format breaks.
 - **Aligned with industry standards** (no new runtime dependencies): the
   schema and on-disk layout track **cargo-crev** (Proof model), **F-Droid**
@@ -251,24 +251,24 @@ Highlights:
 Full wire-format spec in [`docs/PROTOCOLS.md §9`](docs/PROTOCOLS.md);
 bootstrap taxonomy in [`docs/CATEGORIES.md`](docs/CATEGORIES.md).
 
-## What's New in 0.9.2 — Revocation, invitations, private LAN
+## What's New in 0.9.2 - Revocation, invitations, private LAN
 
-- **Endorsement revocation** — owners can now revoke previously-issued
+- **Endorsement revocation** - owners can now revoke previously-issued
   trust endorsements. `TrustGraph.revoke(endorser, endorsement, reason)`;
   load_all filters revoked entries; signed revocation records persist at
   `team_trust/revocations.jsonl`. Pre-emptive revocations are rejected
   (the matching endorsement must exist) so they can't be used for DoS.
-- **Invitation tokens** (`nth_dao.Invitation`) — one signed bundle that
+- **Invitation tokens** (`nth_dao.Invitation`) - one signed bundle that
   carries `team_id` + `owner_pubkey` + `join_token` + optional `ws_url`
   + optional LAN `psk`. Encode as a URL (`nthdao+invite://...`) or as
   a QR code (`pip install nth-dao[ux]`). New members scan/paste and
   attach without out-of-band setup.
-- **Private LAN discovery** — `LANDiscovery(..., psk="team-secret")` adds
+- **Private LAN discovery** - `LANDiscovery(..., psk="team-secret")` adds
   an HMAC-SHA256 tag to every query and hello; peers without the shared
   PSK see only opaque traffic. Empty PSK keeps the public/open mode.
-- **`docs/PROTOCOLS.md`** — a wire-format spec so other-language
+- **`docs/PROTOCOLS.md`** - a wire-format spec so other-language
   implementations (Rust / Go / TS) can interop with the Python reference.
-- **`CONTRIBUTING.md`** — new "Hard Rules" section documenting the
+- **`CONTRIBUTING.md`** - new "Hard Rules" section documenting the
   eight enforcement rules that prevent re-introducing the v0.9.1 bugs.
 
 ```python
@@ -282,7 +282,7 @@ tg.revoke(alice, alice_endorses_bob, reason="key rotated")
 assert not tg.is_trusted("bob", bob_pubkey)
 ```
 
-## What's New in 0.9.1 — Hardened release
+## What's New in 0.9.1 - Hardened release
 
 Independent code review surfaced six critical security/correctness bugs.
 0.9.1 fixes all of them, plus 13 high-severity issues, and adds two new
@@ -290,36 +290,36 @@ discovery layers. See [`CHANGELOG.md`](CHANGELOG.md) for the full list.
 
 **Security (P0/P1/P3)**
 
-- **Gossip signature verification fixed** — messages are now verified
+- **Gossip signature verification fixed** - messages are now verified
   against the *author's* trusted pubkey (not the relay peer's), with a
   10-min replay window and `require_signature=True` as the safe default.
-- **WebSocket challenge-response handshake** — peers must prove they hold
+- **WebSocket challenge-response handshake** - peers must prove they hold
   the private key for the pubkey they claim before being added.
-- **Atomic mission claim** — cross-process file locks (`fcntl` on POSIX,
+- **Atomic mission claim** - cross-process file locks (`fcntl` on POSIX,
   `msvcrt` on Windows) + compare-and-swap; a 6-process race test proves
   exactly-once semantics (`tests/test_concurrent_claim.py`).
-- **Signed team config** — `MembershipManager(owner_identity=...)` makes
+- **Signed team config** - `MembershipManager(owner_identity=...)` makes
   every `team.json` save Ed25519-signed; tampered configs pushed via
   `git_sync` are rejected on load.
 - **Constant-time token comparison** (`hmac.compare_digest`).
 - **Windows ACL hardening** for private key files (`icacls /grant +
   /inheritance:r` with read self-check).
-- **Identity tamper detection** — `AgentIdentity.load()` verifies the
+- **Identity tamper detection** - `AgentIdentity.load()` verifies the
   stored pubkey is actually derivable from the private key.
 
 **New capabilities (P4 + P5)**
 
-- **Web-of-Trust** — `nth_dao.TrustGraph` + signed `Endorsement`s let
-  trust propagate transitively (Alice trusts Bob, Bob trusts Carol →
+- **Web-of-Trust** - `nth_dao.TrustGraph` + signed `Endorsement`s let
+  trust propagate transitively (Alice trusts Bob, Bob trusts Carol ->
   Alice can accept Carol's signed gossip), bounded by per-endorsement
   `depth_allowed` caps. `GossipNode(trust_graph=, wot_max_depth=2)`.
-- **People nearby (LAN discovery)** — pure-stdlib UDP broadcast based
+- **People nearby (LAN discovery)** - pure-stdlib UDP broadcast based
   agent discovery. `LANDiscovery(...).discover(timeout=3.0)` returns
   every nth-dao agent on your subnet, with `ws_url` ready for
   `GossipNode.connect()` and `pubkey_hex` ready for `TrustGraph`.
-- **Fuzzy `PeerFinder.search(query)`** — substring / prefix / exact
+- **Fuzzy `PeerFinder.search(query)`** - substring / prefix / exact
   scoring across `agent_id`, `label`, `capabilities`, `groups`.
-- **Anti-Sybil reputation credits** — `ReputationManager.rate()` spends
+- **Anti-Sybil reputation credits** - `ReputationManager.rate()` spends
   1 credit per new entry; credits are scoped by pubkey fingerprint so
   spawning 1000 `agent_id`s doesn't multiply your budget.
 
@@ -328,7 +328,7 @@ discovery layers. See [`CHANGELOG.md`](CHANGELOG.md) for the full list.
 - New `nth_dao/util/io.py` centralises `atomic_write_json`,
   `safe_load_json`, `safe_id`, and an `InterProcessLock`. Six modules
   previously copy-pasted these.
-- Tests grew from 23 → **83 passing**.
+- Tests grew from 23 -> **83 passing**.
 - Project version is now sourced from `pyproject.toml` via
   `importlib.metadata` so `nth_dao.__version__` no longer drifts.
 

@@ -1,6 +1,6 @@
 """v0.9.7 — multi-DAO sidebar endpoints.
 
-Backs the QQ-style "My DAOs" list and per-DAO state fetch. Each registered
+Backs the chat-native "My DAOs" list and per-DAO state fetch. Each registered
 GroupRegistry record shows up as a DAO; the local workspace is the always-
 present "home" DAO. Group DAOs own channels prefixed `dao-<slug>-`.
 

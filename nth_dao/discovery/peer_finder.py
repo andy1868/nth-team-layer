@@ -16,10 +16,21 @@ PeerFinder
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Literal, Optional
 
 from .agent_registry import AgentRecord, AgentRegistry
+
+# -- search scoring constants --
+EXACT_MATCH_WEIGHT = 3.0
+PREFIX_MATCH_WEIGHT = 1.5
+SUBSTRING_MATCH_WEIGHT = 0.8
+IDLE_BONUS = 0.5
+GROUP_BONUS = 0.3
+HOSTNAME_BONUS = 0.2
+ACCEPTING_TASKS_BONUS = 0.5
+
+ComplementDirection = Literal["bidirectional", "incoming", "outgoing"]
 
 
 @dataclass
@@ -28,6 +39,7 @@ class MatchResult:
     record: AgentRecord
     score: float
     matched_capabilities: List[str]
+    match_details: Dict[str, Any] = field(default_factory=dict)
 
 
 class PeerFinder:
@@ -94,7 +106,7 @@ class PeerFinder:
         only_alive: bool = True,
         min_match: int = 1,
     ) -> Optional[MatchResult]:
-        """返回最佳匹配；min_match=N 要求至少匹中 N 个 capability。"""
+        """Return best match; min_match=N requires at least N capability hits."""
         results = self.rank(
             needed_capabilities=needed_capabilities,
             prefer_idle=prefer_idle,
@@ -116,12 +128,14 @@ class PeerFinder:
         only_alive: bool = True,
         min_match: int = 1,
     ) -> List[MatchResult]:
-        """按 score 排序的匹配结果。
+        """Results sorted by score descending.
 
         Args:
-            min_match: 最少需要匹中的 capability 数。默认 1（至少 1 个 cap 匹中）。
-                       传 0 时退化为"任何活着的 agent"——之前 min_score=0.5 的旧行为
-                       会返回 0 个 cap 匹中但 idle 的 agent，这是 H-6 的坑。
+            min_match: Minimum number of capability hits required.
+                       Default 1 (at least 1 cap must match).
+                       Pass 0 to match any alive agent - previously
+                       min_score=0.5 returned agents with 0 matched caps
+                       but idle status, which was the H-6 pitfall.
         """
         candidates = (
             self.registry.list_alive() if only_alive else self.registry.list_all()
@@ -138,11 +152,11 @@ class PeerFinder:
             score = float(len(matched))
 
             if prefer_idle and r.status == "idle":
-                score += 0.5
+                score += IDLE_BONUS
             if prefer_group and prefer_group in r.groups:
-                score += 0.3
+                score += GROUP_BONUS
             if prefer_hostname and r.hostname == prefer_hostname:
-                score += 0.2
+                score += HOSTNAME_BONUS
 
             results.append(MatchResult(
                 record=r, score=score, matched_capabilities=matched,
@@ -163,25 +177,25 @@ class PeerFinder:
         only_alive: bool = True,
         exclude_agent_ids: Optional[List[str]] = None,
     ) -> List["MatchResult"]:
-        """微信式"找人"：模糊搜索 agent_id / label / capabilities / groups。
+        """Fuzzy agent search across agent_id / label / capabilities / groups.
 
         Args:
-            query: 搜索词（大小写无关）。空串返回 []。
-            fields: 要搜的字段子集，默认 ["agent_id", "label", "capabilities", "groups"]
-            limit: 最多返回 N 条
-            min_score: 低于此评分的丢弃
-            only_alive: 只搜索 alive agent
-            exclude_agent_ids: 排除特定 agent_id（例如自己）
+            query: Case-insensitive search term. Empty string returns [].
+            fields: Optional subset of searchable fields; defaults to agent_id, label, capabilities, groups.
+            limit: Maximum number of results.
+            min_score: Drop results below this score.
+            only_alive: Search only alive agents.
+            exclude_agent_ids: Agent ids to exclude, such as self.
 
-        Score 规则（命中字段累加）:
-            - 完全相等       +3.0
-            - 前缀匹配       +1.5
-            - 子串包含       +0.8
-            - 多字段命中累加；status=idle 再 +0.5
+        Score rules, accumulated across matching fields:
+            - Exact match       +3.0
+            - Prefix match      +1.5
+            - Substring match   +0.8
+            - Multi-field matches accumulate; status=idle adds +0.5
 
         Returns:
-            按 score 降序的 MatchResult 列表；matched_capabilities 字段
-            装载本次命中的 (field, value) 对（注意：复用现有字段名做载体）。
+            Returns MatchResult list sorted by descending score; matched_capabilities
+            carries the matched (field, value) pairs for this query.
         """
         if not query:
             return []
@@ -205,8 +219,8 @@ class PeerFinder:
             if score < min_score:
                 continue
             if r.status == "idle":
-                score += 0.5
-            # MatchResult 复用既有结构：matched_capabilities 改装成 "field:value" 列表
+                score += IDLE_BONUS
+            # Reuse MatchResult: matched_capabilities carries "field:value" entries
             results.append(MatchResult(
                 record=r,
                 score=score,
@@ -227,28 +241,109 @@ class PeerFinder:
                 idx.setdefault(cap, []).append(r.agent_id)
         return idx
 
+    def find_complements(
+        self,
+        agent_id: str,
+        direction: ComplementDirection = "bidirectional",
+    ) -> List[MatchResult]:
+        """Find agents whose capabilities complement *agent_id*'s needs.
+
+        Matching is purely based on ``seeking`` x ``capabilities``:
+
+        * **incoming**: other agent HAS a capability that *agent_id* is SEEKING.
+          (Who can help me?)
+        * **outgoing**: *agent_id* HAS a capability that the other agent is SEEKING.
+          (Who can I help?)
+        * **bidirectional** (default): either direction matches.
+
+        ``accepting_tasks`` gives a score bonus (+ACCEPTING_TASKS_BONUS)
+        but does NOT filter results.
+        ``available_for`` is metadata for consumers - it is NOT used for
+        complement filtering (it describes accepted action types, not
+        capabilities).
+        """
+        if direction not in ("bidirectional", "incoming", "outgoing"):
+            raise ValueError(
+                f"direction must be 'bidirectional', 'incoming', or 'outgoing', "
+                f"got {direction!r}"
+            )
+        all_agents = self.registry.list_alive()
+        my_record = None
+        for r in all_agents:
+            if r.agent_id == agent_id:
+                my_record = r
+                break
+        if my_record is None:
+            return []
+
+        my_caps = set(my_record.capabilities)
+        my_seeking = set(my_record.seeking)
+
+        results: List[MatchResult] = []
+        for r in all_agents:
+            if r.agent_id == agent_id:
+                continue
+
+            other_caps = set(r.capabilities)
+            other_seeking = set(r.seeking)
+
+            # Directional match sets
+            skills_they_offer = list(my_seeking & other_caps)  # they have what I need
+            skills_i_offer = list(other_seeking & my_caps)     # I have what they need
+
+            # Collect matched capabilities based on direction
+            if direction == "incoming":
+                matched = skills_they_offer
+            elif direction == "outgoing":
+                matched = skills_i_offer
+            else:  # bidirectional
+                matched = skills_they_offer + skills_i_offer
+
+            if not matched:
+                continue
+
+            score = float(len(matched)) * 1.0
+            if r.accepting_tasks:
+                score += ACCEPTING_TASKS_BONUS
+
+            # M2: include match direction (non-mutating)
+            result = MatchResult(
+                record=r,
+                score=score,
+                matched_capabilities=matched,
+                match_details={
+                    "they_have": skills_they_offer,
+                    "i_have": skills_i_offer,
+                },
+            )
+
+            results.append(result)
+
+        results.sort(key=lambda m: m.score, reverse=True)
+        return results
+
     def summary_table(self) -> str:  # noqa: E303
-        # placeholder anchor — actual definition below
+        # placeholder anchor - actual definition below
         return _summary_table_impl(self.registry)
 
 
-# ───────────────────────── fuzzy-search helpers ─────────────────────────
+# ------------------------- fuzzy-search helpers -------------------------
 
 
-# Score weights — tuned so:
-#   "alic" prefix-matching agent_id "alice" → score ≈ 1.5 + maybe 1.5 on label
-#   "alice" exact agent_id              → score ≈ 3.0 + label 3.0 = 6.0
+# Score weights - tuned so:
+#   "alic" prefix-matching agent_id "alice" -> score ~ 1.5 + maybe 1.5 on label
+#   "alice" exact agent_id              -> score ~ 3.0 + label 3.0 = 6.0
 def _field_score(haystack: str, needle: str) -> float:
     """Single-field substring/prefix/exact score (case-insensitive)."""
     if not haystack:
         return 0.0
     hay = haystack.lower()
     if hay == needle:
-        return 3.0
+        return EXACT_MATCH_WEIGHT
     if hay.startswith(needle):
-        return 1.5
+        return PREFIX_MATCH_WEIGHT
     if needle in hay:
-        return 0.8
+        return SUBSTRING_MATCH_WEIGHT
     return 0.0
 
 

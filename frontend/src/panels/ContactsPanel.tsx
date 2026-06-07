@@ -1,4 +1,4 @@
-// QQ-style "Contacts" panel — fuzzy-search registered agents and add as friend.
+// chat-native "Contacts" panel - fuzzy-search registered agents and add as friend.
 
 import { useState } from "react";
 import {
@@ -49,10 +49,10 @@ export function ContactsPanel({ actorId }: Props) {
   }
 
   return (
-    <section className="qq-panel">
+    <section className="chat-panel">
       <h2>Find / Add Contact</h2>
 
-      <div className="qq-search-bar">
+      <div className="chat-search-bar">
         <input
           type="search"
           placeholder="Search by name, label, capability…"
@@ -65,16 +65,16 @@ export function ContactsPanel({ actorId }: Props) {
         </button>
       </div>
 
-      {message && <p className="qq-flash">{message}</p>}
+      {message && <p className="chat-flash">{message}</p>}
 
-      <ul className="qq-result-list">
+      <ul className="chat-result-list">
         {results.map((r) => (
-          <li key={r.agent_id} className="qq-result">
+          <li key={r.agent_id} className="chat-result">
             <div>
               <strong>{r.agent_id}</strong>
-              <span className={`qq-status qq-status-${r.status}`}>{r.status}</span>
+              <span className={`chat-status chat-status-${r.status}`}>{r.status}</span>
               {r.capabilities.length > 0 && (
-                <small> · {r.capabilities.slice(0, 3).join(", ")}</small>
+                <small> / {r.capabilities.slice(0, 3).join(", ")}</small>
               )}
             </div>
             <button onClick={() => add({ agent_id: r.agent_id })}>+ Add</button>
@@ -82,7 +82,7 @@ export function ContactsPanel({ actorId }: Props) {
         ))}
       </ul>
 
-      <div className="qq-direct-add">
+      <div className="chat-direct-add">
         <h3>Or add by exact ID / DID</h3>
         <input
           placeholder="agent_id"

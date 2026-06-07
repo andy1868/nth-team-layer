@@ -1,5 +1,5 @@
-// QQ-style panel shell. Drop into App.tsx as <ContactShell ... /> to get the
-// 5 sidebar tabs: Contacts · Nearby · Groups · Governance · Mandates.
+// chat-native panel shell. Drop into App.tsx as <ContactShell ... /> to get the
+// 5 sidebar tabs: Contacts / Nearby / Groups / Governance / Mandates.
 
 import { useState } from "react";
 import type { UniqueGroup } from "../contacts";
@@ -8,7 +8,7 @@ import { GovernancePanel } from "./GovernancePanel";
 import { GroupsPanel } from "./GroupsPanel";
 import { MandatesPanel } from "./MandatesPanel";
 import { NearbyPanel } from "./NearbyPanel";
-import "./qq-style.css";
+import "./chat-panels.css";
 
 type Tab = "contacts" | "nearby" | "groups" | "governance" | "mandates";
 
@@ -34,42 +34,42 @@ export function ContactShell({ actorId, actorPubkeyHex = "", sign }: Props) {
   const [selectedGroup, setSelectedGroup] = useState<UniqueGroup | null>(null);
 
   const noSignWarning = !sign && (tab === "groups" || tab === "governance") && (
-    <p className="qq-flash">
-      Signing wallet not connected. Browse-only mode — creating groups and
+    <p className="chat-flash">
+      Signing wallet not connected. Browse-only mode - creating groups and
       voting are disabled.
     </p>
   );
 
   return (
-    <div className="qq-shell">
-      <nav className="qq-tab-bar">
+    <div className="chat-shell">
+      <nav className="chat-tab-bar">
         <button
-          className={`qq-tab ${tab === "contacts" ? "active" : ""}`}
+          className={`chat-tab ${tab === "contacts" ? "active" : ""}`}
           onClick={() => setTab("contacts")}
         >
           Contacts
         </button>
         <button
-          className={`qq-tab ${tab === "nearby" ? "active" : ""}`}
+          className={`chat-tab ${tab === "nearby" ? "active" : ""}`}
           onClick={() => setTab("nearby")}
         >
           Nearby
         </button>
         <button
-          className={`qq-tab ${tab === "groups" ? "active" : ""}`}
+          className={`chat-tab ${tab === "groups" ? "active" : ""}`}
           onClick={() => setTab("groups")}
         >
           Groups
         </button>
         <button
-          className={`qq-tab ${tab === "governance" ? "active" : ""}`}
+          className={`chat-tab ${tab === "governance" ? "active" : ""}`}
           onClick={() => setTab("governance")}
           disabled={!selectedGroup}
         >
           Governance{selectedGroup ? ` (@${selectedGroup.slug})` : ""}
         </button>
         <button
-          className={`qq-tab ${tab === "mandates" ? "active" : ""}`}
+          className={`chat-tab ${tab === "mandates" ? "active" : ""}`}
           onClick={() => setTab("mandates")}
         >
           Mandates

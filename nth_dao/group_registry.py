@@ -596,7 +596,7 @@ class GroupRegistry:
     ) -> List[GroupRecord]:
         """Fuzzy search on slug, display_name, description.
 
-        WeChat/QQ-style: substring + prefix prioritized.
+        WeChat/chat-native: substring + prefix prioritized.
         """
         q = query.strip().lower()
         if not q:

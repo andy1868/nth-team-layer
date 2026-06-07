@@ -1,5 +1,5 @@
 """
-AgentRegistry — file-backed peer registry for cross-process / cross-terminal agent discovery.
+AgentRegistry - file-backed peer registry for cross-process / cross-terminal agent discovery.
 
 Design:
     - Each agent writes its own record to team_agents/{agent_id}.json
@@ -33,9 +33,16 @@ from ..util import atomic_write_json, safe_load_json, safe_id as _safe_id
 
 logger = logging.getLogger("nth_dao.discovery")
 
-
 # repo_root/team_agents/
 DEFAULT_AGENTS_DIR = "team_agents"
+
+# C2: clock-skew tolerance - two machines sharing a filesystem may have
+# clocks that differ by up to 30 s.  Without this buffer, agent B may
+# incorrectly mark agent A as dead simply because B's clock is ahead.
+CLOCK_SKEW_TOLERANCE_SECONDS = 30
+# Upper bound on future timestamps - anything more than 5 minutes in the
+# future is treated as invalid (tampered / misconfigured clock).
+FUTURE_STALE_SECONDS = 300
 
 
 @dataclass
@@ -49,6 +56,12 @@ class AgentRecord:
     groups: List[str] = field(default_factory=list)        # e.g. ["frontend", "ops"]
     status: str = "idle"                # idle / busy / blocked / offline
     current_mission: Optional[str] = None
+    # -- v0.9.8: Agent discovery enhancement --
+    seeking: List[str] = field(default_factory=list)          # capabilities this agent is looking for
+    accepting_tasks: bool = False                               # actively accepting marketplace tasks
+    available_for: List[str] = field(default_factory=list)     # action types accepted (e.g. code_review, deploy)
+                                                               # NOTE: distinct from capabilities - used by
+                                                               # consumers for routing, NOT by find_complements
     metadata: Dict[str, Any] = field(default_factory=dict)
     registered_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_seen: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -61,22 +74,41 @@ class AgentRecord:
     def from_dict(cls, data: dict) -> "AgentRecord":
         # Tolerant: drop unknown fields so older / newer records still load.
         fields = {f for f in cls.__dataclass_fields__}
+        unknown = set(data.keys()) - fields
+        if unknown:
+            logger.debug("AgentRecord.from_dict: ignoring unknown fields %s", unknown)
         return cls(**{k: v for k, v in data.items() if k in fields})
 
     def is_alive(self, max_stale_seconds: int = 90) -> bool:
-        """True iff last_seen is within max_stale_seconds of now."""
+        """True iff last_seen is within max_stale_seconds of now.
+
+        Applies CLOCK_SKEW_TOLERANCE_SECONDS buffer for multi-machine
+        clock drift, and rejects timestamps more than FUTURE_STALE_SECONDS
+        in the future (tampered / misconfigured clock).
+        """
         try:
             last = datetime.fromisoformat(self.last_seen)
-            return (datetime.now() - last).total_seconds() < max_stale_seconds
+            delta = (datetime.now() - last).total_seconds()
+            # Reject far-future timestamps (tampered or misconfigured clock)
+            if delta < -FUTURE_STALE_SECONDS:
+                return False
+            # Accept within stale window + clock-skew buffer
+            effective = max_stale_seconds + CLOCK_SKEW_TOLERANCE_SECONDS
+            return delta < effective
         except Exception:
             return False
 
     def short(self) -> str:
         marker = "*" if self.is_alive() else "-"
         cap_str = ",".join(self.capabilities[:3]) or "-"
+        extra = ""
+        if self.seeking:
+            extra += f" seek=[{','.join(self.seeking[:2])}]"
+        if self.accepting_tasks:
+            extra += " accept"
         return (
             f"{marker} {self.agent_id:20s} backend={self.backend_id:12s} "
-            f"caps=[{cap_str}] status={self.status}"
+            f"caps=[{cap_str}] status={self.status}{extra}"
         )
 
 
@@ -93,17 +125,18 @@ class AgentRegistry:
     ):
         """
         Args:
-            agents_dir: 默认 ./team_agents/，与 PR 5 git_sync 路径一致
-            heartbeat_interval: 心跳秒数
+            agents_dir: default ./team_agents/, aligned with the git_sync path
+            heartbeat_interval: heartbeat interval in seconds
         """
         self.agents_dir = Path(agents_dir)
         self.agents_dir.mkdir(parents=True, exist_ok=True)
         self.heartbeat_interval = heartbeat_interval
 
         self._record: Optional[AgentRecord] = None
+        self._record_lock = threading.RLock()  # C3: protect _record R/W across threads
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
-        # 修复 M-8：register() 重复调用不再 stack 多个 atexit 回调
+        # M-8: repeated register() calls no longer stack atexit callbacks
         self._atexit_registered = False
 
     #   /  /
@@ -115,28 +148,35 @@ class AgentRegistry:
         capabilities: Optional[List[str]] = None,
         groups: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        seeking: Optional[List[str]] = None,
+        accepting_tasks: bool = False,
+        available_for: Optional[List[str]] = None,
         start_heartbeat: bool = True,
     ) -> AgentRecord:
         """Register this agent and (optionally) start a heartbeat thread."""
         # Re-registering replaces the prior record (idempotent).
-        if self._record is not None:
-            self.unregister()
+        with self._record_lock:
+            if self._record is not None:
+                self.unregister()
 
-        self._record = AgentRecord(
-            agent_id=agent_id,
-            hostname=socket.gethostname(),
-            pid=os.getpid(),
-            backend_id=backend_id,
-            capabilities=capabilities or [],
-            groups=groups or [],
-            metadata=metadata or {},
-        )
-        self._write(self._record)
+            self._record = AgentRecord(
+                agent_id=agent_id,
+                hostname=socket.gethostname(),
+                pid=os.getpid(),
+                backend_id=backend_id,
+                capabilities=capabilities or [],
+                groups=groups or [],
+                seeking=seeking or [],
+                accepting_tasks=accepting_tasks,
+                available_for=available_for or [],
+                metadata=metadata or {},
+            )
+            self._write(self._record)
 
         if start_heartbeat:
             self._start_heartbeat()
 
-        # 只 register 一次 atexit，避免同进程多次 attach/detach 时累积
+        # Register atexit only once to avoid repeated attach/detach accumulation
         if not self._atexit_registered:
             atexit.register(self.unregister)
             self._atexit_registered = True
@@ -150,23 +190,25 @@ class AgentRegistry:
         metadata_patch: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Patch this agent's record fields + bump last_seen."""
-        if self._record is None:
-            raise RuntimeError("call register() first")
-        if status is not None:
-            self._record.status = status
-        if current_mission is not None:
-            self._record.current_mission = current_mission
-        if metadata_patch:
-            self._record.metadata.update(metadata_patch)
-        self._record.last_seen = datetime.now().isoformat()
-        self._write(self._record)
+        with self._record_lock:
+            if self._record is None:
+                raise RuntimeError("call register() first")
+            if status is not None:
+                self._record.status = status
+            if current_mission is not None:
+                self._record.current_mission = current_mission
+            if metadata_patch:
+                self._record.metadata.update(metadata_patch)
+            self._record.last_seen = datetime.now().isoformat()
+            self._write(self._record)
 
     def heartbeat(self) -> None:
         """Just bump last_seen; called from the heartbeat thread."""
-        if self._record is None:
-            return
-        self._record.last_seen = datetime.now().isoformat()
-        self._write(self._record)
+        with self._record_lock:
+            if self._record is None:
+                return
+            self._record.last_seen = datetime.now().isoformat()
+            self._write(self._record)
 
     def unregister(self) -> None:
         """Stop heartbeat and mark this agent offline.
@@ -175,24 +217,26 @@ class AgentRegistry:
         Run cleanup() to remove stale tombstones.
         """
         self._stop_heartbeat()
-        if self._record is None:
-            return
-        target = self._path_for(self._record.agent_id)
-        try:
-            if target.exists():
-                # Write status=offline rather than unlinking, to preserve audit
-                # trail. Use cleanup() to purge old tombstones.
-                self._record.status = "offline"
-                self._record.last_seen = datetime.now().isoformat()
-                self._write(self._record)
-        except Exception:
-            pass
-        self._record = None
+        with self._record_lock:
+            if self._record is None:
+                return
+            target = self._path_for(self._record.agent_id)
+            try:
+                if target.exists():
+                    # Write status=offline rather than unlinking, to preserve audit
+                    # trail. Use cleanup() to purge old tombstones.
+                    self._record.status = "offline"
+                    self._record.last_seen = datetime.now().isoformat()
+                    self._write(self._record)
+            except Exception:
+                logger.exception("unregister: failed to write offline tombstone for %s",
+                                 self._record.agent_id)
+            self._record = None
 
     #   /
 
     def list_all(self) -> List[AgentRecord]:
-        """所有注册过的 agent record（含已 offline 的 tombstone）。"""
+        """All registered agent records, including offline tombstones."""
         records = []
         for f in sorted(self.agents_dir.glob("*.json")):
             data = safe_load_json(f, fallback=None)
@@ -220,12 +264,13 @@ class AgentRegistry:
 
     @property
     def my_record(self) -> Optional[AgentRecord]:
-        return self._record
+        with self._record_lock:
+            return self._record
 
     #
 
     def cleanup(self, max_stale: int = 86400) -> int:
-        """删掉超过 max_stale 秒未心跳的 tombstone（默认 1 天）。"""
+        """Remove tombstones older than max_stale seconds (default 1 day)."""
         removed = 0
         for f in self.agents_dir.glob("*.json"):
             data = safe_load_json(f, fallback=None)

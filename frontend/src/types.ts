@@ -21,7 +21,7 @@ export type Summary = {
   actor_code?: string;   // v0.9.8: the caller's stable visible handle
 };
 
-// v0.9.8: result of `GET /api/agents/by_code/{code}` — used by the
+// v0.9.8: result of `GET /api/agents/by_code/{code}` - used by the
 // "add agent by code" search box.
 export type CodeLookupResult = {
   code: string;
@@ -112,7 +112,7 @@ export type DaoState = {
   active_channel_id?: string;
 };
 
-// v0.9.7 — one agent ↔ many DAOs. Each DAO is either the local "home"
+// v0.9.7 - one agent ↔ many DAOs. Each DAO is either the local "home"
 // workspace or a registered Group from the cross-workspace GroupRegistry.
 export type DaoKind = "home" | "group";
 

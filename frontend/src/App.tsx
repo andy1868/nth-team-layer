@@ -199,7 +199,7 @@ function App() {
     }, "Task status updated");
   }
 
-  // v0.9.8: "Add agent by code" — paste e.g. "a3f7-b2e8" and the API
+  // v0.9.8: "Add agent by code" - paste e.g. "a3f7-b2e8" and the API
   // resolves it back to the underlying agent_id / pubkey / DAO source.
   async function onLookupCode(event: FormEvent) {
     event.preventDefault();
@@ -245,7 +245,7 @@ function App() {
             <p className="hint">
               Current policy: {summary?.team.join_policy ?? "loading"}
               {summary?.actor_code && (
-                <> · Your code: <code className="agent-code">{summary.actor_code}</code></>
+                <> / Your code: <code className="agent-code">{summary.actor_code}</code></>
               )}
             </p>
           </form>
@@ -268,7 +268,7 @@ function App() {
             {lookupResult && <p className="hint">{lookupResult}</p>}
           </form>
 
-          {/* QQ-style "My DAOs" list — one agent ↔ many DAOs. Click to switch. */}
+          {/* chat-native "My DAOs" list - one agent ↔ many DAOs. Click to switch. */}
           <section className="panel">
             <div className="panel-heading">
               <h2>My DAOs</h2>
@@ -294,8 +294,8 @@ function App() {
                       <span className="dao-name">{dao.display_name}</span>
                       <small>
                         {dao.kind === "home" ? "home" : `@${dao.slug}`}
-                        {" · "}{dao.member_count} member{dao.member_count === 1 ? "" : "s"}
-                        {dao.joined ? "" : " · not joined"}
+                        {" / "}{dao.member_count} member{dao.member_count === 1 ? "" : "s"}
+                        {dao.joined ? "" : " / not joined"}
                       </small>
                     </span>
                   </button>
@@ -356,7 +356,7 @@ function App() {
               {state?.dao?.kind === "group" && state?.channels.length === 0 && (
                 <p className="hint">
                   This DAO has no channels yet. Use “New channel” on the left to
-                  create one — it will be scoped to <code>@{state.dao.slug}</code>.
+                  create one - it will be scoped to <code>@{state.dao.slug}</code>.
                 </p>
               )}
             </div>
@@ -411,7 +411,7 @@ function App() {
                         <code className="agent-code agent-code-inline">{member.code}</code>
                       )}
                     </span>
-                    <small>{member.role}{member.online ? " · online" : ""}</small>
+                    <small>{member.role}{member.online ? " / online" : ""}</small>
                   </div>
                 ))}
               </div>

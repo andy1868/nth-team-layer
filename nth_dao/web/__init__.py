@@ -507,7 +507,7 @@ def create_app(workspace: str | Path | None = None) -> FastAPI:
 
     @app.get("/api/agents/search")
     def search_agents(q: str = "", limit: int = 10) -> dict[str, Any]:
-        """QQ/WeChat-style fuzzy search across registered agents.
+        """consumer chat app-inspired fuzzy search across registered agents.
 
         Matches against agent_id, label (from registry metadata), capabilities
         and groups; returns ranked MatchResults as plain dicts.

@@ -2,8 +2,8 @@
 
 Background
 ----------
-Telegram-style or QQ-style apps show a short, fixed, *visible* code per
-contact (Telegram username, QQ number) so humans can search and add
+Consumer chat apps show a short, fixed, *visible* code per
+contact (visible usernames or short contact codes) so humans can search and add
 each other without having to copy long pubkeys around. NTH DAO already
 has `AgentID` (short, but only present for crypto-derived agents) and
 `pubkey_hex` (long, 64 hex). Neither is ideal as a copy-and-paste handle

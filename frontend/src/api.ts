@@ -48,7 +48,7 @@ export function getState(agentId: string, channelId: string): Promise<DaoState> 
   return request<DaoState>(`/api/state?${params.toString()}`);
 }
 
-// v0.9.7 — multi-DAO endpoints (sidebar list + per-DAO scoped state)
+// v0.9.7 - multi-DAO endpoints (sidebar list + per-DAO scoped state)
 export function getDaos(actorId: string, actorPubkeyHex: string): Promise<{ daos: DaoSummary[] }> {
   const params = new URLSearchParams({ actor_id: actorId, actor_pubkey_hex: actorPubkeyHex });
   return request<{ daos: DaoSummary[] }>(`/api/daos?${params.toString()}`);

@@ -1,4 +1,4 @@
-// QQ-style "People Nearby" panel — UDP LAN discovery.
+// chat-native "People Nearby" panel - UDP LAN discovery.
 
 import { useState } from "react";
 import { type LANPeer, addAgent, discoverLanPeers } from "../contacts";
@@ -42,10 +42,10 @@ export function NearbyPanel({ actorId }: Props) {
   }
 
   return (
-    <section className="qq-panel">
+    <section className="chat-panel">
       <h2>People Nearby (LAN)</h2>
 
-      <div className="qq-nearby-controls">
+      <div className="chat-nearby-controls">
         <label>
           PSK (optional):
           <input
@@ -60,26 +60,26 @@ export function NearbyPanel({ actorId }: Props) {
         </button>
       </div>
 
-      {error && <p className="qq-flash qq-error">{error}</p>}
+      {error && <p className="chat-flash chat-error">{error}</p>}
 
       {peers.length === 0 && !scanning && (
-        <p className="qq-empty">
+        <p className="chat-empty">
           No peers seen yet. Click <em>Scan LAN</em>. Your team needs nth-dao agents
           listening on UDP/9877 on the same broadcast domain.
         </p>
       )}
 
-      <ul className="qq-result-list">
+      <ul className="chat-result-list">
         {peers.map((p) => (
-          <li key={p.agent_id} className="qq-result">
+          <li key={p.agent_id} className="chat-result">
             <div>
               <strong>{p.label || p.agent_id}</strong>
-              <small> · {p.source_addr} · {p.rtt_ms.toFixed(0)}ms</small>
+              <small> / {p.source_addr} / {p.rtt_ms.toFixed(0)}ms</small>
               {p.capabilities.length > 0 && (
-                <div className="qq-caps">{p.capabilities.join(", ")}</div>
+                <div className="chat-caps">{p.capabilities.join(", ")}</div>
               )}
               {p.pubkey_hex && (
-                <code className="qq-did">{p.pubkey_hex.slice(0, 16)}…</code>
+                <code className="chat-did">{p.pubkey_hex.slice(0, 16)}…</code>
               )}
             </div>
             <button onClick={() => invite(p)}>+ Add</button>

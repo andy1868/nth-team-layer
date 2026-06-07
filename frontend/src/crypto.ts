@@ -1,4 +1,4 @@
-﻿// Browser-side Ed25519 keystore + canonical-JSON signer.
+// Browser-side Ed25519 keystore + canonical-JSON signer.
 //
 // Mirrors `nth_dao.identity.canonical_json` (sort_keys=True,
 // separators=(",", ":"), ensure_ascii=False, UTF-8 bytes) so signatures

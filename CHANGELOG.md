@@ -45,73 +45,73 @@ early integrators, not yet for a stable production deployment.
 - Pre-release secret/runtime scan: required before every commit, push,
   and release.
 
-## [0.9.6] — 2026-06-02 — Unique group names, governance votes, QQ-style UI
+## [0.9.6] - 2026-06-02 - Unique group names, governance votes, chat-native collaboration UI
 
 User-facing layer: workspace-unique groups with policy votes, plus the
-TS panels for QQ/WeChat-style "find / add / nearby / group" UX. No
+TS panels for consumer chat app-inspired "find / add / nearby / group" UX. No
 breaking changes to existing protocol artifacts.
 
-### Added — GroupRegistry (Python, protocol)
+### Added - GroupRegistry (Python, protocol)
 
-- `nth_dao/group_registry.py` — workspace-unique groups.
+- `nth_dao/group_registry.py` - workspace-unique groups.
   - `normalize_group_name(name)` produces a stable slug
-    (`Frontend Team!` → `frontend-team`).
+    (`Frontend Team!` -> `frontend-team`).
   - `GroupRecord` is signed by the founder; subsequent updates re-sign.
   - `GroupPolicy` enum: `open` / `approval` / `closed` / `voted`.
-  - `GroupRegistry.publish()` enforces slug uniqueness — same group_id
+  - `GroupRegistry.publish()` enforces slug uniqueness - same group_id
     re-publish updates; different group_id reusing the slug raises
     `GroupRegistryError`.
   - `search()` is fuzzy-match across slug / display_name / description.
-- **Governance voting** — `PolicyChangeProposal`, signed by a member.
+- **Governance voting** - `PolicyChangeProposal`, signed by a member.
   Members append signed `Vote` records; `resolve_proposal` returns
   passed/reason. Threshold: `> 50%` of current member pubkeys, deduped.
   `apply_proposal` builds a new GroupRecord re-signed by an admin.
 - Anti-DoS: non-member proposer rejected; duplicate yes-votes from same
   pubkey deduped; tampered proposer signatures rejected.
 
-### Added — Web API (Python, FastAPI)
+### Added - Web API (Python, FastAPI)
 
 In `nth_dao/web/`, 14 new endpoints:
 
-- `GET  /api/agents/search?q=` — QQ-style fuzzy search over
+- `GET  /api/agents/search?q=` - chat-native fuzzy search over
   `PeerFinder` (matches agent_id, label from registry metadata,
   capabilities, groups; ranked).
-- `POST /api/agents/lan_discover` — server-initiated UDP LAN scan,
+- `POST /api/agents/lan_discover` - server-initiated UDP LAN scan,
   returns LANPeers with `ws_url` and `pubkey_hex`.
-- `POST /api/agents/add` — add an agent by `target_agent_id` OR
+- `POST /api/agents/add` - add an agent by `target_agent_id` OR
   `target_did` (W3C did:key resolved server-side).
-- `POST /api/groups/registry` — prepare unsigned group skeleton.
-- `POST /api/groups/registry/publish` — persist a signed GroupRecord.
-- `GET  /api/groups/registry` — list all.
-- `POST /api/groups/registry/search` — fuzzy search.
-- `POST /api/groups/registry/{group_id}/proposals` — prepare unsigned
+- `POST /api/groups/registry` - prepare unsigned group skeleton.
+- `POST /api/groups/registry/publish` - persist a signed GroupRecord.
+- `GET  /api/groups/registry` - list all.
+- `POST /api/groups/registry/search` - fuzzy search.
+- `POST /api/groups/registry/{group_id}/proposals` - prepare unsigned
   proposal skeleton.
-- `POST /api/groups/registry/{group_id}/proposals/publish` — submit a
+- `POST /api/groups/registry/{group_id}/proposals/publish` - submit a
   signed proposal.
-- `GET  /api/groups/registry/{group_id}/proposals` — list proposals
+- `GET  /api/groups/registry/{group_id}/proposals` - list proposals
   with resolution status.
 - `POST /api/groups/registry/{group_id}/proposals/{proposal_id}/sign_vote`
-  — append a signed vote and re-resolve.
+  - append a signed vote and re-resolve.
 
-All write endpoints follow the same "server prepares unsigned skeleton →
-client signs locally → client posts back" pattern so private keys never
+All write endpoints follow the same "server prepares unsigned skeleton ->
+client signs locally -> client posts back" pattern so private keys never
 touch the wire.
 
-### Added — TS panels (frontend/src/panels/, per the iron rule)
+### Added - TS panels (frontend/src/panels/, per the iron rule)
 
-Four QQ/WeChat-inspired React panels + a shell that ties them together:
+Four consumer chat app-inspired React panels + a shell that ties them together:
 
-- `ContactsPanel` — search by name/label/capability, "+ Add" buttons,
+- `ContactsPanel` - search by name/label/capability, "+ Add" buttons,
   fallback "exact agent_id / DID" form.
-- `NearbyPanel` — "people nearby" LAN discovery, with optional PSK.
-- `GroupsPanel` — list / search / create unique groups. Shows policy
+- `NearbyPanel` - "people nearby" LAN discovery, with optional PSK.
+- `GroupsPanel` - list / search / create unique groups. Shows policy
   color band per group; the "create" form lets the user pick the
   initial policy.
-- `GovernancePanel` — propose a policy change with rationale; vote
+- `GovernancePanel` - propose a policy change with rationale; vote
   yes/no/abstain on open proposals.
-- `ContactShell` — top tab bar with the four panels, browse-only mode
+- `ContactShell` - top tab bar with the four panels, browse-only mode
   when no wallet is connected.
-- `qq-style.css` — standalone styles so existing `styles.css` is
+- `chat-panels.css` - standalone styles so existing `styles.css` is
   untouched.
 
 The host app supplies `actorPubkeyHex` and `sign(payload)` (browser
@@ -130,28 +130,28 @@ required actions are disabled and labeled.
 ### No protocol changes on disk
 
 `Mission`, `MissionTemplate`, `TeamConfig`, `GuardianSet`, `Endorsement`,
-`Invitation`, gossip envelope — all unchanged. GroupRecord is a brand-new
+`Invitation`, gossip envelope - all unchanged. GroupRecord is a brand-new
 artifact stored under `team_groups/` next to existing files.
 
-## [0.9.5] — 2026-05-31 — DID:key, AgentLedger, Guardian recovery, A2A boundary
+## [0.9.5] - 2026-05-31 - DID:key, AgentLedger, Guardian recovery, A2A boundary
 
 Five additive deliverables, no breaking changes. v0.9.4 artifacts load
 byte-identically.
 
-### Added — W3C did:key standard alignment
+### Added - W3C did:key standard alignment
 
-- `nth_dao/did_key.py` — pure-stdlib base58btc + multicodec (0xed 0x01)
+- `nth_dao/did_key.py` - pure-stdlib base58btc + multicodec (0xed 0x01)
   encode/decode of Ed25519 pubkeys per W3C did:key spec.
-- `AgentIdentity.as_did()` — emits a full `did:key:z…` string. Replaces
+- `AgentIdentity.as_did()` - emits a full `did:key:z...` string. Replaces
   the v0.9.3 simplified placeholder.
-- `AgentIdentity.from_did(did)` — rebuilds a verify-only identity from
+- `AgentIdentity.from_did(did)` - rebuilds a verify-only identity from
   a DID. Useful for trusting a peer by their DID without their private key.
 - `MissionTemplate.publisher_did` is now a real did:key (previously
   a truncated-hex placeholder).
 
-### Added — AgentLedger persistence
+### Added - AgentLedger persistence
 
-- `nth_dao/agent_ledger.py` — per-pubkey-fingerprint append-only event
+- `nth_dao/agent_ledger.py` - per-pubkey-fingerprint append-only event
   ledger. Stored at `sidechain/agents/<fp>/{profile.json, ledger.jsonl,
   stats.json}`. Same anti-Sybil pattern as reputation credits: one
   pubkey = one ledger regardless of how many agent_ids it uses.
@@ -165,16 +165,16 @@ byte-identically.
 - Events are signed when a crypto identity is available; unsigned
   events still count (best-effort signing per Sec model).
 
-### Added — Guardian-based social recovery
+### Added - Guardian-based social recovery
 
-- `nth_dao/guardian.py` — N-of-M threshold recovery. The agent publishes
+- `nth_dao/guardian.py` - N-of-M threshold recovery. The agent publishes
   a signed `GuardianSet(guardian_pubkeys, threshold)`. To replace a key,
   the agent assembles a `KeyReplacementProof` and collects M guardian
   signatures over its canonical payload.
 - `verify_replacement(proof, guardian_set)` validates:
   - guardian_set itself signed by the protected pubkey,
   - proof references the right set_id + fingerprint,
-  - ≥ threshold distinct valid signatures from guardian pubkeys.
+  - >= threshold distinct valid signatures from guardian pubkeys.
 - `GuardianStore` persists sets + proofs under `team_recovery/` and
   maintains `active_replacements.json` for `resolve_current_pubkey(fp)`
   queries. Other components can use that to follow key rotations.
@@ -182,22 +182,22 @@ byte-identically.
   duplicate signatures de-duplicated; mallory's signature ignored
   when she isn't in the set.
 
-### Added — A2A boundary translation primitives
+### Added - A2A boundary translation primitives
 
-- `nth_dao/a2a/translate.py` — pure data transformations between our
+- `nth_dao/a2a/translate.py` - pure data transformations between our
   types and Google Agent2Agent (A2A) shapes.
-- `template_to_a2a_skill(template)` — render a MissionTemplate as an
+- `template_to_a2a_skill(template)` - render a MissionTemplate as an
   A2A Skill (with JSON-Schema input/output specs derived from IOField).
-- `agent_card_from(...)` — assemble an A2A AgentCard JSON dict
+- `agent_card_from(...)` - assemble an A2A AgentCard JSON dict
   suitable for `/.well-known/agent.json`.
-- `a2a_task_from_mission(mission)` — render a Mission as an A2A Task
-  (status mapped: planning → submitted, active → in_progress, …).
-- `mission_inputs_from_a2a_message(message, template)` — extract +
+- `a2a_task_from_mission(mission)` - render a Mission as an A2A Task
+  (status mapped: planning -> submitted, active -> in_progress, ...).
+- `mission_inputs_from_a2a_message(message, template)` - extract +
   validate structured inputs from an A2A SendMessage payload.
 - **No HTTP / no JSON-RPC**: those land in a separate package
   (`nth-dao-a2a-adapter`, v0.10.0). The protocol core stays stdlib-only.
 
-### Added — wire-format conformance vectors expanded
+### Added - wire-format conformance vectors expanded
 
 - `nth_dao/conformance/vectors.json` grew from 22 vectors / 6 categories
   to **31 vectors / 11 categories**.
@@ -210,33 +210,33 @@ byte-identically.
 ### Tests
 
 - 217 passing + 5 skipped (was 169 + 1). +48 new tests:
-  - `tests/test_did_key.py` — 16 (round-trip, error paths, AgentIdentity
+  - `tests/test_did_key.py` - 16 (round-trip, error paths, AgentIdentity
     integration, template.publisher_did upgrade).
-  - `tests/test_v095_features.py` — 25 (AgentLedger fold, scoping,
+  - `tests/test_v095_features.py` - 25 (AgentLedger fold, scoping,
     handoff counters, Guardian set / replacement valid + below-threshold
     + non-guardian + duplicate + tampered, GuardianStore commit /
     resolve, A2A skill / card / task / inputs).
-  - Conformance vectors: 5 → 5 (test count unchanged but covers 31 vectors).
+  - Conformance vectors: 5 -> 5 (test count unchanged but covers 31 vectors).
 - All 169 v0.9.4 tests still pass; no behavior regression.
 
 ### No protocol changes on disk
 
 `Mission`, `MissionTemplate`, `TeamConfig`, `Endorsement`, `Invitation`,
-gossip envelope — all unchanged. The `publisher_did` field that already
+gossip envelope - all unchanged. The `publisher_did` field that already
 existed since v0.9.3 just contains a more useful value now.
 
-## [0.9.4] — 2026-05-31 — Sustainability sprint
+## [0.9.4] - 2026-05-31 - Sustainability sprint
 
 This release does NOT add new protocol surface. It fills six holes the
 v0.9.1 code review identified as preventing the project from outliving its
 single maintainer:
 
-### Added — SECURITY.md + key recovery
+### Added - SECURITY.md + key recovery
 
-- `SECURITY.md` — supported versions, disclosure address, threat model
+- `SECURITY.md` - supported versions, disclosure address, threat model
   (what we defend against + what we explicitly don't), per-vulnerability
   history.
-- `nth_dao/key_recovery.py` — passphrase-protected `RecoveryKit` for
+- `nth_dao/key_recovery.py` - passphrase-protected `RecoveryKit` for
   exporting / re-importing an `AgentIdentity`. Uses libsodium
   `crypto_secretbox` (XSalsa20 + Poly1305) with Argon2id key derivation
   at INTERACTIVE difficulty (~0.5s per try). Rejects tampered kits;
@@ -244,43 +244,43 @@ single maintainer:
   is valid.
 - 14 tests in `tests/test_key_recovery.py`.
 
-### Added — docs/MIGRATIONS.md + migration test runner
+### Added - docs/MIGRATIONS.md + migration test runner
 
-- `docs/MIGRATIONS.md` — forward-compat policy for 0.9.x, per-version
+- `docs/MIGRATIONS.md` - forward-compat policy for 0.9.x, per-version
   delta, contributor rule that all new fields default-init safely.
 - `tests/test_migrations.py` + `tests/migration_fixtures/0.9.0/`
-  fixtures — a v0.9.0 mission and team.json file. The runner asserts
+  fixtures - a v0.9.0 mission and team.json file. The runner asserts
   current code parses them cleanly and preserves the originally-set
   fields. Unknown fields are tolerated.
 - 4 tests confirm round-trip integrity through the current code.
 
-### Added — nth-status + nth-metrics CLI
+### Added - nth-status + nth-metrics CLI
 
-- `nth_dao/cli/status.py` — text or JSON snapshot of a workspace.
+- `nth_dao/cli/status.py` - text or JSON snapshot of a workspace.
   Sections: version, team, agents (alive vs registered), missions
   (by status + archived count), templates (total + deprecated +
   reviews), trust (anchors, endorsements, revocations).
-- `nth_dao/cli/metrics.py` — Prometheus exposition-format `/metrics`
+- `nth_dao/cli/metrics.py` - Prometheus exposition-format `/metrics`
   endpoint, served by the stdlib `ThreadingHTTPServer`. Each metric is
-  a gauge with HELP + TYPE comments. Includes `/healthz`. Pure stdlib —
+  a gauge with HELP + TYPE comments. Includes `/healthz`. Pure stdlib -
   no `prometheus_client` dependency.
 - New console scripts: `nth-status`, `nth-metrics`.
 - 12 tests in `tests/test_cli_status_metrics.py` including a smoke test
   that actually starts the HTTP server, scrapes it, and shuts it down.
 
-### Added — requirements.lock files
+### Added - requirements.lock files
 
-- `requirements/README.md` — reproducibility rationale + usage.
-- `requirements/base.txt` (empty — core is stdlib only).
+- `requirements/README.md` - reproducibility rationale + usage.
+- `requirements/base.txt` (empty - core is stdlib only).
 - `requirements/crypto.lock.txt`, `requirements/ux.lock.txt`,
-  `requirements/web.lock.txt`, `requirements/dev.lock.txt` — pinned
+  `requirements/web.lock.txt`, `requirements/dev.lock.txt` - pinned
   transitive dependency trees for each extra.
 - CI hint: rebuild quarterly with `pip-compile`. Between rebuilds the
   locks are immutable.
 
-### Added — conformance test suite
+### Added - conformance test suite
 
-- `nth_dao/conformance/` — vectors-based wire-protocol conformance.
+- `nth_dao/conformance/` - vectors-based wire-protocol conformance.
   Vectors are written by `python -m nth_dao.conformance.regenerate` and
   shipped in `nth_dao/conformance/vectors.json`. The reference runner
   in `nth_dao/conformance/runner.py` verifies the Python implementation
@@ -288,13 +288,13 @@ single maintainer:
 - 22 vectors across 6 categories: `canonical_json`, `fingerprint`,
   `signature_verify`, `endorsement_canonical_payload`,
   `template_canonical_payload`, `replay_window`.
-- `docs/CONFORMANCE.md` — contract for non-Python implementations.
+- `docs/CONFORMANCE.md` - contract for non-Python implementations.
   Wire-compatible = zero failures under the equivalent runner.
 - 5 tests in `tests/test_conformance.py`.
 
-### Added — A2A alignment report
+### Added - A2A alignment report
 
-- `docs/research/A2A_ALIGNMENT.md` — comparison vs Google's Agent2Agent
+- `docs/research/A2A_ALIGNMENT.md` - comparison vs Google's Agent2Agent
   protocol (Linux Foundation, Apache 2.0, 150+ orgs, v1.0 in 2026):
   identity, discovery, capability advertisement, task lifecycle,
   transport, trust, streaming, push, auth, marketplace, decentralization.
@@ -323,56 +323,56 @@ have value but neither blocks survival. They're moved to v0.9.5.
 ### No protocol changes
 
 - `MissionTemplate`, `Mission`, `TeamConfig`, `Endorsement`, `Revocation`,
-  `Invitation`, gossip envelope, LAN discovery — **all unchanged on disk
+  `Invitation`, gossip envelope, LAN discovery - **all unchanged on disk
   and on the wire**. v0.9.3 artifacts are byte-identical to v0.9.4
   artifacts when produced by the same code path.
 
-## [0.9.3] — 2026-05-31 — Mission templates: "decentralized App Store" layer
+## [0.9.3] - 2026-05-31 - Mission templates: "decentralized App Store" layer
 
 This release lifts MissionStore from a one-shot quest board into a reusable,
 signed, rateable template registry. Aligned with cargo-crev / F-Droid / TUF /
-Argo / GitHub Actions / Nix flake.lock — zero new runtime dependencies.
+Argo / GitHub Actions / Nix flake.lock - zero new runtime dependencies.
 
-### Added — MissionTemplate (Layer 2)
+### Added - MissionTemplate (Layer 2)
 
-- **`nth_dao/orchestration/template.py`** — `MissionTemplate` dataclass,
+- **`nth_dao/orchestration/template.py`** - `MissionTemplate` dataclass,
   `TemplateStore`, `mint_template()` helper, `TemplateType` enum (5 kinds:
   `agent_task`, `agent_chain`, `agent_dag`, `agent_review`, `human_in_loop`).
-- **`IOField`** dataclass — `inputs` / `outputs` schema aligned with GitHub
+- **`IOField`** dataclass - `inputs` / `outputs` schema aligned with GitHub
   Actions `action.yml` field naming (description / type / required / default /
   values). Five primitive types: `string`, `int`, `float`, `bool`, `enum`.
-- **`StepSkeleton`** — step blueprint with `inputs_from` sourcing
+- **`StepSkeleton`** - step blueprint with `inputs_from` sourcing
   (`"input:NAME"` simple form for v0.9.3).
-- **Semver-validated `version`** — re-publishing same `(template_id, version)`
+- **Semver-validated `version`** - re-publishing same `(template_id, version)`
   errors unless `allow_overwrite=True`.
-- **Publisher signature mandatory** — `TemplatePublishError` on bad sig
+- **Publisher signature mandatory** - `TemplatePublishError` on bad sig
   before persistence.
-- **Deprecation** — `templates.deprecate(publisher, id, version, reason)`;
+- **Deprecation** - `templates.deprecate(publisher, id, version, reason)`;
   only the original publisher can deprecate; subsequent `instantiate()` of
   a deprecated template raises `ValueError`.
-- **F-Droid/TUF-style derived index** — `_template_index.json` rebuilt on every
+- **F-Droid/TUF-style derived index** - `_template_index.json` rebuilt on every
   publish with TUF-style `version` monotonic counter, `meta` map, and three
   inverted indexes (`by_category` / `by_publisher` / `by_capability`).
 
-### Added — MissionReview
+### Added - MissionReview
 
-- **`nth_dao/orchestration/review.py`** — `MissionReview` dataclass,
+- **`nth_dao/orchestration/review.py`** - `MissionReview` dataclass,
   `ReviewStore`, `mint_review()` helper, `TemplateStats` aggregator.
-- **Signed reviews** — append-only `reviews/<template_id>-v<version>.jsonl`,
+- **Signed reviews** - append-only `reviews/<template_id>-v<version>.jsonl`,
   one signed line per review (cargo-crev Proof model).
 - **Score range** 0.0–5.0 validated at mint.
-- **Self-review rejected** — the mission owner cannot review their own work.
-- **Dedup at read** — `only_latest_per_reviewer=True` keeps only the most
+- **Self-review rejected** - the mission owner cannot review their own work.
+- **Dedup at read** - `only_latest_per_reviewer=True` keeps only the most
   recent rating per `(reviewer_pubkey, mission_id)`; the raw JSONL preserves
   every submission for audit.
-- **EWMA aggregation** — `TemplateStats.weighted_average` uses
+- **EWMA aggregation** - `TemplateStats.weighted_average` uses
   α=0.3 EWMA so recent reviews count more without entirely overriding history.
 
-### Added — Mission instance linkage
+### Added - Mission instance linkage
 
-- `Mission.template_id`, `Mission.template_version` — link an instance to
+- `Mission.template_id`, `Mission.template_version` - link an instance to
   its template.
-- `Mission.template_lock` — Nix-flake-lock-style snapshot of the publisher
+- `Mission.template_lock` - Nix-flake-lock-style snapshot of the publisher
   signature at instantiation time. A later re-publish (or in-place template
   tamper) cannot retroactively change the contract a running mission was
   built under.
@@ -380,32 +380,32 @@ Argo / GitHub Actions / Nix flake.lock — zero new runtime dependencies.
   `legal_jurisdiction`, `governing_arbiter`, `credentials_required`).
   Behavior is still empty; field names are now stable for future use.
 
-### Added — MissionStore APIs
+### Added - MissionStore APIs
 
 - `publish_template(template, allow_overwrite=False)`
 - `list_templates(category=, publisher_pubkey=, required_capabilities=, include_deprecated=)`
 - `browse_templates(category=, tags=, min_average_rating=, sort_by="rating"|"recent"|"popularity", limit=, include_deprecated=)`
-- `instantiate(template_id, version=None, *, owner, inputs={}, scope, priority, title, goal)` — version omitted picks latest
+- `instantiate(template_id, version=None, *, owner, inputs={}, scope, priority, title, goal)` - version omitted picks latest
 - `review_mission(mission_id, reviewer, score, feedback)`
 - `template_stats(template_id, version=None)`
-- `archive_completed(older_than_days=30)` — atomic move of terminal missions to `archive/YYYY-MM/`
-- `list_archive(year_month=None)` — read archived missions
-- `my_history(agent_id, since=, include_archive=True, limit=)` — personal contribution view
+- `archive_completed(older_than_days=30)` - atomic move of terminal missions to `archive/YYYY-MM/`
+- `list_archive(year_month=None)` - read archived missions
+- `my_history(agent_id, since=, include_archive=True, limit=)` - personal contribution view
 
-### Added — language iron rule
+### Added - language iron rule
 
 `CONTRIBUTING.md` Hard Rules now includes a non-negotiable language-choice
 rule: **TypeScript for UI / dashboards / browser extensions; Python for the
 core protocol layer and everything else**. Different cadences want different
 toolchains. UI changes weekly, protocol changes yearly.
 
-### Added — docs
+### Added - docs
 
-- **`docs/PROTOCOLS.md §9`** — full wire-format spec for MissionTemplate,
+- **`docs/PROTOCOLS.md §9`** - full wire-format spec for MissionTemplate,
   MissionReview, derived index, mission template lock, archive layout, and
   the 5 Layer-3 reserved fields. Documents alignment with 7 industry
   standards.
-- **`docs/CATEGORIES.md`** — recommended bootstrap taxonomy (Tier 1: 10
+- **`docs/CATEGORIES.md`** - recommended bootstrap taxonomy (Tier 1: 10
   well-known categories; Tier 2: emerging; Tier 3: discouraged).
 
 ### Tests
@@ -419,20 +419,20 @@ toolchains. UI changes weekly, protocol changes yearly.
 
 ### Aligned with (not depended on)
 
-- cargo-crev — Proof model (sign-by-author, append-only, P2P)
-- F-Droid metadata — one file per template + derived index
-- TUF — `version` monotonic, `meta` field name, `delegations` placeholder
-- Argo WorkflowTemplate — 5-value `template_type`
-- GitHub Actions `action.yml` — input/output schema field naming
-- Nix `flake.lock` — `template_lock` snapshot on instantiation
-- W3C `did:key` — `publisher_did` field (simplified placeholder)
+- cargo-crev - Proof model (sign-by-author, append-only, P2P)
+- F-Droid metadata - one file per template + derived index
+- TUF - `version` monotonic, `meta` field name, `delegations` placeholder
+- Argo WorkflowTemplate - 5-value `template_type`
+- GitHub Actions `action.yml` - input/output schema field naming
+- Nix `flake.lock` - `template_lock` snapshot on instantiation
+- W3C `did:key` - `publisher_did` field (simplified placeholder)
 
-## [0.9.2] — 2026-05-31 — Revocation, invitations, LAN privacy, protocol spec
+## [0.9.2] - 2026-05-31 - Revocation, invitations, LAN privacy, protocol spec
 
-### Added — P6 follow-on roadmap items
+### Added - P6 follow-on roadmap items
 
 - **Endorsement revocation** (`web_of_trust.py`):
-  - New `Revocation` dataclass — owner-signed cancellation tied to a specific
+  - New `Revocation` dataclass - owner-signed cancellation tied to a specific
     `(endorser, subject, issued_at)` triple.
   - `issue_revocation(endorser, endorsement, reason)` mints + signs.
   - `TrustGraph.revoke()` issues + imports in one call;
@@ -444,7 +444,7 @@ toolchains. UI changes weekly, protocol changes yearly.
 - **Invitation tokens** (`nth_dao/invitation.py`):
   - New `Invitation` dataclass that bundles `team_id` + `owner_pubkey` +
     `join_token` + optional `ws_url` + optional LAN `psk`, signed by owner.
-  - `Invitation.mint(team_config, owner_identity, ...)` — fails fast if the
+  - `Invitation.mint(team_config, owner_identity, ...)` - fails fast if the
     minting identity doesn't match `team_config.owner_pubkey`.
   - URL form: `nthdao+invite://<base64url payload>`, ≤ 2 KB so it fits
     inside one QR code.
@@ -457,7 +457,7 @@ toolchains. UI changes weekly, protocol changes yearly.
     matching tag, querier only accepts hellos with matching tag.
     `hmac.compare_digest` used throughout.
   - Empty `psk` = open mode (unchanged behavior, backward compatible).
-- **`docs/PROTOCOLS.md`** — 350-line wire-protocol spec covering identity,
+- **`docs/PROTOCOLS.md`** - 350-line wire-protocol spec covering identity,
   gossip handshake + envelope, endorsements / revocations, signed team
   config, invitations, LAN discovery, marketplace orders, missions. Enables
   Rust / Go / TypeScript implementations to interop with the Python reference.
@@ -465,7 +465,7 @@ toolchains. UI changes weekly, protocol changes yearly.
   rules learned from the v0.9.1 review (file I/O via util, signed wire
   protocols, CAS for concurrency, no `except: pass`, etc.).
 
-### Added — extras
+### Added - extras
 
 - `[lan]` extra: `zeroconf>=0.131` (placeholder for v0.9.3 mDNS backend).
 - `[ux]` extra: `qrcode[pil]>=7.4` for invitation QR rendering.
@@ -483,7 +483,7 @@ toolchains. UI changes weekly, protocol changes yearly.
     terminal rendering, helpful ImportError without extra.
 - Total test count now: **102 + 1 skip** (was 83).
 
-## [0.9.1] — 2026-05-31 — P0/P1 security & correctness review fixes
+## [0.9.1] - 2026-05-31 - P0/P1 security & correctness review fixes
 
 ### Security
 - **Gossip signature verification fixed**: messages are now verified against the *author's* trusted pubkey (not the relay peer's). Unsigned or mismatched messages are **dropped**, not silently accepted as before. A 10-minute replay window is enforced. `require_signature=True` is the new default.
@@ -517,15 +517,15 @@ toolchains. UI changes weekly, protocol changes yearly.
 
 ### Added (tests)
 - 20 new regression tests in `tests/test_p0_fixes.py` covering atomic claim CAS, mission FAILED state machine, identity tamper rejection, reputation rate-limits / upsert / anti-Sybil credits, marketplace double-spend prevention, channel fetch global sort, peer finder min_match, and handoff alive-check.
-- Cross-process race test `tests/test_concurrent_claim.py` (spawn 6 workers → exactly 1 winner, 5 ClaimConflict).
+- Cross-process race test `tests/test_concurrent_claim.py` (spawn 6 workers -> exactly 1 winner, 5 ClaimConflict).
 - Total test count: 45 (up from 23).
 
-### P5 — "People nearby" discovery (WeChat-style find-and-meet)
+### P5 - "People nearby" discovery (chat app-inspired find-and-meet)
 
-- **Fuzzy `PeerFinder.search(query)`** — substring / prefix / exact-match scoring across `agent_id`, `label` (extracted from `metadata["identity"]["label"]`), `capabilities`, and `groups`. Returns `MatchResult` list ranked by score, with `+0.5` idle bonus and configurable `limit` / `min_score` / `exclude_agent_ids` / `fields`. 10 new regression tests covering each scoring rule, label extraction, idle tie-breaking, self-exclusion, and limit.
-- **`nth_dao/discovery/lan.py`** — zero-config UDP-based agent discovery on the local subnet. No mDNS / Bonjour, pure stdlib `socket`.
-  - `LANDiscovery(agent_id, label, capabilities, ws_url, pubkey_hex, port=9877)` — call `.start()` to spawn a background responder thread that answers query packets that match its capabilities.
-  - `LANDiscovery.discover(timeout=3.0, wanted_capabilities=None, target_addrs=None)` — broadcast a query (`255.255.255.255` by default; tests use `127.0.0.1`) and collect `LANPeer` responses for `timeout` seconds. De-duped by agent_id; results carry `ws_url` so the caller can hand them to `GossipNode.connect()` and `pubkey_hex` so they can be added to `TrustGraph.add_root()`.
+- **Fuzzy `PeerFinder.search(query)`** - substring / prefix / exact-match scoring across `agent_id`, `label` (extracted from `metadata["identity"]["label"]`), `capabilities`, and `groups`. Returns `MatchResult` list ranked by score, with `+0.5` idle bonus and configurable `limit` / `min_score` / `exclude_agent_ids` / `fields`. 10 new regression tests covering each scoring rule, label extraction, idle tie-breaking, self-exclusion, and limit.
+- **`nth_dao/discovery/lan.py`** - zero-config UDP-based agent discovery on the local subnet. No mDNS / Bonjour, pure stdlib `socket`.
+  - `LANDiscovery(agent_id, label, capabilities, ws_url, pubkey_hex, port=9877)` - call `.start()` to spawn a background responder thread that answers query packets that match its capabilities.
+  - `LANDiscovery.discover(timeout=3.0, wanted_capabilities=None, target_addrs=None)` - broadcast a query (`255.255.255.255` by default; tests use `127.0.0.1`) and collect `LANPeer` responses for `timeout` seconds. De-duped by agent_id; results carry `ws_url` so the caller can hand them to `GossipNode.connect()` and `pubkey_hex` so they can be added to `TrustGraph.add_root()`.
   - Context-manager friendly (`with LANDiscovery(...) as lan: ...`).
   - Nonce-based response matching so stale replies are dropped.
   - Windows hardening: catches `ConnectionResetError` from ICMP "port unreachable" bleed-through that would otherwise blow up `recvfrom`.
@@ -533,27 +533,27 @@ toolchains. UI changes weekly, protocol changes yearly.
 - 7 new LAN tests covering: peer found, capability filter, self-exclusion (loopback), empty result when nobody's listening, stale-nonce rejection, facade exports, context manager lifecycle.
 - Total test count now: **83** (up from 66).
 
-### P4 — Web-of-Trust: endorsement-based multi-hop trust
+### P4 - Web-of-Trust: endorsement-based multi-hop trust
 
 - **New module `nth_dao/web_of_trust.py`** with `Endorsement` dataclass, `TrustGraph` resolver, and `issue_endorsement()` helper.
 - An `Endorsement` is a signed `{endorser_pubkey, subject_pubkey, subject_agent_id, depth_allowed, context, issued_at, expires_at, sig}` payload. `endorser.sign_json(endorsement.signable_dict())` produces the signature.
 - `TrustGraph` stores root anchors in `team_trust/roots.json` and endorsements append-only in `team_trust/endorsements.jsonl`. `is_trusted(agent_id, pubkey, max_depth=2)` runs a bounded BFS, verifying the signature chain and respecting each endorser's `depth_allowed` cap.
 - `GossipNode(..., trust_graph=..., wot_max_depth=2)` now falls back to the trust graph when an author's pubkey isn't directly pinned. Log lines tag whether trust came from `pinned` or `wot`.
-- **Hop budget enforced correctly**: an endorsement with `depth_allowed=1` makes the subject a *leaf* — their own endorsements won't propagate further. Verified by `test_depth_allowed_caps_propagation`.
+- **Hop budget enforced correctly**: an endorsement with `depth_allowed=1` makes the subject a *leaf* - their own endorsements won't propagate further. Verified by `test_depth_allowed_caps_propagation`.
 - 16 new tests in `tests/test_web_of_trust.py` covering: round-trip + sig verify, tampered endorsement, root direct trust, agent_id spoof rejection, 1-hop / 2-hop chains, expired endorsements, wrong-signer endorsements, `resolve_path` returns full chain, depth_allowed cap, invalid depth at issue, `trusted_pubkey_for` lookup, cross-instance persistence, facade re-exports, and gossip integration.
 - Total test count now: **66** (up from 50).
 
-### P3 — anti-tamper hardening
+### P3 - anti-tamper hardening
 
-- **Signed team config (anti git-sync poisoning)**: `TeamConfig` gains `owner_pubkey` + `owner_sig` + `sig_updated_at` fields. When `MembershipManager` is constructed with an `owner_identity` that holds Ed25519 keys, every `save_config()` signs the canonical config. `load_config()` rejects (returns empty `TeamConfig()`) any signed file whose signature doesn't verify against its pinned `owner_pubkey` — meaning a malicious node can't `git push` a tampered `team.json` that adds themselves as admin.
-- `MembershipManager.enable_signed_owner(identity, actor_id)` — admin-gated upgrade path to turn signing on for an existing unsigned team.
-- `init_team(..., owner_identity=...)` — bootstrap a fresh team with owner signing in one shot.
-- `attach()` auto-detects whether the agent is the legitimate owner (its pubkey matches the file's `owner_pubkey`) and only then activates owner-signing for that session — non-owner attaches read-only verify.
+- **Signed team config (anti git-sync poisoning)**: `TeamConfig` gains `owner_pubkey` + `owner_sig` + `sig_updated_at` fields. When `MembershipManager` is constructed with an `owner_identity` that holds Ed25519 keys, every `save_config()` signs the canonical config. `load_config()` rejects (returns empty `TeamConfig()`) any signed file whose signature doesn't verify against its pinned `owner_pubkey` - meaning a malicious node can't `git push` a tampered `team.json` that adds themselves as admin.
+- `MembershipManager.enable_signed_owner(identity, actor_id)` - admin-gated upgrade path to turn signing on for an existing unsigned team.
+- `init_team(..., owner_identity=...)` - bootstrap a fresh team with owner signing in one shot.
+- `attach()` auto-detects whether the agent is the legitimate owner (its pubkey matches the file's `owner_pubkey`) and only then activates owner-signing for that session - non-owner attaches read-only verify.
 - **Reputation credits scoped by pubkey fingerprint**: when an `AgentIdentity` with crypto is passed, the anti-Sybil credit file uses `identity.fingerprint()[:16]` rather than `safe_id(agent_id)`. An attacker spawning 1000 `agent_id`s now still shares 5 starting credits per unique keypair (instead of 5 × 1000); legitimate single-keypair-multi-agent_id setups now correctly share one credit pool.
 
 ### P2 polish
 - **Anti-Sybil rating credits** in `ReputationManager`: each new (non-upsert) `rate()` costs 1 credit; initial balance 5, daily refill +3 (cap 30). `rep.credits()` exposes current balance. Combined with the (rater, subject, context) rate-limit, this makes mass-rating costly without needing a global ledger.
-- **Backend resource release**: `attach.detach()` now uses an explicit `_close_backend()` helper that probes `close` → `stop` → `shutdown` (in that priority order) and logs at debug when none exist.
+- **Backend resource release**: `attach.detach()` now uses an explicit `_close_backend()` helper that probes `close` -> `stop` -> `shutdown` (in that priority order) and logs at debug when none exist.
 - **Docstring de-mojibake**: replaced encoding-corrupted Chinese comments / docstrings in `nth_dao/__init__.py`, `nth_dao/attach.py`, `nth_dao/discovery/agent_registry.py`, `nth_dao/orchestration/mission.py`, `nth_dao/orchestration/mission_store.py`, and `nth_dao/orchestration/mission_runner.py` with English equivalents that match the actual behavior. (The old files contained `""`-only docstrings after the encoding loss.)
 - `AgentRecord.short()` no longer uses empty strings as alive/dead markers (replaced with `*`/`-`).
 - `agent_registry` heartbeat-tick failure is now logged at debug instead of silently swallowed.

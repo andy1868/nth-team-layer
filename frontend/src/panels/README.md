@@ -1,11 +1,11 @@
-# QQ-style contact + nearby + groups + governance panels (v0.9.6)
+# chat-native contact + nearby + groups + governance panels (v0.9.6)
 
 Drop-in React components that consume the v0.9.6 web APIs:
 
-- `ContactsPanel` — fuzzy-search registered agents; add by exact ID or DID.
-- `NearbyPanel`   — UDP LAN discovery, with optional pre-shared key.
-- `GroupsPanel`   — list / search / create workspace-unique groups.
-- `GovernancePanel` — propose & vote on policy changes for one group.
+- `ContactsPanel` - fuzzy-search registered agents; add by exact ID or DID.
+- `NearbyPanel`   - UDP LAN discovery, with optional pre-shared key.
+- `GroupsPanel`   - list / search / create workspace-unique groups.
+- `GovernancePanel` - propose & vote on policy changes for one group.
 
 The `ContactShell` wrapper at `./index.tsx` glues all four together with a
 top tab bar.
@@ -19,9 +19,9 @@ import { ContactShell } from "./panels";
 
 function App() {
   // Your existing wallet wiring lives here. ContactShell takes:
-  //   actorId         — the agent_id you've already established
-  //   actorPubkeyHex  — the Ed25519 pubkey (hex) for signing requests
-  //   sign(payload)   — wallet signs canonical JSON, returns hex sig
+  //   actorId         - the agent_id you've already established
+  //   actorPubkeyHex  - the Ed25519 pubkey (hex) for signing requests
+  //   sign(payload)   - wallet signs canonical JSON, returns hex sig
   const { actorId, actorPubkeyHex, sign } = useWallet();
 
   return (
@@ -36,7 +36,7 @@ function App() {
 }
 ```
 
-When you don't have a wallet wired up yet, omit `actorPubkeyHex` / `sign` —
+When you don't have a wallet wired up yet, omit `actorPubkeyHex` / `sign` -
 the panels render in browse-only mode.
 
 ## Wire-format expectations

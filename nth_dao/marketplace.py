@@ -231,7 +231,7 @@ class TaskMarketplace:
         self.orders_dir = workspace / marketplace_dir
         self.orders_dir.mkdir(parents=True, exist_ok=True)
 
-        # 同一进程内对 credits 做线程互斥；跨进程靠 atomic_write_json + file lock
+        # Use a thread lock for in-process credit updates; file locks cover cross-process updates
         self._credit_lock = threading.RLock()
         self._credit_file = workspace / marketplace_dir / f"{self._safe_id(agent_id)}_credits.json"
         self._credit_ledger = workspace / marketplace_dir / f"{self._safe_id(agent_id)}_credits.ledger.jsonl"
@@ -241,7 +241,7 @@ class TaskMarketplace:
 
     def _init_credits(self) -> None:
         if not self._credit_file.exists():
-            self._write_credits(100.0, txn=None)  # 新 agent 100 起手
+            self._write_credits(100.0, txn=None)  # new agent starts with 100 credits
 
     def _read_credits(self) -> float:
         data = safe_load_json(self._credit_file, fallback=None)
@@ -253,10 +253,10 @@ class TaskMarketplace:
             return 0.0
 
     def _write_credits(self, balance: float, txn: Optional[Dict[str, Any]]) -> None:
-        """更新余额并追加一条 ledger 记录。
+        """Update balance and append one ledger record.
 
-        ledger 是 append-only jsonl，每次变动一行 {ts, balance_before, balance_after, txn}。
-        即使余额文件丢失也可以从 ledger 重建，便于审计 / 双花检测。
+        The ledger is append-only JSONL: one {ts, balance_before, balance_after, txn} row per change.
+        The balance can be rebuilt from the ledger for audit and double-spend detection.
         """
         atomic_write_json(
             self._credit_file,
@@ -287,7 +287,7 @@ class TaskMarketplace:
         order_id: str,
         kind: str,
     ) -> float:
-        """原子地 +/- 余额。delta<0 时检查不能透支。
+        """Atomically add/subtract balance. Negative deltas cannot overdraw.
 
         PR-0 (audit CRITICAL #2 - double-spend race):
             Previously the read-check-write was guarded only by an
@@ -297,9 +297,9 @@ class TaskMarketplace:
             the whole read-check-write closes that window.
 
         Returns:
-            新余额
+            New balance
         Raises:
-            ValueError: 余额不足
+            ValueError: insufficient balance
         """
         # Threading lock guards INTRA-process concurrency; file lock
         # guards CROSS-process. Both are required.
@@ -337,25 +337,26 @@ class TaskMarketplace:
         min_reputation: float = 0.0,
         required_capabilities: Optional[List[str]] = None,
     ) -> TaskOrder:
-        """
+        """Create a new task order.
 
         Args:
-            title:
-            description:
-            context:
-            reward:
-            deadline: ISO
-            tags:
-            min_reputation:
-            required_capabilities:
+            title: Short task title.
+            description: Detailed task description.
+            context: Task context (code_review, bug_fix, research, etc.).
+            reward: Credits offered for completing this task.
+            deadline: ISO timestamp deadline (optional).
+            tags: Free-form tags for filtering.
+            min_reputation: Minimum reputation score required to claim.
+            required_capabilities: Capabilities the claimant must possess.
 
         Returns:
-
+            The created TaskOrder.
 
         Raises:
-            ValueError:
+            ValueError: If reward < 0 or insufficient credits.
         """
-        # 预扣验证（真正的扣款放到 order 创建后做，否则 fail 时会扣了又退）
+        # Pre-validate balance before creating the order (actual debit after creation,
+        # so failed order creation doesn't require a compensating credit).
         if reward < 0:
             raise ValueError("reward must be >= 0")
         if reward > 0 and self._read_credits() < reward:
@@ -390,13 +391,13 @@ class TaskMarketplace:
             }
             order.creator_sig = self.identity.sign_json(payload)
 
-        # 通过 ledger 扣款（双花防护）
+        # Debit via ledger (double-spend protection)
         if reward > 0:
             self._transfer_credits(-reward, order_id=order.order_id, kind="escrow_lock")
 
         self._save(order)
 
-        #
+        # Broadcast to team channel
         if self.channel:
             self.channel.send(
                 f" New task: {title} (reward={reward} credits, context={context})",
@@ -409,14 +410,14 @@ class TaskMarketplace:
     #
 
     def claim(self, order_id: str) -> TaskOrder:
-        """
+        """Claim an open order.
 
         Args:
-            order_id:  ID
+            order_id: The order ID.
 
         Raises:
-            ValueError:
-            PermissionError:
+            ValueError: Order not found, not open, or is your own.
+            PermissionError: Reputation score too low for the order context.
         """
         order = self._load(order_id)
         if order is None:
@@ -428,7 +429,7 @@ class TaskMarketplace:
         if order.creator == self.agent_id:
             raise ValueError("Cannot claim your own order")
 
-        #
+        # Check reputation requirement
         min_rep = order.requirements.get("min_reputation", 0)
         if min_rep > 0 and self.reputation:
             score = self.reputation.get_score(self.agent_id, context=order.context)
@@ -582,12 +583,12 @@ class TaskMarketplace:
         order_id: str,
         reason: str = "",
     ) -> TaskOrder:
-        """驳回 submitted 状态的订单，重新开放。
+        """Reject a submitted order and reopen it.
 
-        修复了原版本两个 bug：
-            1) hasattr 检查不存在的 claimant_history → DM 永远发到 "unknown"
-            2) 先清空 claimant 再用 claimant → 通知发不到原 claimant
-        现在：先记下 claimant，再清空，最后 DM。
+        Fixes two bugs in the original implementation:
+            1) A hasattr check against missing claimant_history sent DMs to "unknown".
+            2) Clearing claimant before using it prevented notifying the original claimant.
+        Now: remember claimant first, clear it, then send the DM.
         """
         order = self._require_my_order(order_id)
         if order.status != OrderStatus.SUBMITTED:
@@ -595,7 +596,7 @@ class TaskMarketplace:
                 f"Order {order_id[:8]} is {order.status.value}, not submitted"
             )
 
-        rejected_claimant = order.claimant  # 先记下来！
+        rejected_claimant = order.claimant  # remember before clearing
         now = datetime.now().isoformat()
         order.status = OrderStatus.OPEN
         order.claimant = ""
@@ -638,7 +639,7 @@ class TaskMarketplace:
             "timestamp": datetime.now().isoformat(),
         })
 
-        # 取消订单 → 退还冻结金额
+        # Cancel order -> refund escrowed credits
         if order.reward > 0:
             self._transfer_credits(
                 +order.reward, order_id=order.order_id, kind="escrow_refund_cancel"
@@ -706,6 +707,74 @@ class TaskMarketplace:
         """"""
         return self.list_open(context=context)
 
+    def broadcast_order(
+        self,
+        title: str,
+        description: str = "",
+        *,
+        context: str = "",
+        reward: float = 0.0,
+        capability: str = "",
+        finder: Any = None,   # PeerFinder - avoid circular import
+        channel: Any = None,  # TeamChannel - avoid circular import
+    ) -> TaskOrder:
+        """Create an order and fanout to capable agents via channel.
+
+        When *finder* and *channel* are provided, finds agents with
+        ``accepting_tasks=True`` and the required *capability*, then
+        DMs each one.  The DM includes the order's ``creator_sig`` so
+        the receiver can verify authenticity when the channel has an
+        identity configured.  The order is stored with ``creator``
+        set to this agent for auditability.
+
+        Usage::
+
+            order = team.marketplace.broadcast_order(
+                title="code review PR #42",
+                capability="code_review",
+                finder=team.finder,
+                channel=team.channel,
+            )
+        """
+        order = self.create_order(
+            title=title,
+            description=description,
+            context=context,
+            reward=reward,
+        )
+
+        # Actual broadcast: fanout to accepting agents
+        if finder is not None and channel is not None and capability:
+            try:
+                targets = finder.find(capability=capability, only_alive=True)
+                # Build signed message payload for receiver verification
+                sig_info = ""
+                if order.creator_sig:
+                    sig_info = (
+                        f"\nCreator: {order.creator}\n"
+                        f"Created: {order.created_at}\n"
+                        f"Signature: {order.creator_sig}"
+                    )
+                for t in targets:
+                    # Never broadcast to self
+                    if t.agent_id == self.agent_id:
+                        continue
+                    if getattr(t, "accepting_tasks", False):
+                        try:
+                            channel.dm(
+                                t.agent_id,
+                                f"[New Task] {order.title}\n"
+                                f"Reward: {order.reward} credits\n"
+                                f"ID: {order.order_id}"
+                                f"{sig_info}",
+                            )
+                        except Exception:
+                            logger.debug("broadcast dm to %s failed", t.agent_id)
+            except Exception:
+                logger.debug("broadcast find failed for %r", capability)
+
+        return order
+
     def get_order(self, order_id: str) -> Optional[TaskOrder]:
         return self._load(order_id)
 
@@ -762,7 +831,7 @@ class TaskMarketplace:
                             "timestamp": now.isoformat(),
                         })
                         self._save(o)
-                        # 到期 → 退还冻结金额
+                        # Expired -> refund escrowed credits
                         if o.reward > 0:
                             self._transfer_credits(
                                 +o.reward,

@@ -297,12 +297,12 @@ time {
   padding: 12px 12px 0;
 }
 
-.contacts-panel-host .qq-shell {
+.contacts-panel-host .chat-shell {
   padding: 0 12px 12px;
 }
 
 /* ---------- Collapsible right-rail panels (Members / Announcement / Tasks /
-   Audit / Contacts) — replaces always-expanded sections that crowded the
+   Audit / Contacts) - replaces always-expanded sections that crowded the
    homepage. Uses native <details>/<summary> for accessibility + zero JS. ---- */
 
 details.collapsible {
@@ -391,7 +391,7 @@ details.collapsible.contacts-panel-host .collapsible-body {
   padding: 0 12px 12px;
 }
 
-/* ── v0.9.7 "My DAOs" sidebar — QQ-style group list ── */
+/* ── v0.9.7 "My DAOs" sidebar - chat-native group list ── */
 .dao-list {
   gap: 6px;
 }
@@ -492,7 +492,7 @@ details.collapsible.contacts-panel-host .collapsible-body {
   letter-spacing: 0.2px;
 }
 
-/* v0.9.8 — visible agent code (Telegram-style handle) */
+/* v0.9.8 - visible agent code (Telegram-style handle) */
 .agent-code {
   font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
   font-size: 12px;

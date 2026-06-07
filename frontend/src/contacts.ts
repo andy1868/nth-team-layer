@@ -1,5 +1,5 @@
-// QQ-style contact / discover / group APIs for v0.9.6.
-// Pure TS — no React imports here, so it can be unit-tested without a DOM.
+// chat-native contact / discover / group APIs for v0.9.6.
+// Pure TS - no React imports here, so it can be unit-tested without a DOM.
 
 export interface AgentMatch {
   agent_id: string;
@@ -83,7 +83,7 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-// ── search registered agents (QQ "search by name") ──
+// ── search registered agents (search by name) ──
 
 export async function searchAgents(query: string, limit = 10): Promise<AgentMatch[]> {
   const q = query.trim();
@@ -95,7 +95,7 @@ export async function searchAgents(query: string, limit = 10): Promise<AgentMatc
   return data.results;
 }
 
-// ── LAN discovery (QQ "people nearby") ──
+// ── LAN discovery (people nearby) ──
 
 export async function discoverLanPeers(opts: {
   timeoutSeconds?: number;
@@ -113,7 +113,7 @@ export async function discoverLanPeers(opts: {
   return data.peers;
 }
 
-// ── add agent (QQ "add friend") ──
+// ── add agent (add contact) ──
 
 export async function addAgent(input: {
   actorId: string;
@@ -132,7 +132,7 @@ export async function addAgent(input: {
   });
 }
 
-// ── groups (QQ "group chats" tab) ──
+// ── groups (group chats tab) ──
 
 export async function listGroups(): Promise<UniqueGroup[]> {
   const data = await jsonRequest<{ groups: UniqueGroup[] }>("/api/groups/registry");

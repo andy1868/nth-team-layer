@@ -1,4 +1,4 @@
-// QQ-style "Groups" panel — list / search / create unique-named groups.
+// chat-native "Groups" panel - list / search / create unique-named groups.
 
 import { useEffect, useState } from "react";
 import {
@@ -80,10 +80,10 @@ export function GroupsPanel({ actorId, actorPubkeyHex, sign, onSelect }: Props) 
   }, []);
 
   return (
-    <section className="qq-panel">
+    <section className="chat-panel">
       <h2>Groups / DAOs</h2>
 
-      <div className="qq-search-bar">
+      <div className="chat-search-bar">
         <input
           type="search"
           placeholder="Search by name, slug, description…"
@@ -95,31 +95,31 @@ export function GroupsPanel({ actorId, actorPubkeyHex, sign, onSelect }: Props) 
         <button onClick={refresh}>All</button>
       </div>
 
-      {error && <p className="qq-flash qq-error">{error}</p>}
+      {error && <p className="chat-flash chat-error">{error}</p>}
 
-      <ul className="qq-group-list">
+      <ul className="chat-group-list">
         {groups.map((g) => (
           <li
             key={g.group_id}
-            className={`qq-group qq-policy-${g.policy}`}
+            className={`chat-group chat-policy-${g.policy}`}
             onClick={() => onSelect?.(g)}
           >
             <div>
               <strong>{g.display_name}</strong>{" "}
-              <code className="qq-slug">@{g.slug}</code>
-              <small className="qq-policy-badge">{g.policy}</small>
+              <code className="chat-slug">@{g.slug}</code>
+              <small className="chat-policy-badge">{g.policy}</small>
             </div>
-            <div className="qq-group-meta">
+            <div className="chat-group-meta">
               {g.member_pubkeys.length} member{g.member_pubkeys.length === 1 ? "" : "s"}
-              {g.description && ` · ${g.description.slice(0, 60)}`}
+              {g.description && ` / ${g.description.slice(0, 60)}`}
             </div>
           </li>
         ))}
       </ul>
 
-      <details className="qq-create-group">
+      <details className="chat-create-group">
         <summary>+ Create a new group</summary>
-        <div className="qq-form">
+        <div className="chat-form">
           <input
             placeholder="Display name (e.g., Privacy Working Group)"
             value={form.display_name}
@@ -139,10 +139,10 @@ export function GroupsPanel({ actorId, actorPubkeyHex, sign, onSelect }: Props) 
               })
             }
           >
-            <option value="open">Open — anyone can join</option>
-            <option value="approval">Approval — admin admits</option>
-            <option value="closed">Closed — invite only</option>
-            <option value="voted">Voted — quorum of members admits</option>
+            <option value="open">Open - anyone can join</option>
+            <option value="approval">Approval - admin admits</option>
+            <option value="closed">Closed - invite only</option>
+            <option value="voted">Voted - quorum of members admits</option>
           </select>
           <button onClick={createGroup} disabled={!form.display_name || creating}>
             {creating ? "Creating…" : "Sign + Publish"}
