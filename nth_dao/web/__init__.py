@@ -40,6 +40,17 @@ from nth_dao.a2a_card import (
 )
 from nth_dao.a2a_rpc import A2ARPCHandler, TaskStore as _A2ATaskStore
 from nth_dao.agent_code import code_for_agent_id, code_for_pubkey, parse_code
+from nth_dao.cap_token import (
+    AUTH_SCHEME_CAP_TOKEN,
+    CapTokenStore as _CapTokenStore,
+    DEFAULT_TTL_MS as _CAP_DEFAULT_TTL_MS,
+    KNOWN_CAPABILITIES as _CAP_KNOWN,
+    MAX_TTL_MS as _CAP_MAX_TTL_MS,
+    decode_authorization_value as _decode_cap_auth,
+    encode_authorization_header as _encode_cap_auth,
+    sign_cap_token as _sign_cap_token,
+    verify_cap_token as _verify_cap_token,
+)
 from nth_dao.execution_receipt import ReceiptStore as _ReceiptStore
 # R-58 (2026-06-08): hoist did_key helpers to module scope so
 # `_resolve_member_identity` doesn't re-execute the import statement
@@ -259,6 +270,40 @@ def _extract_bearer_token(request: Request) -> str:
     return auth[len(prefix):].strip()
 
 
+def _extract_cap_token_auth(request: Request) -> str:
+    """Return the raw value following ``Authorization: CapToken `` or
+    empty if the header doesn't use the cap-token scheme.
+
+    L1-3 (2026-06-08): the CapToken scheme is distinct from Bearer so
+    a single ``Authorization`` header can carry only ONE auth flavour
+    at a time — no ambiguity for the middleware deciding which path
+    the request takes.
+    """
+    auth = request.headers.get("authorization", "")
+    prefix = AUTH_SCHEME_CAP_TOKEN + " "
+    if not auth.startswith(prefix):
+        return ""
+    return auth[len(prefix):].strip()
+
+
+def get_request_principal(request: Request) -> dict:
+    """Return the auth-resolved principal attached to ``request.state``.
+
+    Possible shapes:
+        {"type": "console"}                    — full operator access
+        {"type": "cap_token", "token": <dict>} — delegated, scoped
+        {"type": "anonymous"}                  — no auth supplied
+                                                 (only present when
+                                                 require_console_auth
+                                                 is off)
+
+    Endpoint handlers that want to enforce capability-level access
+    should call ``_require_capability(request, "<cap-string>",
+    task_id=…)`` rather than introspecting this directly.
+    """
+    return getattr(request.state, "nth_principal", {"type": "anonymous"})
+
+
 class _MtimeCache:
     """Architect R-4 (2026-06-07): generic mtime-keyed cache.
 
@@ -368,6 +413,28 @@ class WebState:
         # itself is ephemeral and re-derivable from receipts if we
         # ever need restart-survival.
         self.a2a_tasks = _A2ATaskStore()
+        # L1-3 (2026-06-08): capability delegation tokens — audit
+        # store + revocation list. Lives under
+        # <workspace>/team_cap_tokens/.
+        self.cap_tokens = _CapTokenStore(workspace)
+
+
+# L1-3 (2026-06-08): cap-token request payloads. Defined at module
+# scope rather than inside ``create_app`` because Pydantic forward-
+# reference resolution doesn't always work for BaseModel subclasses
+# declared inside a closure (FastAPI then treats the param as a
+# query string, which is wrong for a JSON body).
+class IssueCapTokenPayload(BaseModel):
+    subject_did: str
+    capabilities: List[str]
+    scope_task_id: str = ""
+    scope_dao: str = ""
+    ttl_ms: int = _CAP_DEFAULT_TTL_MS
+    token_id: str = ""
+
+
+class RevokeCapTokenPayload(BaseModel):
+    token_id: str
 
 
 class JoinPayload(BaseModel):
@@ -583,18 +650,70 @@ def create_app(
             "/.well-known/nth-dao/identity.json",
             "/.well-known/agent.json",
         ):
+            request.state.nth_principal = {"type": "anonymous"}
             return await call_next(request)
-        if (
-            require_console_auth
-            and request.url.path.startswith("/api/")
-        ):
-            supplied = _extract_bearer_token(request)
-            expected = str(app.state.nth_console_token)
-            if not supplied or not hmac.compare_digest(supplied, expected):
+
+        if not require_console_auth:
+            request.state.nth_principal = {"type": "anonymous"}
+            return await call_next(request)
+        if not request.url.path.startswith("/api/"):
+            request.state.nth_principal = {"type": "anonymous"}
+            return await call_next(request)
+
+        # L1-3 (2026-06-08): try the CapToken scheme FIRST. If the
+        # caller presents a CapToken header that authenticates AND
+        # passes signature + time + revocation checks, accept it and
+        # tag the request with the principal so endpoint handlers
+        # can later enforce capability-level access. The capability
+        # vs. method check (e.g. "is a2a:message_send in the
+        # capabilities list?") happens at the handler, not here —
+        # the middleware only proves WHO is calling, not WHAT they
+        # may do.
+        cap_raw = _extract_cap_token_auth(request)
+        if cap_raw:
+            tok = _decode_cap_auth(cap_raw)
+            if tok is None:
                 return JSONResponse(
-                    {"detail": "missing or invalid console token"},
+                    {
+                        "detail": (
+                            "Authorization: CapToken value is not "
+                            "valid base64url-canonical-JSON"
+                        ),
+                    },
                     status_code=401,
                 )
+            ok, reason = _verify_cap_token(
+                tok,
+                revoked_ids=state.cap_tokens.revoked_set(),
+            )
+            if not ok:
+                logger.info(
+                    "cap_token rejected (%s): token_id=%s",
+                    reason, tok.get("token_id", "?"),
+                )
+                return JSONResponse(
+                    {
+                        "detail": (
+                            f"cap_token rejected: {reason}"
+                        ),
+                    },
+                    status_code=401,
+                )
+            request.state.nth_principal = {
+                "type": "cap_token",
+                "token": tok,
+            }
+            return await call_next(request)
+
+        # Console Bearer path (operator full access)
+        supplied = _extract_bearer_token(request)
+        expected = str(app.state.nth_console_token)
+        if not supplied or not hmac.compare_digest(supplied, expected):
+            return JSONResponse(
+                {"detail": "missing or invalid console token"},
+                status_code=401,
+            )
+        request.state.nth_principal = {"type": "console"}
         return await call_next(request)
 
     # Public identity card (2026-06-08): a signed JSON blob that
@@ -822,12 +941,160 @@ def create_app(
                     "message": "invalid request: body must be a JSON object",
                 },
             }
+        # L1-3 (2026-06-08): pass the auth-resolved principal to the
+        # handler so it can enforce per-method capability + task
+        # scope. Console principals get full access; cap-token
+        # principals are narrowly checked.
+        # L1-4 (2026-06-08): mission_store enables tasks/split and
+        # mission-progress enrichment on tasks/get responses.
         handler = A2ARPCHandler(
             task_store=state.a2a_tasks,
             receipt_store=state.receipts,
             identity=state.node_identity,
+            principal=get_request_principal(request),
+            mission_store=state.missions,
         )
         return handler.handle(payload)
+
+    # L1-3 (2026-06-08): capability-token endpoints.
+    #
+    # - POST /api/cap_tokens/issue   : admin-only, signs a token
+    # - POST /api/cap_tokens/revoke  : admin-only, blacklists a token_id
+    # - GET  /api/cap_tokens/{id}    : admin-only, audit lookup
+    #
+    # ``admin-only`` here means "principal must be console". An
+    # operator with a cap_token CANNOT itself issue further cap_tokens
+    # — delegation is not transitive in v1. Allowing transitive
+    # delegation without a careful capability-chain proof would be a
+    # privilege-escalation vector; we close it now and revisit if a
+    # real use case appears.
+    def _require_console_principal(request: Request) -> None:
+        principal = get_request_principal(request)
+        if principal.get("type") != "console":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "cap_token administration requires the console "
+                    "principal (delegation is not transitive)"
+                ),
+            )
+
+    @app.post("/api/cap_tokens/issue")
+    def cap_tokens_issue(
+        request: Request, payload: IssueCapTokenPayload,
+    ) -> dict[str, Any]:
+        _require_console_principal(request)
+        if state.node_identity is None:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "node identity unavailable; install pynacl + "
+                    "restart"
+                ),
+            )
+        # Reject unknown capability strings:
+        #   * Known caps (KNOWN_CAPABILITIES) — accept
+        #   * Custom caps in NTH-OWNED namespaces (``a2a:``, ``nth:``)
+        #     — REJECT as likely typos
+        #   * Custom caps in external namespaces (``orgname:action``)
+        #     — accept for forward compat
+        #   * Anything not namespaced and not in KNOWN_CAPABILITIES —
+        #     REJECT
+        _OWNED_NAMESPACES = ("a2a", "nth")
+        for cap in payload.capabilities:
+            if cap in _CAP_KNOWN:
+                continue
+            if ":" not in cap:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"unknown capability {cap!r}. Must be one of "
+                        f"{sorted(_CAP_KNOWN)} or a namespaced form "
+                        f"like ``orgname:action`` (NTH-owned "
+                        f"namespaces ``a2a:`` and ``nth:`` only "
+                        f"accept the known set)."
+                    ),
+                )
+            namespace = cap.split(":", 1)[0]
+            if namespace in _OWNED_NAMESPACES:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"unknown capability {cap!r} in NTH-owned "
+                        f"namespace {namespace!r}; this is almost "
+                        f"certainly a typo. Known caps: "
+                        f"{sorted(_CAP_KNOWN)}"
+                    ),
+                )
+            # external namespace — alphanum / dash / underscore check
+            if not all(
+                p.replace("-", "").replace("_", "").isalnum()
+                for p in cap.split(":", 1)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"malformed capability {cap!r}; alnum + "
+                        f"``-``/``_`` only in each side of the colon."
+                    ),
+                )
+        try:
+            tok = _sign_cap_token(
+                issuer=state.node_identity,
+                subject_did=payload.subject_did,
+                capabilities=payload.capabilities,
+                scope_task_id=payload.scope_task_id,
+                scope_dao=payload.scope_dao,
+                ttl_ms=payload.ttl_ms,
+                token_id=payload.token_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            state.cap_tokens.record(tok)
+        except (OSError, ValueError) as exc:
+            logger.error(
+                "cap_token audit record write failed: %s", exc,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"cap_token audit persistence failed: {exc}",
+            ) from exc
+        return {
+            "token": tok,
+            # Convenience for the operator UI: paste this verbatim
+            # into an ``Authorization:`` header to act as the subject.
+            "authorization_header_value": (
+                f"{AUTH_SCHEME_CAP_TOKEN} {_encode_cap_auth(tok)}"
+            ),
+        }
+
+    @app.post("/api/cap_tokens/revoke")
+    def cap_tokens_revoke(
+        request: Request, payload: RevokeCapTokenPayload,
+    ) -> dict[str, Any]:
+        _require_console_principal(request)
+        try:
+            changed = state.cap_tokens.revoke(payload.token_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"token_id": payload.token_id, "changed": changed}
+
+    @app.get("/api/cap_tokens/{token_id}")
+    def cap_tokens_get(
+        request: Request, token_id: str,
+    ) -> dict[str, Any]:
+        _require_console_principal(request)
+        rec = state.cap_tokens.get(token_id)
+        if rec is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"cap_token {token_id!r} not in audit store",
+            )
+        return {
+            "token": rec,
+            "revoked": token_id in state.cap_tokens.revoked_set(),
+        }
 
     # DID bootstrap (2026-06-07): /api/identity is the "who is this
     # NTH DAO node?" endpoint. Other downloads can fetch this URL

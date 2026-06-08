@@ -68,6 +68,12 @@ from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from nth_dao.a2a_mission_bridge import (
+    META_TASK_MISSION_ID,
+    create_mission_from_subtasks,
+    enrich_task_with_mission,
+    link_existing_mission_to_task,
+)
 from nth_dao.execution_receipt import (
     ReceiptStore,
     TYPE_GOAL_COMPLETED,
@@ -81,6 +87,7 @@ from nth_dao.execution_receipt import (
 
 if TYPE_CHECKING:
     from nth_dao.identity import AgentIdentity
+    from nth_dao.orchestration.mission_store import MissionStore
 
 logger = logging.getLogger("nth_dao.a2a_rpc")
 
@@ -119,6 +126,10 @@ JSONRPC_INTERNAL_ERROR = -32603
 # A2A application errors (custom range)
 A2A_TASK_NOT_FOUND = -32001
 A2A_TASK_TERMINAL = -32002
+# L1-3 (2026-06-08): cap-token scope rejection. Returned when the
+# caller's CapToken either lacks the capability for the requested
+# method OR has a scope_task_id that doesn't match the targeted task.
+A2A_FORBIDDEN_BY_CAP = -32003
 
 
 # MA-2 (review fix 2026-06-08): the receipt-emission path catches
@@ -278,10 +289,136 @@ class A2ARPCHandler:
         task_store: TaskStore,
         receipt_store: Optional[ReceiptStore],
         identity: Optional["AgentIdentity"],
+        principal: Optional[Dict[str, Any]] = None,
+        mission_store: Optional["MissionStore"] = None,
     ) -> None:
         self.tasks = task_store
         self.receipts = receipt_store
         self.identity = identity
+        # L1-4 (2026-06-08): the Mission ↔ A2A Task bridge. When
+        # absent the handler degrades cleanly — message/send still
+        # works, just without subtask-split or mission enrichment.
+        self.missions = mission_store
+        # L1-3 (2026-06-08): principal is the auth-resolved caller.
+        #   {"type": "console"}  → operator full access (no per-method
+        #                          cap check; pre-existing contract)
+        #   {"type": "cap_token", "token": <dict>} → check each method
+        #                          against the token's capabilities +
+        #                          scope on every dispatch
+        #   {"type": "anonymous"}/None → treated as console for now;
+        #                          require_console_auth=False mode.
+        self.principal = principal or {"type": "console"}
+
+    # L1-3 method → required-capability map. Keys are the JSON-RPC
+    # method strings; values are the cap-string from
+    # ``nth_dao.cap_token``. Lookups outside this map mean "method
+    # not gated by any cap-token capability" — currently empty.
+    _METHOD_CAP_MAP = {
+        "message/send": "a2a:message_send",
+        "tasks/get":    "a2a:task_get",
+        "tasks/cancel": "a2a:task_cancel",
+        # R5 (review fix 2026-06-08): tasks/split now requires its
+        # OWN capability ``a2a:task_split``. Reusing message_send
+        # would let a helper Agent delegated "send messages to task X"
+        # also restructure X into a 50-step Mission — explicit
+        # over-grant. Issuers must consciously grant task_split.
+        "tasks/split":  "a2a:task_split",
+    }
+
+    def _check_principal_for_method(
+        self,
+        req_id: Any,
+        method: str,
+        params: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Return None when the principal may invoke ``method`` (with
+        these ``params``); otherwise return a JSON-RPC error envelope
+        the caller should short-circuit with.
+
+        Console principals always allow. Cap-token principals are
+        checked against the method's required capability AND the
+        token's ``scope_task_id`` if a task target is implied by
+        ``params``.
+        """
+        ptype = self.principal.get("type", "")
+        if ptype == "console" or ptype == "anonymous":
+            return None
+        if ptype != "cap_token":
+            return _rpc_error(
+                req_id, A2A_FORBIDDEN_BY_CAP,
+                f"unknown principal type {ptype!r}",
+            )
+
+        token = self.principal.get("token") or {}
+        token_caps = set(token.get("capabilities") or [])
+        # R3 (review fix 2026-06-08): deny-by-default. A method NOT
+        # in ``_METHOD_CAP_MAP`` was previously silently allowed for
+        # any cap_token principal — meaning a maintainer who adds a
+        # new method without registering it here would create a
+        # privilege-escalation path. The safe default for delegated
+        # principals is DENY when the requested method has no
+        # explicit capability requirement on file.
+        #
+        # The unknown-method case still falls through to
+        # JSONRPC_METHOD_NOT_FOUND for the SAME error UX as before
+        # (the request is still rejected) — we just route via
+        # A2A_FORBIDDEN_BY_CAP first when a delegated principal asks
+        # for it.
+        needed_cap = self._METHOD_CAP_MAP.get(method)
+        if needed_cap is None:
+            return _rpc_error(
+                req_id, A2A_FORBIDDEN_BY_CAP,
+                f"method {method!r} is not callable via cap_token "
+                f"(no capability mapping registered)",
+                data={
+                    "token_id": token.get("token_id", ""),
+                    "callable_methods": sorted(self._METHOD_CAP_MAP.keys()),
+                },
+            )
+        if needed_cap not in token_caps:
+            return _rpc_error(
+                req_id, A2A_FORBIDDEN_BY_CAP,
+                f"cap_token missing required capability "
+                f"{needed_cap!r} for method {method!r}",
+                data={
+                    "token_id": token.get("token_id", ""),
+                    "granted": sorted(token_caps),
+                },
+            )
+
+        # Scope check: pull the task_id implied by the request, if
+        # any, and confirm it matches the token's scope (or scope is
+        # unrestricted).
+        scope_task_id = str(token.get("scope_task_id", "") or "")
+        if scope_task_id:
+            implied_task_id = ""
+            if method == "message/send":
+                msg = params.get("message")
+                if isinstance(msg, dict):
+                    implied_task_id = str(msg.get("task_id", "") or "")
+                    # For NEW tasks (no task_id in the message), the
+                    # task hasn't been minted yet. A scoped token
+                    # cannot create new tasks — that would defeat the
+                    # scope. Reject.
+                    if not implied_task_id:
+                        return _rpc_error(
+                            req_id, A2A_FORBIDDEN_BY_CAP,
+                            f"cap_token is scoped to task "
+                            f"{scope_task_id!r}; cannot create a "
+                            f"new task",
+                            data={"token_id": token.get("token_id", "")},
+                        )
+            elif method in ("tasks/get", "tasks/cancel"):
+                implied_task_id = str(params.get("id", "") or "")
+            if implied_task_id and implied_task_id != scope_task_id:
+                return _rpc_error(
+                    req_id, A2A_FORBIDDEN_BY_CAP,
+                    f"cap_token scoped to task {scope_task_id!r}; "
+                    f"request targets task {implied_task_id!r}",
+                    data={"token_id": token.get("token_id", "")},
+                )
+
+        return None
 
     # ── public dispatch entry ─────────────────────────────────────
 
@@ -311,6 +448,14 @@ class A2ARPCHandler:
                 "params must be an object",
             )
 
+        # L1-3 (2026-06-08): authorize the method + scope BEFORE
+        # dispatching. ``_check_principal_for_method`` returns None
+        # iff the caller is allowed; otherwise it returns the
+        # already-formed JSON-RPC error envelope.
+        denial = self._check_principal_for_method(req_id, method, params)
+        if denial is not None:
+            return denial
+
         try:
             if method == "message/send":
                 return self._message_send(req_id, params)
@@ -318,12 +463,15 @@ class A2ARPCHandler:
                 return self._tasks_get(req_id, params)
             if method == "tasks/cancel":
                 return self._tasks_cancel(req_id, params)
+            if method == "tasks/split":
+                return self._tasks_split(req_id, params)
             return _rpc_error(
                 req_id, JSONRPC_METHOD_NOT_FOUND,
                 f"unknown method: {method}",
                 data={
                     "supported_methods": [
-                        "message/send", "tasks/get", "tasks/cancel",
+                        "message/send", "tasks/get",
+                        "tasks/cancel", "tasks/split",
                     ],
                 },
             )
@@ -414,7 +562,106 @@ class A2ARPCHandler:
                 req_id, A2A_TASK_NOT_FOUND,
                 f"task {task_id} not found",
             )
+        # L1-4: if the task is linked to a Mission, enrich the
+        # response with the Mission's progress snapshot. Pure
+        # view-time enrichment — the on-disk Task is unchanged.
+        if self.missions is not None:
+            enriched = dict(task)
+            enriched["metadata"] = dict(enriched.get("metadata", {}))
+            enrich_task_with_mission(enriched, self.missions)
+            return _rpc_result(req_id, enriched)
         return _rpc_result(req_id, task)
+
+    # ── method: tasks/split (L1-4) ────────────────────────────────
+
+    def _tasks_split(
+        self, req_id: Any, params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Split a Task into a structured Mission with subtasks.
+
+        Params:
+            id: existing Task ID to split
+            subtasks: list of strings — one description per step
+            title: optional Mission title (defaults to "A2A Task <id>")
+            goal: optional high-level goal (defaults to first subtask)
+
+        The Mission is created with the supplied subtasks as steps;
+        the Task gets ``metadata.nth_mission_id`` set so future
+        ``tasks/get`` enrich the response with Mission progress.
+
+        If the Task is already linked to a Mission, the request is
+        rejected — the consumer should call ``tasks/get`` to read
+        the existing Mission first, then decide whether to extend
+        it via the NTH-side Mission API (out of band of A2A).
+        """
+        if self.missions is None:
+            return _rpc_error(
+                req_id, JSONRPC_INVALID_PARAMS,
+                "tasks/split unavailable: mission store not wired",
+            )
+        task_id = str(params.get("id", "") or "")
+        if not task_id:
+            return _rpc_error(
+                req_id, JSONRPC_INVALID_PARAMS,
+                "params.id is required",
+            )
+        subtasks = params.get("subtasks")
+        if not isinstance(subtasks, list) or not subtasks:
+            return _rpc_error(
+                req_id, JSONRPC_INVALID_PARAMS,
+                "params.subtasks must be a non-empty array of "
+                "step description strings",
+            )
+        task = self.tasks.get(task_id)
+        if task is None:
+            return _rpc_error(
+                req_id, A2A_TASK_NOT_FOUND,
+                f"task {task_id} not found",
+            )
+        existing = task.get("metadata", {}).get(META_TASK_MISSION_ID, "")
+        if existing:
+            return _rpc_error(
+                req_id, JSONRPC_INVALID_PARAMS,
+                f"task {task_id} already linked to mission "
+                f"{existing}; use NTH-side Mission API to extend",
+            )
+
+        title = str(
+            params.get("title", "")
+            or f"A2A Task {task_id}"
+        )
+        goal = str(
+            params.get("goal", "")
+            or (subtasks[0] if subtasks else "(unspecified)")
+        )
+        try:
+            mission = create_mission_from_subtasks(
+                mission_store=self.missions,
+                owner="admin",
+                task_id=task_id,
+                title=title,
+                goal=goal,
+                subtasks=subtasks,
+            )
+        except (ValueError, TypeError) as exc:
+            return _rpc_error(
+                req_id, JSONRPC_INVALID_PARAMS,
+                f"subtask validation failed: {exc}",
+            )
+
+        # Link the Task → Mission
+        updated = self.tasks.set_metadata_key(
+            task_id, META_TASK_MISSION_ID, mission.id,
+        )
+        if updated is not None:
+            task = updated
+
+        # Enrich the response with the freshly-built Mission summary
+        # so the consumer sees the split result in one call.
+        enriched = dict(task)
+        enriched["metadata"] = dict(enriched.get("metadata", {}))
+        enrich_task_with_mission(enriched, self.missions)
+        return _rpc_result(req_id, enriched)
 
     # ── method: tasks/cancel ──────────────────────────────────────
 
