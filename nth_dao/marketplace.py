@@ -722,9 +722,10 @@ class TaskMarketplace:
 
         When *finder* and *channel* are provided, finds agents with
         ``accepting_tasks=True`` and the required *capability*, then
-        DMs each one.  The DM includes the order's ``creator_sig`` so
-        the receiver can verify authenticity when the channel has an
-        identity configured.  The order is stored with ``creator``
+        DMs each one.  The DM includes the order ID and creator info
+        for bookkeeping; recipients can call ``get_order()`` with the
+        order ID to independently verify the ``creator_sig`` against
+        the creator's public key.  The order is stored with ``creator``
         set to this agent for auditability.
 
         Usage::
@@ -769,9 +770,9 @@ class TaskMarketplace:
                                 f"{sig_info}",
                             )
                         except Exception:
-                            logger.debug("broadcast dm to %s failed", t.agent_id)
+                            logger.warning("broadcast dm to %s failed", t.agent_id)
             except Exception:
-                logger.debug("broadcast find failed for %r", capability)
+                logger.warning("broadcast find failed for %r", capability)
 
         return order
 

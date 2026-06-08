@@ -1,4 +1,4 @@
-"""NTH DAO Telegram Bot - expose the NTH DAO runtime through Telegram.
+"""Hermes Telegram Bot - expose the NTH DAO runtime through Telegram.
 
 Run:
     python nth_telegram_bot.py
@@ -234,7 +234,7 @@ def authorized_only(handler):
 @authorized_only
 async def cmd_start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "NTH DAO Bot is online.\n\n"
+        "Hermes Bot is online.\n\n"
         "/team - list online agents\n"
         "/kanban - show the blackboard\n"
         "/mission_new <title> | <step1> ; <step2> ; ...\n"
@@ -624,7 +624,7 @@ async def cmd_pending(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
     """Show bot command help."""
     await update.message.reply_text(
-        "<b>NTH DAO Bot Help</b>\n\n"
+        "<b>Hermes Bot Help</b>\n\n"
         "<b>Discovery</b>\n"
         "/team - list online agents\n"
         "/find &lt;capability&gt; - find teammates\n\n"
@@ -659,7 +659,7 @@ async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE):
 #
 
 SYSTEM_PROMPT_BASE = (
-    "You are NTH DAO Bot, a Telegram assistant powered by DeepSeek. "
+    "You are Hermes Bot, a Telegram assistant powered by DeepSeek. "
     "You are part of a multi-agent team using NTH DAO. "
     "Reply concisely (max 200 words unless asked for more)."
 )
@@ -715,7 +715,7 @@ async def post_init(application):
     from telegram import BotCommand
 
     await application.bot.set_my_commands([
-        BotCommand("start", "Start the NTH DAO bot"),
+        BotCommand("start", "Start Hermes Bot"),
         BotCommand("help", "Show command help"),
         # Discovery
         BotCommand("team", "List online agents"),
@@ -781,7 +781,7 @@ def main():
     try:
         app.run_polling(drop_pending_updates=True)
     finally:
-        logger.info("Detaching NTH DAO...")
+        logger.info("Detaching Hermes Bot...")
         TEAM.detach()
 
 

@@ -82,9 +82,12 @@ class AgentRecord:
     def is_alive(self, max_stale_seconds: int = 90) -> bool:
         """True iff last_seen is within max_stale_seconds of now.
 
-        Applies CLOCK_SKEW_TOLERANCE_SECONDS buffer for multi-machine
-        clock drift, and rejects timestamps more than FUTURE_STALE_SECONDS
-        in the future (tampered / misconfigured clock).
+        Applies CLOCK_SKEW_TOLERANCE_SECONDS buffer for negative deltas
+        only (remote clock ahead of local clock).  Positive skew (local
+        clock ahead) does NOT extend the stale window — genuinely stale
+        agents (>max_stale_seconds) remain stale.  Rejects timestamps
+        more than FUTURE_STALE_SECONDS in the future (tampered or
+        misconfigured clock).
         """
         try:
             last = datetime.fromisoformat(self.last_seen)
@@ -92,10 +95,12 @@ class AgentRecord:
             # Reject far-future timestamps (tampered or misconfigured clock)
             if delta < -FUTURE_STALE_SECONDS:
                 return False
-            # Accept within stale window + clock-skew buffer
-            effective = max_stale_seconds + CLOCK_SKEW_TOLERANCE_SECONDS
-            return delta < effective
-        except Exception:
+            # Accept within stale window; tolerate slight negative delta
+            # (remote clock ahead) via clock-skew tolerance
+            if -CLOCK_SKEW_TOLERANCE_SECONDS <= delta < max_stale_seconds:
+                return True
+            return False
+        except (ValueError, OverflowError, OSError):
             return False
 
     def short(self) -> str:
@@ -136,10 +141,11 @@ class AgentRegistry:
         self._record_lock = threading.RLock()  # C3: protect _record R/W across threads
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._heartbeat_stop = threading.Event()
-        # 修复 M-8：register() 重复调用不再 stack 多个 atexit 回调
+        # Fix M-8: only register one atexit handler — repeated
+        # attach()/detach() in the same process must not stack callbacks.
         self._atexit_registered = False
 
-    #   /  /
+    # ── public API ──
 
     def register(
         self,
@@ -155,9 +161,19 @@ class AgentRegistry:
     ) -> AgentRecord:
         """Register this agent and (optionally) start a heartbeat thread."""
         # Re-registering replaces the prior record (idempotent).
+        # Stop old heartbeat BEFORE acquiring the lock — calling join()
+        # under the lock can deadlock if the heartbeat thread is waiting
+        # to acquire _record_lock (C1 fix).
+        needs_unregister = self._record is not None
+        if needs_unregister:
+            self._stop_heartbeat()
+
         with self._record_lock:
-            if self._record is not None:
-                self.unregister()
+            if needs_unregister:
+                # Write offline tombstone for the old record
+                self._record.status = "offline"
+                self._record.last_seen = datetime.now().isoformat()
+                self._write(self._record)
 
             self._record = AgentRecord(
                 agent_id=agent_id,
@@ -176,7 +192,8 @@ class AgentRegistry:
         if start_heartbeat:
             self._start_heartbeat()
 
-        # 只 register 一次 atexit，避免同进程多次 attach/detach 时累积
+        # Only register atexit once — repeated attach()/detach() in
+        # the same process must not accumulate duplicate handlers.
         if not self._atexit_registered:
             atexit.register(self.unregister)
             self._atexit_registered = True
@@ -236,7 +253,7 @@ class AgentRegistry:
     #   /
 
     def list_all(self) -> List[AgentRecord]:
-        """所有注册过的 agent record（含已 offline 的 tombstone）。"""
+        """All registered agent records (including offline tombstones)."""
         records = []
         for f in sorted(self.agents_dir.glob("*.json")):
             data = safe_load_json(f, fallback=None)

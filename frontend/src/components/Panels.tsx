@@ -45,7 +45,7 @@ export function ChatArea({ state, notice, busy, selectedChannel, onSend }: ChatA
             onClick={() => setAnnounceExpanded(!announceExpanded)}
           >
             <span className="announce-banner-icon">📢</span>
-            <span className="announce-banner-label">公告</span>
+            <span className="announce-banner-label">Announcement</span>
             <span className="announce-banner-title">
               {latestAnnounce.title}
             </span>
@@ -55,7 +55,7 @@ export function ChatArea({ state, notice, busy, selectedChannel, onSend }: ChatA
             <button
               className="announce-banner-close"
               onClick={(e) => { e.stopPropagation(); setAnnounceDismissed(latestId); setAnnounceExpanded(false); }}
-              title="关闭"
+              title="Close"
             >
               ✕
             </button>

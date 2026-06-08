@@ -177,25 +177,27 @@ class PeerFinder:
         only_alive: bool = True,
         exclude_agent_ids: Optional[List[str]] = None,
     ) -> List["MatchResult"]:
-        """微信式"找人"：模糊搜索 agent_id / label / capabilities / groups。
+        """Fuzzy-search agents by agent_id / label / capabilities / groups.
 
         Args:
-            query: 搜索词（大小写无关）。空串返回 []。
-            fields: 要搜的字段子集，默认 ["agent_id", "label", "capabilities", "groups"]
-            limit: 最多返回 N 条
-            min_score: 低于此评分的丢弃
-            only_alive: 只搜索 alive agent
-            exclude_agent_ids: 排除特定 agent_id（例如自己）
+            query: Search term (case-insensitive). Empty string returns [].
+            fields: Field subset to search.  Default ["agent_id", "label",
+                    "capabilities", "groups"].
+            limit: Max results to return.
+            min_score: Drop results below this score.
+            only_alive: Only search alive agents.
+            exclude_agent_ids: Exclude specific agent_ids (e.g. self).
 
-        Score 规则（命中字段累加）:
-            - 完全相等       +3.0
-            - 前缀匹配       +1.5
-            - 子串包含       +0.8
-            - 多字段命中累加；status=idle 再 +0.5
+        Scoring (per-field, cumulative):
+            - Exact match       +3.0
+            - Prefix match      +1.5
+            - Substring match   +0.8
+            - Multi-field hits accumulate; status=idle adds +0.5
 
         Returns:
-            按 score 降序的 MatchResult 列表；matched_capabilities 字段
-            装载本次命中的 (field, value) 对（注意：复用现有字段名做载体）。
+            MatchResult list sorted by score descending.
+            ``matched_capabilities`` carries the ``(field, value)`` pairs
+            that matched (note: reuses the field name as a carrier).
         """
         if not query:
             return []
@@ -284,12 +286,13 @@ class PeerFinder:
             if r.agent_id == agent_id:
                 continue
 
-            other_caps = set(r.capabilities)
-            other_seeking = set(r.seeking)
+            other_caps = r.capabilities  # list, iterated once per intersection below
+            other_seeking = r.seeking
 
-            # Directional match sets
-            skills_they_offer = list(my_seeking & other_caps)  # they have what I need
-            skills_i_offer = list(other_seeking & my_caps)     # I have what they need
+            # Directional match sets (lazy intersection avoids per-iteration
+            # set() construction — O(n²) in agent count)
+            skills_they_offer = [c for c in other_caps if c in my_seeking]
+            skills_i_offer = [c for c in other_seeking if c in my_caps]
 
             # Collect matched capabilities based on direction
             if direction == "incoming":
@@ -302,7 +305,7 @@ class PeerFinder:
             if not matched:
                 continue
 
-            score = float(len(matched)) * 1.0
+            score = float(len(matched))
             if r.accepting_tasks:
                 score += ACCEPTING_TASKS_BONUS
 

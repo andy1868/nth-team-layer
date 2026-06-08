@@ -143,12 +143,27 @@ class TestIsAlive:
         assert r.is_alive(max_stale_seconds=1) is False
 
     def test_clock_skew_tolerance_applied(self):
-        """A record just barely stale should still be alive due to skew buffer."""
+        """Skew buffer only tolerates negative deltas (remote clock ahead).
+        A genuinely stale record (95s old) is NOT rescued by the buffer."""
         past = (datetime.now() - timedelta(seconds=95)).isoformat()
         r = AgentRecord(agent_id="test", hostname="h", pid=1, last_seen=past)
-        # Without skew: 95s > 90s -> dead.
-        # With CLOCK_SKEW_TOLERANCE_SECONDS=30: 95s < 120s -> alive.
+        # Delta = +95s.  CLOCK_SKEW only widens the NEGATIVE side.
+        # 95s > 90s → genuinely stale → dead.
+        assert r.is_alive(max_stale_seconds=90) is False
+
+    def test_negative_skew_tolerated(self):
+        """A timestamp slightly in the future (remote clock ahead of local)
+        is tolerated within CLOCK_SKEW_TOLERANCE_SECONDS."""
+        future = (datetime.now() + timedelta(seconds=20)).isoformat()
+        r = AgentRecord(agent_id="test", hostname="h", pid=1, last_seen=future)
+        # Delta = -20s.  -30 <= -20 < 90 → alive (within skew tolerance).
         assert r.is_alive(max_stale_seconds=90) is True
+
+    def test_exactly_max_stale_is_dead(self):
+        """Exactly at max_stale_seconds boundary is dead (strict < check)."""
+        past = (datetime.now() - timedelta(seconds=90)).isoformat()
+        r = AgentRecord(agent_id="test", hostname="h", pid=1, last_seen=past)
+        assert r.is_alive(max_stale_seconds=90) is False
 
     def test_far_future_rejected_even_with_skew(self):
         """Timestamp 10 minutes in the future exceeds FUTURE_STALE_SECONDS,
@@ -159,10 +174,13 @@ class TestIsAlive:
 
     def test_near_future_is_alive_within_skew(self):
         """A timestamp 2 minutes in the future is within FUTURE_STALE_SECONDS
-        and within max_stale + CLOCK_SKEW_TOLERANCE, so it's still alive."""
+        but exceeds CLOCK_SKEW_TOLERANCE_SECONDS (30s).  With the corrected
+        skew logic (negative deltas only), this is dead — no legitimate
+        clock drifts 2 minutes."""
         future = (datetime.now() + timedelta(seconds=120)).isoformat()
         r = AgentRecord(agent_id="test", hostname="h", pid=1, last_seen=future)
-        assert r.is_alive(max_stale_seconds=90) is True
+        # Delta = -120s.  -30 <= -120 → False → dead.
+        assert r.is_alive(max_stale_seconds=90) is False
 
 
 # ────────────────────────── find_complements ──────────────────────────
