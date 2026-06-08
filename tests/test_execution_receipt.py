@@ -459,6 +459,68 @@ def test_now_ms_returns_integer_milliseconds():
     assert n > 1_577_836_800_000   # 2020-01-01T00:00:00Z in ms
 
 
+def test_ma3_hash_and_dicts_helper_returns_consistent_triple():
+    """MA-3 (review fix 2026-06-08): ``_hash_and_dicts`` returns
+    ``(hex_str, raw_32_byte_digest, entry_dicts)``. The three pieces
+    must be consistent with each other and with the public
+    ``compute_content_hash`` API.
+
+    If this test fails, ``sign_receipt`` may be using a stale digest
+    (signing one input, advertising another hash) — a
+    catastrophe-grade interop bug.
+    """
+    from nth_dao.execution_receipt import _hash_and_dicts
+    entry = TimelineEntry(
+        timestamp=1710288000000,
+        type=TYPE_GOAL_STARTED,
+        payload={"goal_id": "x", "prompt": "y"},
+    )
+    hex_str, digest, dicts = _hash_and_dicts([entry])
+    # Consistency between hex and digest
+    assert digest == bytes.fromhex(hex_str)
+    assert len(digest) == 32   # SHA-256 size
+    # Consistency with the public API
+    assert hex_str == compute_content_hash([entry])
+    # Consistency between entry_dicts and the input entries
+    assert dicts == [entry.to_dict()]
+
+
+def test_ma3_sign_receipt_does_one_canonicalization_pass(monkeypatch):
+    """MA-3 regression canary: sign_receipt MUST NOT canonicalize the
+    same timeline twice. Pre-MA3 it did one pass via
+    compute_content_hash and a second via the output dict's
+    ``timeline`` build. The fix routes everything through
+    ``_hash_and_dicts`` so the canonicalization runs exactly once
+    per entry per sign.
+
+    Detection: monkeypatch canonical_json to count invocations.
+    For a 5-entry timeline we expect 5 invocations, not 10.
+    """
+    import nth_dao.execution_receipt as er
+    counter = {"n": 0}
+    real_canonical = er.canonical_json
+    def counting(d):
+        counter["n"] += 1
+        return real_canonical(d)
+    monkeypatch.setattr(er, "canonical_json", counting)
+
+    ident = AgentIdentity.generate(label="ma3-perf")
+    timeline = [
+        TimelineEntry(
+            timestamp=now_ms() + i,
+            type=TYPE_GOAL_STARTED,
+            payload={"i": i},
+        )
+        for i in range(5)
+    ]
+    sign_receipt(timeline, ident)
+    assert counter["n"] == 5, (
+        f"canonical_json was called {counter['n']} times for a 5-entry "
+        f"timeline; expected exactly 5 (one per entry). Pre-MA3 it was "
+        f"10 (one per entry per pass × 2 passes)."
+    )
+
+
 def test_now_ms_uses_nanosecond_source_not_float_time():
     """MA-1 (review fix 2026-06-08): a previous implementation used
     ``int(time.time() * 1000)``. On Windows ``time.time()`` has

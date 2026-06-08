@@ -101,8 +101,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from nth_dao.b64u import b64u_decode, b64u_encode
+from nth_dao.canonical_json import canonical_json
 from nth_dao.did_key import decode_ed25519_did_key_hex, is_did_key
-from nth_dao.identity import _NACL_AVAILABLE, canonical_json
+from nth_dao.identity import _NACL_AVAILABLE
 
 try:
     from nacl.signing import VerifyKey as _VerifyKey
@@ -224,6 +225,44 @@ def now_ms() -> int:
 # ─── canonical content hash ──────────────────────────────────────────
 
 
+def _hash_and_dicts(
+    timeline: List[TimelineEntry],
+) -> "tuple[str, bytes, List[Dict[str, Any]]]":
+    """Internal one-pass helper: hash the timeline AND return both
+    the digest representations + the per-entry dicts.
+
+    MA-3 (review fix 2026-06-08): the previous flow asked
+    ``compute_content_hash`` to do ``entry.to_dict()`` per entry
+    purely for hashing, and then ``sign_receipt`` re-built the same
+    per-entry dicts for the output payload — two passes for what is
+    a single producer side. Returning the dicts alongside the hash
+    lets ``sign_receipt`` reuse the work.
+
+    Returns:
+        (hex_str, raw_32_byte_digest, entry_dicts)
+
+        * ``hex_str``: 64-char lowercase hex (the public wire form)
+        * ``raw_32_byte_digest``: the SHA-256 output bytes — exactly
+          what motebit-spec §6 signs; avoids a ``bytes.fromhex`` round
+          trip
+        * ``entry_dicts``: the per-entry Python dicts the caller can
+          slot directly into the receipt envelope's ``timeline`` field
+
+    Raises:
+        ValueError if the timeline is empty.
+    """
+    if not timeline:
+        raise ValueError(
+            "cannot hash empty timeline; receipts require at least "
+            "one entry (motebit recommends starting with goal_started)"
+        )
+    entry_dicts: List[Dict[str, Any]] = [e.to_dict() for e in timeline]
+    per_entry: List[bytes] = [canonical_json(d) for d in entry_dicts]
+    joined = b"\n".join(per_entry)
+    h = hashlib.sha256(joined)
+    return h.hexdigest(), h.digest(), entry_dicts
+
+
 def compute_content_hash(timeline: List[TimelineEntry]) -> str:
     """Compute the motebit-spec content_hash for a timeline.
 
@@ -237,21 +276,20 @@ def compute_content_hash(timeline: List[TimelineEntry]) -> str:
     that follows the same recipe will compute the same hash, which is
     the whole point of having a wire spec.
 
+    Public API contract: returns the 64-char hex string. Internal
+    callers that ALSO need the raw 32-byte digest (e.g. ``sign_receipt``,
+    which must sign the digest per spec §6) should call the
+    private ``_hash_and_dicts`` helper instead — that's the only
+    spot in the codebase where a single canonicalization pass is
+    actually visible.
+
     Raises:
         ValueError if the timeline is empty — an empty receipt is
         meaningless and the spec implies at least one entry (goal must
         have a ``goal_started`` event minimum).
     """
-    if not timeline:
-        raise ValueError(
-            "cannot hash empty timeline; receipts require at least "
-            "one entry (motebit recommends starting with goal_started)"
-        )
-    per_entry: List[bytes] = []
-    for entry in timeline:
-        per_entry.append(canonical_json(entry.to_dict()))
-    joined = b"\n".join(per_entry)
-    return hashlib.sha256(joined).hexdigest()
+    hex_str, _, _ = _hash_and_dicts(timeline)
+    return hex_str
 
 
 # ─── base64url helpers: CR-1 fix (2026-06-08) ────────────────────────
@@ -301,9 +339,16 @@ def sign_receipt(
     Raises:
         RuntimeError if the identity cannot sign.
     """
-    content_hash = compute_content_hash(timeline)
-    # ⚠ Sign the 32-byte digest, not the 64-hex string.
-    digest_bytes = bytes.fromhex(content_hash)
+    # MA-3 (review fix 2026-06-08): single canonicalization pass.
+    # ``_hash_and_dicts`` produces the hex, the raw 32-byte digest,
+    # and the per-entry dicts in one walk over the timeline. The
+    # previous implementation called ``compute_content_hash`` (which
+    # internally built per-entry dicts) and THEN ran
+    # ``[e.to_dict() for e in timeline]`` again purely to populate
+    # the envelope's ``timeline`` field — double work for no benefit.
+    # We also drop the ``bytes.fromhex(content_hash)`` round-trip
+    # since ``digest`` is already the bytes we want to sign.
+    content_hash, digest_bytes, entry_dicts = _hash_and_dicts(timeline)
     sig_bytes = identity.sign(digest_bytes)
     sig_b64 = _b64u(sig_bytes)
 
@@ -317,7 +362,7 @@ def sign_receipt(
         "signer_pubkey_hex": identity.pubkey_hex,
         "issued_at": datetime.now().isoformat(),
         # ── motebit core (what gets verified) ─────────────────────
-        "timeline": [e.to_dict() for e in timeline],
+        "timeline": entry_dicts,
         "content_hash": content_hash,
         "sig": sig_b64,
     }

@@ -75,8 +75,9 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from nth_dao.b64u import b64u_decode, b64u_encode
+from nth_dao.canonical_json import canonical_json
 from nth_dao.did_key import decode_ed25519_did_key_hex, is_did_key
-from nth_dao.identity import _NACL_AVAILABLE, canonical_json
+from nth_dao.identity import _NACL_AVAILABLE
 
 # B2 (review fix, 2026-06-08): hoist VerifyKey out of the verify
 # function body. ``_VerifyKey is None`` is the single sentinel for

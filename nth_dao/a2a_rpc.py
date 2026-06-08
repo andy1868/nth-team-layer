@@ -121,6 +121,26 @@ A2A_TASK_NOT_FOUND = -32001
 A2A_TASK_TERMINAL = -32002
 
 
+# MA-2 (review fix 2026-06-08): the receipt-emission path catches
+# only KNOWN-RECOVERABLE exceptions. Things outside this tuple
+# (MemoryError, SystemExit, KeyboardInterrupt, asyncio.CancelledError,
+# etc.) propagate so the runtime can do the right thing — silently
+# swallowing them would hide genuine emergencies.
+#
+# What IS recoverable:
+#   * OSError — disk full, permission denied, network FS hiccup
+#   * ValueError — receipt envelope rejected by ReceiptStore validation,
+#     timestamp out-of-range, etc.
+#   * RuntimeError — AgentIdentity cannot sign (PyNaCl unavailable
+#     mid-flight, key wiped, etc.)
+#   * TypeError — canonical_json rejects a value that snuck into the
+#     timeline (a previous version of the code accepted floats; we
+#     now catch the rejection rather than crashing the request)
+_RECOVERABLE_RECEIPT_EMIT_ERRORS: tuple = (
+    OSError, ValueError, RuntimeError, TypeError,
+)
+
+
 # ─── RPC envelope helpers ────────────────────────────────────────────
 
 
@@ -437,9 +457,23 @@ class A2ARPCHandler:
         this message is a step inside it). Emitting goal_started
         twice for the same goal_id would confuse motebit consumers
         building task-state machines off the timeline.
+
+        MA-2 (2026-06-08): only recoverable exceptions are caught
+        and converted into a metadata error marker; anything outside
+        ``_RECOVERABLE_RECEIPT_EMIT_ERRORS`` propagates and the JSON-
+        RPC layer maps it to ``-32603 internal error``.
         """
         if self.identity is None or self.receipts is None:
             return
+
+        # MA-2: write through the store's lock-protected setter and
+        # refresh ``task["metadata"]`` so the JSON-RPC response carries
+        # the latest values. Both success and failure paths use this.
+        def _mark(key: str, value: Any) -> None:
+            updated = self.tasks.set_metadata_key(task["id"], key, value)
+            if updated is not None:
+                task["metadata"] = updated["metadata"]
+
         try:
             # Build a minimal timeline — leading event then
             # nth.post_message. Future iterations may build richer
@@ -471,29 +505,37 @@ class A2ARPCHandler:
             )
             self.receipts.save(receipt)
             # F1 (2026-06-08): metadata write goes through the store's
-            # lock-protected setter, not a direct dict mutation. A
-            # concurrent ``append_message`` on the same task would
-            # otherwise race for the metadata slot.
-            updated = self.tasks.set_metadata_key(
-                task["id"], "nth_receipt_id", receipt["receipt_id"],
+            # lock-protected setter, not a direct dict mutation.
+            _mark("nth_receipt_id", receipt["receipt_id"])
+        except _RECOVERABLE_RECEIPT_EMIT_ERRORS as exc:
+            # MA-2: ERROR level — a missing receipt breaks the
+            # 工作量证明 chain, which is the entire point of L1-1.
+            # That's not a warning; that's something the operator
+            # needs to know about.
+            logger.error(
+                "receipt emission failed for task %s (%s): %s",
+                task["id"], type(exc).__name__, exc,
             )
-            if updated is not None:
-                # The task dict the caller has may be a stale snapshot
-                # if a concurrent call mutated it; refresh in-place so
-                # the JSON-RPC response carries the receipt_id.
-                task["metadata"] = updated["metadata"]
-        except Exception as exc:  # noqa: BLE001
-            # Receipt emission must never break the request — log and
-            # carry on. A task without a receipt is degraded but
-            # functional.
-            logger.warning(
-                "receipt emission failed for task %s: %s",
-                task["id"], exc,
-            )
+            # MA-2: leave a marker so a consumer reading the task can
+            # distinguish "no receipt yet, will appear later" from
+            # "we tried to emit a receipt and it broke".
+            _mark("nth_receipt_error", True)
+            _mark("nth_receipt_error_class", type(exc).__name__)
 
     def _emit_receipt_for_cancel(self, task: Dict[str, Any]) -> None:
+        """MA-2 (2026-06-08): same exception-narrowing + metadata-marker
+        treatment as ``_emit_receipt_for_message``. A cancel receipt
+        is what proves to a consumer "this task was canceled, here's
+        the signed end-of-life"; if emission breaks, the marker tells
+        a consumer to treat the canceled state as untrusted."""
         if self.identity is None or self.receipts is None:
             return
+
+        def _mark(key: str, value: Any) -> None:
+            updated = self.tasks.set_metadata_key(task["id"], key, value)
+            if updated is not None:
+                task["metadata"] = updated["metadata"]
+
         try:
             timeline = [
                 TimelineEntry(
@@ -509,8 +551,11 @@ class A2ARPCHandler:
                 timeline, self.identity, goal_id=task["id"],
             )
             self.receipts.save(receipt)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "cancel-receipt emission failed for task %s: %s",
-                task["id"], exc,
+            _mark("nth_cancel_receipt_id", receipt["receipt_id"])
+        except _RECOVERABLE_RECEIPT_EMIT_ERRORS as exc:
+            logger.error(
+                "cancel-receipt emission failed for task %s (%s): %s",
+                task["id"], type(exc).__name__, exc,
             )
+            _mark("nth_receipt_error", True)
+            _mark("nth_receipt_error_class", type(exc).__name__)

@@ -449,6 +449,128 @@ def test_f1_concurrent_message_sends_dont_lose_metadata(client):
     assert store_task["metadata"]["nth_receipt_id"] == last_rid
 
 
+# ===== MA-2 (review fix): narrowed receipt-emission exception handling =====
+
+
+def test_ma2_recoverable_oserror_marks_task_but_request_still_succeeds(
+    client, monkeypatch,
+):
+    """A recoverable OSError (e.g. disk full) on ``receipts.save``
+    must NOT take down the whole JSON-RPC request — the Task should
+    still come back to the consumer with state=SUBMITTED, but the
+    ``metadata.nth_receipt_error`` marker tells them the receipt is
+    missing so they can refuse to trust the work-proof chain.
+
+    Pre-MA2 the same case logged at WARNING and left the task with
+    NO indication that the receipt was missing — a consumer pinged
+    `task.metadata.nth_receipt_id` and got KeyError, conflating it
+    with "no receipt yet, retry later"."""
+    def boom_save(_receipt):
+        raise OSError("disk full")
+    monkeypatch.setattr(
+        client.app.state.nth.receipts, "save", boom_save,
+    )
+
+    resp = client.post(
+        "/api/a2a/rpc",
+        json=_rpc("message/send", {"message": _user_text_message()}),
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # The Task itself still comes back — receipt failure is a
+    # sub-step, not the request
+    assert "result" in body, body
+    task = body["result"]
+    # And the error marker is visible
+    assert task["metadata"].get("nth_receipt_error") is True
+    assert task["metadata"].get("nth_receipt_error_class") == "OSError"
+    # And the success field is absent (no receipt was actually saved)
+    assert "nth_receipt_id" not in task["metadata"]
+
+
+def test_ma2_recoverable_runtimeerror_in_sign_is_caught(
+    client, monkeypatch,
+):
+    """If the identity loses its signing capability mid-flight (rare
+    but possible with key rotation), sign_receipt raises RuntimeError.
+    That's recoverable — mark the task and let the consumer continue."""
+    real_sign = client.app.state.nth.node_identity.sign
+    def boom_sign(_payload):
+        raise RuntimeError("key wiped")
+    monkeypatch.setattr(
+        client.app.state.nth.node_identity, "sign", boom_sign,
+    )
+
+    body = client.post(
+        "/api/a2a/rpc",
+        json=_rpc("message/send", {"message": _user_text_message()}),
+    ).json()
+    assert "result" in body
+    task = body["result"]
+    assert task["metadata"].get("nth_receipt_error") is True
+    assert task["metadata"].get("nth_receipt_error_class") == "RuntimeError"
+
+
+def test_ma2_non_recoverable_memoryerror_propagates_to_jsonrpc_error(
+    client, monkeypatch,
+):
+    """The contract: things outside the recoverable tuple must
+    propagate, and the JSON-RPC layer maps them to -32603 internal
+    error. A consumer SHOULD NOT see a "successful" Task when the
+    underlying system is genuinely broken (memory exhausted).
+
+    Pre-MA2 the bare ``except Exception`` would have swallowed even
+    MemoryError, returning a task with a stale metadata error marker
+    — but no clear signal to the consumer that the runtime is in
+    trouble."""
+    def boom_save(_receipt):
+        raise MemoryError("out of memory")
+    monkeypatch.setattr(
+        client.app.state.nth.receipts, "save", boom_save,
+    )
+
+    body = client.post(
+        "/api/a2a/rpc",
+        json=_rpc("message/send", {"message": _user_text_message()}),
+    ).json()
+    # The outer JSON-RPC handler catches Exception and returns
+    # -32603. The consumer sees a structured error, not a
+    # Task-shaped lie.
+    assert "error" in body
+    assert body["error"]["code"] == -32603
+
+
+def test_ma2_cancel_receipt_failure_also_marks_metadata(
+    client, monkeypatch,
+):
+    """Symmetric coverage on the cancel path: cancel-receipt save
+    failure must also write the error marker so a consumer reading
+    the canceled Task can detect the missing proof."""
+    # Create a task first (successful path)
+    task = client.post(
+        "/api/a2a/rpc",
+        json=_rpc("message/send", {"message": _user_text_message()}),
+    ).json()["result"]
+    task_id = task["id"]
+    # Now break cancel-time receipt emission
+    def boom_save(_receipt):
+        raise OSError("disk full")
+    monkeypatch.setattr(
+        client.app.state.nth.receipts, "save", boom_save,
+    )
+    body = client.post(
+        "/api/a2a/rpc",
+        json=_rpc("tasks/cancel", {"id": task_id}),
+    ).json()
+    assert "result" in body
+    canceled = body["result"]
+    assert canceled["status"]["state"] == TASK_STATE_CANCELED
+    assert canceled["metadata"].get("nth_receipt_error") is True
+    assert (
+        canceled["metadata"].get("nth_receipt_error_class") == "OSError"
+    )
+
+
 def test_a2a_rpc_endpoint_requires_console_token(auth_client):
     """When console_auth is on, /api/a2a/rpc must reject unauthenticated
     POSTs. Otherwise a LAN attacker can drain work + receipts from us."""
