@@ -6,6 +6,7 @@ membership and group APIs without bypassing their permission checks.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import hmac
@@ -14,16 +15,37 @@ import secrets
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, TYPE_CHECKING
+
+# R-60 (2026-06-08): forward-reference ContactRecord for the
+# _resolve_member_identity return type. The contact_book module is
+# already imported at runtime below; the TYPE_CHECKING guard here is
+# strictly for static analysers (mypy/pyright) so they can validate
+# field access on the returned third tuple element without forcing an
+# import-order rearrangement.
+if TYPE_CHECKING:
+    from nth_dao.contact_book import ContactRecord
 
 logger = logging.getLogger("nth_dao.web")
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from nth_dao.a2a_card import (
+    build_a2a_card as _build_a2a_card,
+    known_skills as _known_a2a_skills,
+    sign_a2a_card_jws as _sign_a2a_card_jws,
+)
+from nth_dao.a2a_rpc import A2ARPCHandler, TaskStore as _A2ATaskStore
 from nth_dao.agent_code import code_for_agent_id, code_for_pubkey, parse_code
+from nth_dao.execution_receipt import ReceiptStore as _ReceiptStore
+# R-58 (2026-06-08): hoist did_key helpers to module scope so
+# `_resolve_member_identity` doesn't re-execute the import statement
+# inside the search hot loop. sys.modules already caches the module,
+# but a stable top-level binding eliminates the per-call frame setup.
+from nth_dao.did_key import decode_ed25519_did_key_hex, is_did_key
 from nth_dao.demo_responder import DEFAULT_AGENT_ID as ECHO_AGENT_ID
 from nth_dao.demo_responder import maybe_reply as _demo_maybe_reply
 from nth_dao.discovery import AgentRegistry, LANDiscovery, PeerFinder
@@ -337,6 +359,15 @@ class WebState:
         self.store_limiter = RateLimiter(
             max_per_window=60, window_seconds=60.0,
         )
+        # L1-1 (2026-06-08): signed execution receipts (motebit
+        # execution-ledger@1.0 compatible). Lives under
+        # <workspace>/team_receipts/.
+        self.receipts = _ReceiptStore(workspace)
+        # L1-2 (2026-06-08): A2A Protocol task store. In-memory only
+        # for v1 — the receipt is the persistent work-proof; the task
+        # itself is ephemeral and re-derivable from receipts if we
+        # ever need restart-survival.
+        self.a2a_tasks = _A2ATaskStore()
 
 
 class JoinPayload(BaseModel):
@@ -543,7 +574,15 @@ def create_app(
         # need to be able to pull this without owning the operator's
         # console Bearer token, otherwise the cross-node discovery
         # story is broken.
-        if request.url.path == "/.well-known/nth-dao/identity.json":
+        # L0-2 (2026-06-08): A2A Protocol AgentCard is published at
+        # ``/.well-known/agent.json`` per A2A convention; same
+        # unauthenticated-public contract as the NTH-native card.
+        # Both share the underlying Ed25519 identity material so a
+        # consumer that knows the pubkey can cross-verify the two.
+        if request.url.path in (
+            "/.well-known/nth-dao/identity.json",
+            "/.well-known/agent.json",
+        ):
             return await call_next(request)
         if (
             require_console_auth
@@ -569,7 +608,7 @@ def create_app(
     # PKI. The signature covers a canonical JSON of every field except
     # ``sig`` itself.
     @app.get("/.well-known/nth-dao/identity.json")
-    def public_identity_card() -> dict[str, Any]:
+    def public_identity_card(request: Request) -> dict[str, Any]:
         if state.node_identity is None:
             # Honest 503: this node has not bootstrapped an identity
             # (typically PyNaCl missing). Cross-LAN consumers see a
@@ -607,6 +646,20 @@ def create_app(
             "capabilities": [],   # reserved; future protocol versions
                                   # can populate from agent profile
             "issued_at": datetime.now().isoformat(),
+            # L0-2 (2026-06-08): cross-link to the A2A-compatible
+            # mirror at /.well-known/agent.json so a consumer that
+            # only knows our native card can discover the A2A view
+            # without a second well-known probe.
+            #
+            # B5 (review fix 2026-06-08): use the FULL request URL.
+            # A relative path breaks if a consumer caches the card
+            # to disk and later parses it without the original base
+            # URL context (no way to recover the host); absolute URL
+            # remains resolvable in every consumer state.
+            "a2a_card_url": (
+                str(request.base_url).rstrip("/")
+                + "/.well-known/agent.json"
+            ),
         }
         # Sign the card so a remote consumer who already has our
         # pubkey can verify they're talking to the right node.
@@ -622,6 +675,159 @@ def create_app(
             ) from exc
         card["sig"] = sig
         return card
+
+    # L0-2 (2026-06-08): A2A Protocol AgentCard mirror.
+    #
+    # The A2A spec (a2aproject/A2A specification/a2a.proto) defines
+    # a JSON metadata document at a well-known URL describing an
+    # agent's identity, capabilities and authentication. 50+ partners
+    # ship A2A-capable clients (Atlassian / Cohere / Salesforce /
+    # PayPal / SAP / LangChain / …). Emitting this view costs ~80
+    # lines and instantly makes any NTH DAO node a first-class A2A
+    # participant.
+    #
+    # Signing uses JWS-EdDSA detached payload (RFC 7515 §A.5 style):
+    # the AgentCard JSON IS the payload, and the signatures[] envelope
+    # is a JWS Compact serialization with empty in-band payload.
+    # The signing keypair is the same workspace Ed25519 identity that
+    # signs /.well-known/nth-dao/identity.json — a consumer who
+    # already has our pubkey can verify EITHER card.
+    @app.get("/.well-known/agent.json")
+    def a2a_public_agent_card(request: Request) -> Response:
+        if state.node_identity is None:
+            # Mirror the NTH-native card's 503 contract — a public
+            # endpoint that returns an unsigned-or-fake card poisons
+            # the consumer's trust store.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "node identity unavailable; install pynacl + "
+                    "restart"
+                ),
+            )
+        # A4 (architect review 2026-06-08): a2a_card helpers are at
+        # module scope (same convention as R-58's did_key hoist).
+        ident = state.node_identity
+        pubkey_hex = getattr(ident, "pubkey_hex", "") or ""
+        did = _safe_did(ident)
+        if not did or not pubkey_hex:
+            # Defence in depth: a node_identity that exists but lacks
+            # crypto material would emit an unverifiable A2A card.
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "node identity has no usable keypair; "
+                    "install pynacl + restart"
+                ),
+            )
+
+        # Resolve home channel id for the placeholder skill example.
+        # ``DEFAULT_CHANNEL_ID`` is the always-present home channel
+        # (imported from nth_dao.groups at the top of this module).
+        home_channel = DEFAULT_CHANNEL_ID
+
+        base_url = str(request.base_url).rstrip("/")
+        # B7 (2026-06-08): pass the REAL skill list rather than relying
+        # on the build_a2a_card fallback. ``known_skills(state)``
+        # introspects this node's wired subsystems and emits one
+        # AgentSkill per actually-reachable surface.
+        skills = _known_a2a_skills(state, base_url=base_url)
+        card = _build_a2a_card(
+            agent_id=DEFAULT_ADMIN_ID,
+            did=did,
+            pubkey_hex=pubkey_hex,
+            base_url=base_url,
+            home_channel_id=home_channel,
+            skills=skills,
+        )
+        try:
+            sig_env = _sign_a2a_card_jws(card, ident, did)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("A2A card sign failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="A2A agent card signing unavailable",
+            ) from exc
+        card["signatures"] = [sig_env]
+
+        # B4 (review fix 2026-06-08): ETag + Cache-Control.
+        # The A2A card body has NO time-varying field (no issued_at;
+        # signature is deterministic for a given input), so the body
+        # is stable until either (a) the workspace identity rotates
+        # or (b) the build_a2a_card output changes — both rare.
+        # ETag = sha256(canonical_json(card)) gives consumers a cheap
+        # If-None-Match → 304 path so an A2A consumer polling at 60s
+        # doesn't burn a fresh Ed25519 sign on every request. The
+        # 5-minute max-age is a soft hint; ETag is the authoritative
+        # freshness signal.
+        #
+        # NOTE: native /.well-known/nth-dao/identity.json deliberately
+        # carries ``issued_at: datetime.now()`` so its body changes
+        # every request — ETag would never hit there. Adding ETag
+        # only here, not the native endpoint, is the correct asymmetry.
+        from nth_dao.identity import canonical_json as _canonical_json
+        body_bytes = _canonical_json(card)
+        etag = '"' + hashlib.sha256(body_bytes).hexdigest()[:32] + '"'
+
+        if_none_match = request.headers.get("If-None-Match", "")
+        if if_none_match and if_none_match.strip() == etag:
+            return Response(
+                status_code=304,
+                headers={
+                    "ETag": etag,
+                    "Cache-Control": "public, max-age=300",
+                },
+            )
+
+        return Response(
+            content=body_bytes,
+            media_type="application/json",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "public, max-age=300",
+            },
+        )
+
+    # L1-2 (2026-06-08): A2A Protocol JSON-RPC endpoint.
+    #
+    # Lets external A2A consumers (LangChain / Cohere / Salesforce /
+    # PayPal / SAP A2A clients) submit tasks to this NTH DAO node.
+    # Methods implemented: ``message/send``, ``tasks/get``,
+    # ``tasks/cancel``. The receipt subsystem (L1-1) emits a signed
+    # work-proof per accepted message, so the consumer can later prove
+    # the agent executed the work it claims.
+    #
+    # Path: ``/api/a2a/rpc`` (gated by console_token like other /api/
+    # endpoints; an external A2A consumer must present the token).
+    # JSON-RPC 2.0 envelope per a2aprotocol.ai convention.
+    @app.post("/api/a2a/rpc")
+    async def a2a_rpc_endpoint(request: Request) -> dict[str, Any]:
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32700,
+                    "message": "parse error: body is not valid JSON",
+                },
+            }
+        if not isinstance(payload, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32600,
+                    "message": "invalid request: body must be a JSON object",
+                },
+            }
+        handler = A2ARPCHandler(
+            task_store=state.a2a_tasks,
+            receipt_store=state.receipts,
+            identity=state.node_identity,
+        )
+        return handler.handle(payload)
 
     # DID bootstrap (2026-06-07): /api/identity is the "who is this
     # NTH DAO node?" endpoint. Other downloads can fetch this URL
@@ -1107,6 +1313,34 @@ def create_app(
                 if contact is not None:
                     registry_did = registry_did or contact.did
                     registry_pk = registry_pk or contact.pubkey_hex
+            # R-57 (2026-06-08): when a pubkey is known for this
+            # registry row (from AgentRecord.metadata or the
+            # ContactBook fallback above), prefer the pubkey-derived
+            # code. Falling back to ``code_for_agent_id`` for LAN
+            # daemons that all use the default agent_id="admin" would
+            # make every remote node's code collapse to ``8c69-76e5``.
+            #
+            # A-5 (2026-06-08, architect review): if the row carries
+            # ``did`` but no ``pubkey_hex``, decode the did:key to
+            # recover the pubkey before deriving the code. Without
+            # this, a peer that publishes DID-only (e.g. a future
+            # protocol revision or a minimal third-party node) would
+            # fall through to ``code_for_agent_id`` and reintroduce
+            # the R-35 collision. ``_resolve_member_identity`` already
+            # does this for ContactBook contacts; mirror that here.
+            if not registry_pk and registry_did:
+                try:
+                    if is_did_key(registry_did):
+                        registry_pk = decode_ed25519_did_key_hex(
+                            registry_did,
+                        ) or ""
+                except Exception:  # noqa: BLE001
+                    pass
+            registry_code = (
+                code_for_pubkey(registry_pk)
+                if registry_pk
+                else code_for_agent_id(r.record.agent_id)
+            )
             row = {
                 "agent_id": r.record.agent_id,
                 "score": r.score,
@@ -1117,7 +1351,7 @@ def create_app(
                 "groups": list(r.record.groups),
                 "last_seen": r.record.last_seen,
                 "matched": list(r.matched_capabilities),
-                "code": code_for_agent_id(r.record.agent_id),
+                "code": registry_code,
                 "source": "registry",
                 "role": "",
                 "did": registry_did,
@@ -1386,7 +1620,7 @@ def create_app(
         target_id = payload.target_agent_id.strip()
         derived_pubkey_hex = ""
         if payload.target_did:
-            from nth_dao.did_key import decode_ed25519_did_key_hex, is_did_key
+            # R-58: did_key helpers are imported at module scope.
             if not is_did_key(payload.target_did):
                 raise HTTPException(status_code=400, detail="invalid did:key")
             derived_pubkey_hex = decode_ed25519_did_key_hex(payload.target_did)
@@ -2272,7 +2506,7 @@ def _actor_dict(
 
 def _resolve_member_identity(
     state: "WebState", agent_id: str,
-) -> tuple[str, str, Any]:
+) -> "tuple[str, str, Optional[ContactRecord]]":
     """Single source of truth for ``(code, pubkey_hex, contact)``.
 
     R-46..R-51 (2026-06-08): the previous split into ``_code_for_admin``
@@ -2329,15 +2563,30 @@ def _resolve_member_identity(
         # is fully equivalent to the contact.pubkey_hex case for
         # downstream code derivation.
         if not pk and contact.did:
+            # R-58: did_key helpers are imported at module scope.
             try:
-                from ..did_key import (
-                    decode_ed25519_did_key_hex,
-                    is_did_key,
-                )
                 if is_did_key(contact.did):
                     pk = decode_ed25519_did_key_hex(contact.did) or ""
             except Exception:  # noqa: BLE001
                 pk = ""
+        # R-61 (2026-06-08): when BOTH pubkey_hex and did are stored
+        # and they disagree, the file has been written inconsistently
+        # by an external tool. We honour pubkey_hex (it's the literal
+        # crypto identifier; did is its encoded form) but log so the
+        # operator notices.
+        elif pk and contact.did:
+            try:
+                if is_did_key(contact.did):
+                    claimed = decode_ed25519_did_key_hex(contact.did) or ""
+                    if claimed and claimed.lower() != pk.lower():
+                        logger.warning(
+                            "contact %s has did/pubkey mismatch: "
+                            "did claims pubkey %s but pubkey_hex is "
+                            "%s. Trusting pubkey_hex.",
+                            agent_id, claimed[:16], pk[:16],
+                        )
+            except Exception:  # noqa: BLE001
+                pass
     if pk:
         return code_for_pubkey(pk), pk, contact
 
@@ -2346,24 +2595,49 @@ def _resolve_member_identity(
     # so the cross-install collision only happens when two installs
     # add the same agent_id LITERAL - acceptable trade-off, since
     # the safer pubkey path is preferred whenever pubkey is known.
+    #
+    # R-62 (2026-06-08) — attack-surface note: this path returns a
+    # code derived purely from a caller-supplied agent_id string. An
+    # attacker who can register or impersonate an agent_id can choose
+    # one whose hash collides with a high-value pubkey-derived code
+    # (8-hex namespace is small; ~16M space). Mitigations elsewhere:
+    #   * `by_code` lookups prefer pubkey-derived rows (search
+    #     iterates registry + contacts; pubkey matches outrank
+    #     agent_id matches because the registry row carries pubkey)
+    #   * the UI surfaces DID alongside code when the consumer needs
+    #     to authenticate, not just label
+    # If you tighten this further, do NOT silently return "" here —
+    # legacy agent-only contacts are real and must remain addressable.
     return code_for_agent_id(agent_id), "", contact
 
 
 def _code_for_admin(state: "WebState") -> str:
-    """Compatibility shim - returns just the code for the bootstrap admin.
+    """Convenience accessor — code-only view of the bootstrap admin's
+    identity.
 
-    Prefer ``_resolve_member_identity(state, DEFAULT_ADMIN_ID)`` when
-    you also need the pubkey or contact record.
+    Use this when you genuinely only need the visible code (e.g. a
+    response body field that doesn't also expose pubkey). If you also
+    need the pubkey or the contact record, call
+    ``_resolve_member_identity(state, DEFAULT_ADMIN_ID)`` directly to
+    avoid a second resolution round-trip.
+
+    R-63 (2026-06-08): renamed from "Compatibility shim" — this is a
+    permanent first-class helper, not a deprecated transition step.
     """
     code, _, _ = _resolve_member_identity(state, DEFAULT_ADMIN_ID)
     return code
 
 
 def _code_for_member(state: "WebState", agent_id: str) -> str:
-    """Compatibility shim - returns just the code for an arbitrary member.
+    """Convenience accessor — code-only view of an arbitrary member's
+    identity.
 
-    Prefer ``_resolve_member_identity(state, agent_id)`` when you
-    also need the pubkey or contact record.
+    Same trade-off as :func:`_code_for_admin`: prefer
+    ``_resolve_member_identity(state, agent_id)`` when you also need
+    the pubkey or contact record so the ContactBook lookup happens
+    exactly once.
+
+    R-63 (2026-06-08): renamed from "Compatibility shim".
     """
     code, _, _ = _resolve_member_identity(state, agent_id)
     return code

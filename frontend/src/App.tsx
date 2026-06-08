@@ -497,12 +497,28 @@ function App() {
             </summary>
             <div className="collapsible-body">
               <div className="member-list">
+                {/*
+                  R-64 (2026-06-08): the inline member handle gets
+                  the same tooltip as the "your handle" hint above.
+                  Members panel was the one place we still showed
+                  the bare ``code`` without telling readers "this is
+                  a display label, not a verifiable identity - use
+                  DID for authentication". Without this, a member
+                  who memorises another member's handle from the
+                  panel might paste it into a context expecting
+                  cryptographic uniqueness.
+                */}
                 {state?.members.map((member) => (
                   <div className="member" key={member.agent_id}>
                     <span>
                       {member.agent_id}
                       {member.code && (
-                        <code className="agent-code agent-code-inline">{member.code}</code>
+                        <code
+                          className="agent-code agent-code-inline"
+                          title="A short display handle for this member. Not a cryptographic identifier - use the DID for verifiable identity."
+                        >
+                          {member.code}
+                        </code>
                       )}
                     </span>
                     <small>{member.role}{member.online ? " / online" : ""}</small>

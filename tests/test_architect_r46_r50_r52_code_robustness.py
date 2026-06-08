@@ -51,11 +51,19 @@ def test_R46_two_pynacl_missing_installs_do_NOT_share_a_code(
 ):
     """The headline R-46 assertion. Disable crypto availability AT
     BOOTSTRAP TIME for both installs; their admin codes must NOT both
-    be ``8c69-76e5``. We accept either:
-      * both empty (the prefer-empty strategy this refactor adopts)
-      * both DIFFERENT non-empty strings (an even stronger fix that
-        derives codes from workspace path, future-proofed)
-    What we REFUSE is "both equal to the literal-admin hash".
+    be ``8c69-76e5``.
+
+    R-59 (2026-06-08): the original test asserted only the negative
+    invariant (``a_code != legacy`` and ``b_code != legacy``) which
+    silently accepted ``a_code == "xyz1-abcd" == b_code`` — a global
+    collision under a DIFFERENT constant would have slipped through.
+
+    The chosen degradation strategy (documented in
+    ``_resolve_member_identity``'s docstring) is **empty string**:
+    when crypto material is unavailable we surface "" so the
+    front-end can show a clear "install pynacl" hint instead of a
+    misleading handle. Lock that contract here so a future refactor
+    cannot silently drift to a different degraded-path value.
     """
     # Step 1: simulate PyNaCl missing for the entire bootstrap path
     import nth_dao.identity as _id_mod
@@ -66,15 +74,21 @@ def test_R46_two_pynacl_missing_installs_do_NOT_share_a_code(
     client_a = TestClient(create_app(ws_a, require_console_auth=False))
     client_b = TestClient(create_app(ws_b, require_console_auth=False))
 
-    a_code = client_a.get(
+    resp_a = client_a.get(
         "/api/summary", params={"actor_id": "admin"},
-    ).json()["actor_code"]
-    b_code = client_b.get(
+    )
+    resp_b = client_b.get(
         "/api/summary", params={"actor_id": "admin"},
-    ).json()["actor_code"]
+    )
+    assert resp_a.status_code == 200, resp_a.text
+    assert resp_b.status_code == 200, resp_b.text
+    a_code = resp_a.json()["actor_code"]
+    b_code = resp_b.json()["actor_code"]
 
     legacy_admin_hash = code_for_agent_id("admin")    # "8c69-76e5"
     assert legacy_admin_hash == "8c69-76e5"   # regression sentinel
+
+    # Primary: no legacy collision
     assert a_code != legacy_admin_hash, (
         f"PyNaCl-missing install A returned the legacy global "
         f"collision constant {a_code!r}; R-46 unresolved"
@@ -82,6 +96,20 @@ def test_R46_two_pynacl_missing_installs_do_NOT_share_a_code(
     assert b_code != legacy_admin_hash, (
         f"PyNaCl-missing install B returned the legacy global "
         f"collision constant {b_code!r}; R-46 unresolved"
+    )
+
+    # R-59: pin the empty-string degradation strategy. If a future
+    # refactor swaps to "derive from workspace path" or similar,
+    # this assertion is the canary that forces an explicit contract
+    # change here AND in _resolve_member_identity's docstring.
+    assert a_code == "", (
+        f"degraded actor_code expected '' (empty-string strategy); "
+        f"got {a_code!r}. If you're changing the strategy, update "
+        f"_resolve_member_identity's docstring AND this test together."
+    )
+    assert b_code == "", (
+        f"degraded actor_code expected '' for install B too; got "
+        f"{b_code!r}"
     )
 
 
@@ -292,4 +320,81 @@ def test_R51_search_does_NOT_query_contact_book_twice_per_member(
     assert call_count["n"] <= n_members + 1, (
         f"ContactBook.get called {call_count['n']} times for "
         f"{n_members} members; expected at most {n_members+1}"
+    )
+
+
+# ===== A-5 (architect review of R-57): DID-only registry row =====
+
+
+@pytest.mark.skipif(
+    not crypto_available(),
+    reason="A-5 needs PyNaCl to encode/decode did:key",
+)
+def test_A5_did_only_registry_row_yields_pubkey_derived_code(temp):
+    """A LAN peer that advertises ``did`` in TXT but omits
+    ``pubkey_hex`` (e.g. a future protocol revision, or a minimal
+    third-party node) must still produce a pubkey-derived code in the
+    search result.
+
+    Pre-A5 fix R-57 only checked ``registry_pk``; an empty pubkey_hex
+    fell through to ``code_for_agent_id(r.record.agent_id)`` — which
+    is the very R-35 cross-install collision (every LAN daemon using
+    ``agent_id='admin'`` would collapse to ``8c69-76e5``). The A-5
+    fix mirrors ``_resolve_member_identity``'s did:key decode: if the
+    row carries ``did`` we recover the pubkey from it before deriving
+    the code.
+
+    This test fabricates a registry row with only ``did`` in
+    metadata and asserts the search row's code matches the
+    pubkey-derived expectation.
+    """
+    from nth_dao.discovery.agent_registry import AgentRegistry
+    from nth_dao.did_key import decode_ed25519_did_key_hex
+
+    # The web layer's PeerFinder reads from <workspace>/team_agents.
+    # Register a fake peer there BEFORE create_app builds the
+    # PeerFinder so the search picks it up.
+    agents_dir = temp / "team_agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    peer_did = "did:key:z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH"
+    expected_pk = decode_ed25519_did_key_hex(peer_did)
+    expected_code = code_for_pubkey(expected_pk)
+
+    fake_reg = AgentRegistry(str(agents_dir))
+    fake_reg.register(
+        agent_id="lan-peer-X",
+        metadata={
+            "did": peer_did,
+            # pubkey_hex DELIBERATELY ABSENT — that's the whole point
+        },
+        start_heartbeat=False,
+    )
+    # Don't unregister: we want the row to persist for the search.
+
+    client = TestClient(create_app(temp, require_console_auth=False))
+    search = client.get(
+        "/api/agents/search",
+        params={"q": "lan-peer", "actor_id": "admin"},
+    )
+    assert search.status_code == 200, search.text
+    rows = [
+        r for r in search.json()["results"]
+        if r["agent_id"] == "lan-peer-X"
+    ]
+    assert rows, (
+        f"DID-only registry peer not found in search results: "
+        f"{search.json()['results']}"
+    )
+    row = rows[0]
+    # The headline assertion: code is derived from the did:key, not
+    # from the agent_id literal.
+    assert row["code"] == expected_code, (
+        f"DID-only registry row produced code {row['code']!r}; "
+        f"expected pubkey-derived {expected_code!r}. A-5 unresolved — "
+        f"R-57 must mirror _resolve_member_identity's did:key decode."
+    )
+    # And specifically not the agent_id-hash fallback
+    assert row["code"] != code_for_agent_id("lan-peer-X"), (
+        "code degraded to the agent_id-hash fallback — the did:key "
+        "decode in R-57 didn't run"
     )
