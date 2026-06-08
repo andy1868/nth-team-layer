@@ -1,23 +1,21 @@
-/* QQ / WeChat-inspired panels for v0.9.6 contacts + nearby + groups + governance.
- *
- * Standalone — imported by App.tsx so it doesn't perturb existing styles.css.
- * Color palette echoes classic QQ (teal accent, neutral grays).
+/* QQ / WeChat-inspired panels — Dark theme variant
+ * Overrides the original light QQ style to match Nth DAO's Linear-inspired palette.
  */
 
 :root {
-  --qq-accent: #00a0e9;
-  --qq-accent-dark: #007cb2;
-  --qq-bg: #f7f8fa;
-  --qq-surface: #ffffff;
-  --qq-border: #e1e4ea;
-  --qq-text: #1d2129;
-  --qq-text-muted: #76838f;
-  --qq-status-idle: #15c46b;
-  --qq-status-busy: #f5a623;
-  --qq-status-offline: #b3b8c0;
-  --qq-status-blocked: #ed4014;
-  --qq-flash-bg: #fff7e6;
-  --qq-error: #d4380d;
+  --qq-accent: #6366f1;
+  --qq-accent-dark: #818cf8;
+  --qq-bg: #121214;
+  --qq-surface: #1a1a1d;
+  --qq-border: rgba(255, 255, 255, 0.08);
+  --qq-text: #f4f4f5;
+  --qq-text-muted: #71717a;
+  --qq-status-idle: #22c55e;
+  --qq-status-busy: #f59e0b;
+  --qq-status-offline: #52525b;
+  --qq-status-blocked: #ef4444;
+  --qq-flash-bg: rgba(99, 102, 241, 0.1);
+  --qq-error: #ef4444;
 }
 
 .qq-panel {
@@ -31,15 +29,17 @@
 
 .qq-panel h2 {
   margin: 0 0 12px;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 16px;
+  font-weight: 590;
   border-bottom: 1px solid var(--qq-border);
   padding-bottom: 8px;
+  color: var(--qq-text);
 }
 
 .qq-panel h3 {
-  margin: 16px 0 8px;
-  font-size: 14px;
+  margin: 12px 0 6px;
+  font-size: 13px;
+  font-weight: 510;
   color: var(--qq-text-muted);
 }
 
@@ -51,11 +51,15 @@
 
 .qq-search-bar input {
   flex: 1;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border: 1px solid var(--qq-border);
-  border-radius: 4px;
-  font-size: 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #161618;
+  color: var(--qq-text);
 }
+
+.qq-search-bar input::placeholder { color: var(--qq-text-muted); }
 
 .qq-search-bar button,
 .qq-form button,
@@ -65,22 +69,22 @@
   background: var(--qq-accent);
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   padding: 6px 14px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 510;
 }
 
 .qq-search-bar button:hover,
 .qq-form button:hover,
-.qq-vote-buttons button:hover {
-  background: var(--qq-accent-dark);
-}
+.qq-vote-buttons button:hover { background: var(--qq-accent-dark); }
 
 .qq-search-bar button:disabled,
 .qq-form button:disabled {
   background: var(--qq-status-offline);
   cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .qq-result-list,
@@ -103,25 +107,24 @@
 
 .qq-result:last-child,
 .qq-group:last-child,
-.qq-proposal:last-child {
-  border-bottom: none;
-}
+.qq-proposal:last-child { border-bottom: none; }
 
 .qq-group {
   display: block;
   cursor: pointer;
+  border-radius: 6px;
+  padding: 10px 8px;
 }
 
-.qq-group:hover {
-  background: var(--qq-bg);
-}
+.qq-group:hover { background: rgba(255,255,255,0.04); }
 
 .qq-status {
   display: inline-block;
   margin-left: 8px;
-  padding: 2px 6px;
+  padding: 2px 8px;
   border-radius: 10px;
   font-size: 11px;
+  font-weight: 510;
   color: white;
 }
 
@@ -137,6 +140,7 @@
   margin: 8px 0;
   font-size: 13px;
   border-radius: 0 4px 4px 0;
+  color: var(--qq-text-secondary);
 }
 
 .qq-flash.qq-error {
@@ -159,10 +163,20 @@
 .qq-form select,
 .qq-nearby-controls input {
   flex: 1 1 200px;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border: 1px solid var(--qq-border);
-  border-radius: 4px;
-  font-size: 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #161618;
+  color: var(--qq-text);
+}
+
+.qq-direct-add input::placeholder,
+.qq-form input::placeholder { color: var(--qq-text-muted); }
+
+.qq-form select {
+  background: #161618;
+  color: var(--qq-text);
 }
 
 .qq-nearby-controls label {
@@ -188,17 +202,18 @@
 }
 
 .qq-did {
-  font-family: monospace;
-  background: var(--qq-bg);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: rgba(255,255,255,0.05);
   padding: 1px 4px;
   border-radius: 3px;
+  font-size: 11px;
 }
 
 .qq-policy-badge {
   display: inline-block;
   margin-left: 8px;
-  padding: 1px 6px;
-  background: var(--qq-bg);
+  padding: 2px 8px;
+  background: rgba(255,255,255,0.05);
   border: 1px solid var(--qq-border);
   border-radius: 10px;
   font-size: 11px;
@@ -217,7 +232,7 @@
 }
 
 .qq-policy-current {
-  background: var(--qq-bg);
+  background: rgba(255,255,255,0.04);
   padding: 8px 12px;
   border-radius: 4px;
   margin-bottom: 12px;
@@ -252,21 +267,20 @@
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--qq-text-muted);
   border-bottom: 2px solid transparent;
+  font-weight: 510;
 }
+
+.qq-tab:hover { color: var(--qq-text-secondary); }
 
 .qq-tab.active {
   color: var(--qq-accent);
   border-bottom-color: var(--qq-accent);
 }
 
-/* v0.10 T-9: Mandate sidebar
- * Three stacked sections (Intents / Carts / Payments), each with a
- * collapsible row layout. Per-row Verify control inlines the result
- * badge so users see ok/fail without leaving the sidebar. */
-
+/* Mandate sidebar — dark */
 .mandate-panel {
   display: flex;
   flex-direction: column;
@@ -282,6 +296,7 @@
 .mandate-header h3 {
   margin: 0;
   font-size: 14px;
+  color: var(--qq-text);
 }
 
 .mandate-header button {
@@ -294,15 +309,12 @@
   cursor: pointer;
 }
 
-.mandate-header button:disabled {
-  opacity: 0.6;
-  cursor: wait;
-}
+.mandate-header button:disabled { opacity: 0.6; cursor: wait; }
 
 .mandate-section {
   border: 1px solid var(--qq-border);
   border-radius: 6px;
-  background: var(--qq-bg);
+  background: rgba(255,255,255,0.02);
   padding: 10px 12px;
 }
 
@@ -350,14 +362,11 @@
   flex-wrap: wrap;
 }
 
-.mandate-headline {
-  font-weight: 600;
-  font-size: 13px;
-}
+.mandate-headline { font-weight: 590; font-size: 13px; }
 
 .mandate-digest {
   font-family: monospace;
-  background: var(--qq-bg);
+  background: rgba(255,255,255,0.05);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 11px;
@@ -371,24 +380,13 @@
   color: white;
 }
 
-.mandate-tag-expired {
-  background: var(--qq-status-blocked);
-}
+.mandate-tag-expired { background: var(--qq-status-blocked); }
 
-.mandate-row-body p {
-  margin: 0;
-  color: var(--qq-text-muted);
-  font-size: 11px;
-}
+.mandate-row-body p { margin: 0; color: var(--qq-text-muted); font-size: 11px; }
 
-.mandate-purpose {
-  color: var(--qq-text) !important;
-  font-size: 12px !important;
-}
+.mandate-purpose { color: var(--qq-text) !important; font-size: 12px !important; }
 
-.mandate-meta {
-  font-size: 11px;
-}
+.mandate-meta { font-size: 11px; }
 
 .mandate-empty {
   font-size: 12px;
@@ -397,11 +395,7 @@
   margin: 0;
 }
 
-.mandate-verify {
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 3px;
-}
+.mandate-verify { font-size: 11px; padding: 4px 8px; border-radius: 3px; }
 
 .mandate-verify-btn {
   align-self: flex-start;
@@ -414,36 +408,25 @@
   cursor: pointer;
 }
 
-.mandate-verify-running {
-  color: var(--qq-text-muted);
-  font-style: italic;
-}
+.mandate-verify-running { color: var(--qq-text-muted); font-style: italic; }
 
 .mandate-verify-ok {
-  background: rgba(21, 196, 107, 0.12);
+  background: rgba(34, 197, 94, 0.12);
   color: var(--qq-status-idle);
   border-left: 3px solid var(--qq-status-idle);
 }
 
 .mandate-verify-bad {
-  background: rgba(237, 64, 20, 0.12);
+  background: rgba(239, 68, 68, 0.12);
   color: var(--qq-error);
   border-left: 3px solid var(--qq-status-blocked);
 }
 
-.mandate-verify-detail {
-  margin-top: 4px;
-}
+.mandate-verify-detail { margin-top: 4px; }
 
-.mandate-verify-detail summary {
-  cursor: pointer;
-  font-size: 11px;
-}
+.mandate-verify-detail summary { cursor: pointer; font-size: 11px; }
 
-.mandate-verify-detail ul {
-  margin: 4px 0 0 0;
-  padding-left: 16px;
-}
+.mandate-verify-detail ul { margin: 4px 0 0 0; padding-left: 16px; }
 
 .mandate-verify button {
   margin-left: 8px;
