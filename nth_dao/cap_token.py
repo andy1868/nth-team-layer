@@ -92,6 +92,11 @@ CAP_A2A_TASK_CANCEL = "a2a:task_cancel"
 CAP_A2A_TASK_SPLIT = "a2a:task_split"
 CAP_NTH_POST_MESSAGE = "nth:post_message"
 CAP_NTH_ADD_MEMBER = "nth:add_member"
+# C2 (DESIGN_TRADE_OFFS §2 + Appendix B, 2026-06-08): the
+# capability an ephemeral subject DID must hold in order to sign
+# execution receipts that chain back to the issuer's root authority.
+# Naming follows the nth: verb_noun convention (see Appendix B).
+CAP_NTH_RECEIPT_SIGN = "nth:receipt_sign"
 
 KNOWN_CAPABILITIES = frozenset({
     CAP_A2A_MESSAGE_SEND,
@@ -100,6 +105,7 @@ KNOWN_CAPABILITIES = frozenset({
     CAP_A2A_TASK_SPLIT,
     CAP_NTH_POST_MESSAGE,
     CAP_NTH_ADD_MEMBER,
+    CAP_NTH_RECEIPT_SIGN,
 })
 
 

@@ -338,12 +338,25 @@ semantics consciously, not by accident.
 Estimated diff: ~100 LOC across `cap_token.py`,
 `execution_receipt.py`, and the verifier test suite.
 
-**Implementation tracking:** `[PR-PENDING: C2-CAP-IMPLEMENTATION]`
-— this placeholder will be replaced with the merged commit hash
-once the receipt-side cap_token chain ships. The implementing PR
-description references this section for normative semantics; if
-the merged behaviour drifts from §2, this document is the
-contract that wins, and the PR must be amended to match.
+**Implementation tracking:** **shipped** as part of the same
+commit that updates this section (and as a follow-up to D1, the
+chain-link entry from §1 V1.x-graduation lands together). See
+`nth_dao/execution_receipt.py::_verify_cap_token_chain_for_receipt`
+and the test suite at
+`tests/test_receipt_cap_chain_and_chaining.py`. If implementation
+drifts from this section's semantics in a future change, this
+document is the contract that wins and the implementation must
+be amended to match.
+
+**R1 footnote — time anchor on cap_token chain verification:**
+the initial implementation of `_verify_cap_token_chain_for_receipt`
+called `verify_cap_token` without `now_ms_override`, so the
+inner time check used current wall clock. That contradicts the
+D7 non-retroactive semantic: a receipt signed at time T while
+the cap was valid would, years later, fail to verify because
+the cap has since expired. The fix anchors the time check to
+the receipt's `issued_at`. Regression test:
+`test_c2_d7_receipt_signed_within_window_verifies_after_cap_expired`.
 
 ### V2 path — multi-hop delegation
 
