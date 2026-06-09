@@ -67,10 +67,16 @@ ordering reflects how directly each V2 work item addresses NTH
 DAO's foundational claim ("local-first sovereign work-history
 record"):
 
-> **TLSNotary / TEE attestation (Tool-provenance, §3 V2) ≫
-> Receipt-side cap_token chain (Autonomous signing, §2 V2) ≫
-> Identity-migration tooling (Key-loss, §1 V2) ≫
+> **TLSNotary / TEE attestation (Tool-provenance, §3 V2) >
+> Receipt-side cap_token chain (Autonomous signing, §2 V2) >
+> Identity-migration tooling (Key-loss, §1 V2) >
 > OS-level multi-tenant helpers (Workspace sharing, §4 V2)**
+
+The ordering above uses `>` (strict precedence) deliberately, not
+`≫` (much-greater-than). Each tier is more important than the next
+but they are not orders of magnitude apart — every V2 item is
+genuinely foundational and a maintainer choosing between §2 and §3
+should not feel that picking §2 is "wrong".
 
 Reasoning, in plain terms:
 
@@ -259,7 +265,7 @@ An external auditor reading an NTH-aware verifier sees:
 > claiming refactor work on goal G. That signature is verifiable.
 > The ephemeral DID was authorized by user `did:key:zTony` via
 > cap_token X, valid 22:00-08:00, scoped to capability
-> `nth:sign_receipt` and goal G. cap_token X is itself a valid
+> `nth:receipt_sign` and goal G. cap_token X is itself a valid
 > Ed25519 signature from `did:key:zTony`. Therefore: this is
 > Tony's work, performed by a process Tony authorized, within
 > the time and scope window Tony specified."*
@@ -276,7 +282,7 @@ capabilities→scope→expiry model — that work shipped in commit
 `99e40da`. The receipt-side extension (this afternoon's work)
 requires three additions:
 
-1. **New capability `nth:sign_receipt`** added to
+1. **New capability `nth:receipt_sign`** added to
    `KNOWN_CAPABILITIES`. This is the most powerful cap NTH DAO
    exposes — it lets the bearer assert "I did X" claims that
    chain back to the user's reputation. Issuers must consciously
@@ -292,8 +298,42 @@ requires three additions:
    - cap_token's signature verifies under issuer_did's pubkey ✓
    - cap_token's `subject_did` equals receipt's `signer_did` ✓
    - cap_token's `not_after >= receipt timestamp` ✓
-   - cap_token's `capabilities` includes `nth:sign_receipt` ✓
+   - cap_token's `capabilities` includes `nth:receipt_sign` ✓
    - If `scope_task_id` is set, it equals the receipt's `goal_id` ✓
+   - **Revocation is NOT consulted at this layer.** See the
+     "Revocation semantics" subsection below.
+
+### Revocation semantics — non-retroactive (normative)
+
+When a cap_token is revoked at time `T_revoke`:
+
+- Receipts signed by that cap_token at time `T_sig < T_revoke`
+  **remain valid forever**. The cryptographic act of signing was
+  legal at the time it happened; revocation cannot rewrite
+  history.
+- API calls authenticated by that cap_token at time
+  `T_call >= T_revoke` are rejected at middleware (the existing
+  `revoked_set()` check in `nth_dao/cap_token.py`).
+- `verify_receipt` MUST NOT consult the revocation list when
+  validating a chained receipt. The receipt's
+  `authorizing_cap_token` is verified against the cap_token's
+  own internal time bounds (`not_before` / `not_after`), not
+  against current revocation status.
+
+The reasoning is the "permanent trace" promise of NTH DAO: if
+revoking a cap_token retroactively invalidated months of past
+autonomous-agent work, every NTH DAO user would have to choose
+between forgiving compromised delegations (risky) and losing
+their accumulated work history (catastrophic). Non-retroactive
+revocation is the only choice consistent with NTH DAO's identity
+posture.
+
+The alternative semantics (revocation invalidates past
+receipts) is well-defined and useful in OAuth-style scope
+revocation, but does not fit this protocol. Implementers porting
+NTH DAO to a context where retroactive revocation IS appropriate
+(e.g. a regulated financial setting) need to fork the verify
+semantics consciously, not by accident.
 
 Estimated diff: ~100 LOC across `cap_token.py`,
 `execution_receipt.py`, and the verifier test suite.
@@ -481,11 +521,27 @@ workstation.
 ### V2 path
 
 Real multi-human-sharing requires OS-level user isolation
-(option 1 above). NTH DAO doesn't need a code change to support
-this — the user just sets up two Unix accounts and gets two
-workspaces. What v2 would add is documentation, possibly a
+(option 1 above). The user sets up two Unix accounts and gets
+two workspaces. What V2 would add is documentation, possibly a
 helper CLI for the setup, and clear messaging that this is the
 supported model.
+
+**Operational constraint — port allocation.** Two NTH DAO
+workspaces on the same host cannot both bind the default
+console port (`NTH_PORT=8080`) or share the same mDNS
+responder slot. Multi-human-on-same-host deployments MUST:
+
+- Set `NTH_PORT` to a distinct value per workspace (e.g.
+  `NTH_PORT=18080` for Alice, `NTH_PORT=18081` for Bob).
+- Either keep `NTH_LAN_PUBLISH=0` for at least one of them, OR
+  ensure the mDNS responder is configured with workspace-
+  distinct service names so two responders on the same host
+  don't advertise as the same NTH DAO node.
+
+This is a documentation and tooling task for V2 — the
+underlying code already accepts `NTH_PORT` overrides; what's
+missing is the helper script that walks an operator through
+"add a second user" without footguns.
 
 The session-token approach (option 2) is more invasive and
 appropriate only when (a) operating-system isolation isn't
@@ -506,7 +562,7 @@ When a user loses their key and starts over, they publish at
   "spec": "nth-dao/identity-migration@1.0",
   "old_did": "did:key:z6Mk<OLD>",
   "new_did": "did:key:z6Mk<NEW>",
-  "old_sig": "",
+  "old_sig": null,
   "new_sig": "<base64url Ed25519 signature by new key over canonical_json(this dict excluding new_sig)>",
   "external_proofs": [
     {
@@ -532,9 +588,13 @@ When a user loses their key and starts over, they publish at
 
 Semantics (deliberately minimal):
 
-- `old_sig` is empty when the old key is unrecoverable. If the
-  user has partial control (e.g. one of two shards), they can
-  include it; consumers MAY use this as a stronger proof.
+- `old_sig` is **JSON null** when the old key is unrecoverable
+  (deliberate signal, distinct from "field forgot to be set").
+  If the user has partial control of the old key (e.g.
+  recovered via partial SSS shards, or briefly recovered a
+  backup), they include the actual Ed25519 signature as a hex
+  string; consumers MAY use a non-null `old_sig` as a stronger
+  proof of identity continuity than the social proofs alone.
 - `external_proofs` is **opt-in social trust**. Each consumer
   independently decides which platforms they trust to make
   "same human" claims.
@@ -566,7 +626,31 @@ What NTH DAO MUST NOT do:
 
 # Appendix B — Capability vocabulary
 
-Current `KNOWN_CAPABILITIES` (as of commit `99e40da`):
+### Naming convention (read before extending)
+
+Capability strings follow the pattern
+``<namespace>:<action>``. The action part has historically
+varied across namespaces and we have deliberately chosen NOT
+to retrofit consistency:
+
+- ``a2a:`` namespace uses **noun_verb** form (
+  ``message_send``, ``task_get``, ``task_cancel``,
+  ``task_split``). This mirrors A2A's own JSON-RPC method
+  shape (``message/send``, ``tasks/get``).
+- ``nth:`` namespace uses **verb_noun** form (
+  ``post_message``, ``add_member``, ``receipt_sign``,
+  ``rotate_key``). This was the convention established by the
+  earliest NTH-native capabilities and is preserved for
+  backwards compatibility.
+
+Consumers writing capability strings by hand should consult
+the table below rather than guessing. The inconsistency is
+a real ergonomic gotcha; a future major version may unify
+the two patterns, but a unification would be a breaking
+change that invalidates all in-flight cap_tokens, so the
+current generation explicitly tolerates the asymmetry.
+
+### Current `KNOWN_CAPABILITIES` (as of commit `99e40da`):
 
 | Capability | Granted authority |
 |---|---|
@@ -581,9 +665,9 @@ Added by §2 of this document (afternoon-commit pending):
 
 | Capability | Granted authority |
 |---|---|
-| `nth:sign_receipt` | Sign motebit-compatible receipts that chain back to the issuer via this cap_token |
+| `nth:receipt_sign` | Sign motebit-compatible receipts that chain back to the issuer via this cap_token |
 
-`nth:sign_receipt` is the most powerful capability NTH DAO
+`nth:receipt_sign` is the most powerful capability NTH DAO
 exposes. A bearer can assert "I did X" claims under the user's
 extended reputation. Issuers must:
 
@@ -646,31 +730,97 @@ specification:
   on the same prompts. Used as a tie-breaker / cross-check
   against B-1 and B-2; not by itself a trigger.
 
+**Statistical floor** (minimum sample size — D2 spec hole fix,
+non-negotiable):
+
+> A benchmark "evaluation" only counts toward the trigger if
+> the evaluation reports at least **N = 1000** independent
+> trials. Below this floor, "detection accuracy < 5%" is
+> within Bernoulli noise and triggers spuriously.
+>
+> For the small-N case where a benchmark publishes
+> qualitative summaries rather than per-trial accuracy, the
+> evaluation does NOT count — the trigger requires
+> quantitative per-trial detection rates.
+
+**Evaluation-event cadence** (what "consecutive" means — D3
+spec hole fix):
+
+> Benchmarks publish on irregular cadences. To prevent the
+> trigger from being silently blocked by a dormant benchmark,
+> a "quarterly evaluation event" is defined as:
+>
+> > **the latest publicly published evaluation of that
+> > benchmark within the trailing 120 days**.
+>
+> Three "consecutive" events MUST be separated by at least
+> 75 days each (so a benchmark publishing weekly cannot fast-
+> forward the trigger; consecutive events are spaced like
+> real quarterly cadences). Events from the same publication
+> wave do NOT count as consecutive.
+>
+> If a benchmark has had no publication within 240 days, it
+> is considered "dormant" and its events stop counting until
+> a new publication restores cadence.
+
 **Trigger condition** (final wording):
 
 > The sunset is declared fired when ANY of these
-> cross-validation combinations holds:
+> cross-validation combinations holds, with every contributing
+> evaluation event satisfying both the statistical floor
+> (N ≥ 1000) and the cadence rules above:
 >
 > - **B-1** (LMSYS expert distinguishability) AND **B-2**
 >   (LiveCodeBench stylometric overlap) each show
 >   **detection accuracy below 5%** (i.e. essentially random
->   discrimination) for **three consecutive quarterly
->   evaluations**, OR
+>   discrimination) for **three consecutive evaluation
+>   events** each, OR
 > - **B-1** alone shows the same condition for **four**
->   consecutive quarterly evaluations (i.e. single-benchmark
+>   consecutive evaluation events (i.e. single-benchmark
 >   confirmation with extended duration), OR
 > - **B-3** (HELM stylometry variant) corroborates **either**
->   B-1 or B-2 for three consecutive quarterly evaluations.
+>   B-1 or B-2 for three consecutive evaluation events on
+>   each side.
 
 The "any of" disjunction is deliberate: two independent
-benchmarks agreeing for three quarters is the cleanest
+benchmarks agreeing for three events is the cleanest
 falsification path, but a single benchmark sustaining the
-condition for an extra quarter is strong enough evidence on
+condition for an extra event is strong enough evidence on
 its own; conversely, HELM's holistic methodology corroborating
 either primary benchmark closes the same loop from a different
 angle. We did not want the trigger to fail to fire just
 because one specific benchmark went dormant or was retired by
 its maintainers.
+
+**Governance — who declares the sunset has fired** (D4 spec
+hole fix):
+
+NTH DAO has no central authority and the protocol does not
+delegate sunset declaration to one. The sunset trigger is
+designed as **an objective condition that any participant can
+evaluate independently**:
+
+- Any consumer monitoring the benchmark feeds applies the
+  condition above to the publicly available evaluation data
+  and decides, FOR THEMSELVES, whether the sunset has fired
+  and how to adjust their trust weighting of NTH DAO
+  receipts going forward.
+- Receipt issuers MAY include
+  ``consistency_game_expired: true`` in receipt metadata
+  once they personally believe the trigger has fired. This is
+  voluntary signaling, not a protocol-mandated field.
+- The maintainers of this whitepaper SHOULD record the date
+  of their own determination in
+  ``docs/sunset_declarations/<YYYY-MM-DD>.md`` as a public
+  reference point. **This is a content-level statement, not a
+  protocol authorization** — other consumers are free to
+  reach a different conclusion based on the same data.
+
+This is the same non-transitive subjective-trust posture used
+for identity migration in §1 V1: NTH DAO refuses to centralize
+truth-of-state declarations that are not cryptographically
+self-evident. The sunset, like a key migration, is something
+each consumer recognizes on their own.
 
 **On firing:**
 
@@ -719,11 +869,13 @@ produce this work, on this date* — and we let the long arc of
 the user's coherent contribution chain speak for the quality of
 the underlying claim.
 
-When a future reader, decades from now, reads a NTH DAO receipt
-chain, what they should be able to trust is:
+When a future reader, decades from now, reads NTH DAO receipts,
+what they should be able to trust is:
 
-- The user controlled the keypair when each entry was signed
-- The entries form an unbroken hash chain
+- The user controlled the keypair when each receipt was signed
+- Each individual receipt's `timeline` is internally hash-
+  consistent (motebit-style per-receipt `content_hash` over the
+  timeline; tampering with any entry invalidates the receipt)
 - The user *said* tool T was used at time S
 - For autonomous entries, the user pre-authorized the delegated
   signer with explicit scope and time bounds
@@ -736,5 +888,13 @@ What they should NOT believe NTH DAO ever promised:
   from what the model would have produced
 - That the user could not, with sufficient effort, have
   fabricated some entries
+- **That the set of receipts forms a cross-receipt hash chain
+  in V1.** Each receipt is an independently signed artifact.
+  A user can omit a receipt from their public history and a
+  consumer reading their receipt store cannot detect the gap.
+  Cross-receipt chaining (each receipt referencing the previous
+  receipt's `content_hash`) is a candidate V1.x enhancement,
+  tracked in the issue tracker; this V1 spec deliberately does
+  not promise it.
 
 This is what honest infrastructure looks like.
