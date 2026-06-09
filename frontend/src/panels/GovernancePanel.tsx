@@ -1,4 +1,4 @@
-// chat-native governance panel - propose policy change, list proposals, sign votes.
+
 
 import { useEffect, useState } from "react";
 import {
@@ -73,19 +73,19 @@ export function GovernancePanel({ group, actorPubkeyHex, sign }: Props) {
   }, [group.group_id]);
 
   return (
-    <section className="chat-panel">
+    <section className="nth-panel">
       <h2>
-        Governance / <code>{group.slug}</code>
+        Governance · <code>{group.slug}</code>
       </h2>
 
-      <div className="chat-policy-current">
-        Current policy: <strong>{group.policy}</strong> /{" "}
-        {group.member_pubkeys.length} members /{" "}
+      <div className="nth-policy-current">
+        Current policy: <strong>{group.policy}</strong> ·{" "}
+        {group.member_pubkeys.length} members ·{" "}
         Threshold to pass:{" "}
         <strong>{Math.floor(group.member_pubkeys.length / 2) + 1} yes votes</strong>
       </div>
 
-      <div className="chat-form">
+      <div className="nth-form">
         <h3>Propose change</h3>
         <select
           value={newPolicy}
@@ -107,25 +107,25 @@ export function GovernancePanel({ group, actorPubkeyHex, sign }: Props) {
         </button>
       </div>
 
-      {error && <p className="chat-flash chat-error">{error}</p>}
+      {error && <p className="nth-flash nth-error">{error}</p>}
 
       <h3>Open proposals</h3>
-      <ul className="chat-proposal-list">
+      <ul className="nth-proposal-list">
         {proposals.map((p) => {
           const yesCount = p.votes.filter((v) => v.choice === "yes").length;
           return (
-            <li key={p.proposal_id} className="chat-proposal">
+            <li key={p.proposal_id} className="nth-proposal">
               <div>
                 <strong>{p.proposed_policy}</strong>{" "}
                 <small>(was {group.policy})</small>
-                {p.rationale && <div className="chat-rationale">{p.rationale}</div>}
-                <div className="chat-vote-tally">
-                  {yesCount} / {group.member_pubkeys.length} yes /{" "}
+                {p.rationale && <div className="nth-rationale">{p.rationale}</div>}
+                <div className="nth-vote-tally">
+                  {yesCount} / {group.member_pubkeys.length} yes ·{" "}
                   {p.resolved?.passed ? "PASSED" : "open"}
                 </div>
               </div>
               {!p.resolved?.passed && (
-                <div className="chat-vote-buttons">
+                <div className="nth-vote-buttons">
                   <button onClick={() => vote(p, "yes")}>Yes</button>
                   <button onClick={() => vote(p, "no")}>No</button>
                   <button onClick={() => vote(p, "abstain")}>Abstain</button>
@@ -134,7 +134,7 @@ export function GovernancePanel({ group, actorPubkeyHex, sign }: Props) {
             </li>
           );
         })}
-        {proposals.length === 0 && <li className="chat-empty">No open proposals.</li>}
+        {proposals.length === 0 && <li className="nth-empty">No open proposals.</li>}
       </ul>
     </section>
   );

@@ -217,7 +217,7 @@ export function MandatesPanel({ actorId }: Props) {
     listing.intents.length + listing.carts.length + listing.payments.length;
 
   return (
-    <div className="chat-panel mandate-panel">
+    <div className="nth-panel mandate-panel">
       <header className="mandate-header">
         <h3>Mandates</h3>
         <button
@@ -229,10 +229,10 @@ export function MandatesPanel({ actorId }: Props) {
         </button>
       </header>
 
-      {error && <p className="chat-flash chat-error">{error}</p>}
+      {error && <p className="nth-flash nth-error">{error}</p>}
 
       {!loading && total === 0 && (
-        <p className="chat-empty">
+        <p className="nth-empty">
           No mandates yet. The DAO has not issued any IntentMandates,
           received any CartMandates, or authorised any Payments.
         </p>
@@ -293,7 +293,7 @@ function MandateSection<T>(props: {
         {props.title} <span className="mandate-count">({props.rows.length})</span>
       </h4>
       {props.rows.length === 0 ? (
-        <p className="chat-empty mandate-empty">None.</p>
+        <p className="nth-empty mandate-empty">None.</p>
       ) : (
         <ul className="mandate-list">{props.rows.map(props.renderRow)}</ul>
       )}
@@ -321,8 +321,8 @@ function IntentRow({
       </div>
       <div className="mandate-row-body">
         <p className="mandate-purpose">{row.purpose}</p>
-        <p className="chat-did">authorises agent {short(row.agent)}</p>
-        <p className="chat-did">issuer {short(row.issuer)}</p>
+        <p className="nth-did">authorises agent {short(row.agent)}</p>
+        <p className="nth-did">issuer {short(row.issuer)}</p>
         <p className="mandate-meta">
           rails: {row.allowed_settlement_methods.join(", ") || "none"}
         </p>
@@ -356,7 +356,7 @@ function CartRow({
         {row.expired && <span className="mandate-tag mandate-tag-expired">expired</span>}
       </div>
       <div className="mandate-row-body">
-        <p className="chat-did">seller {short(row.issuer)}</p>
+        <p className="nth-did">seller {short(row.issuer)}</p>
         <p className="mandate-meta">
           binds intent {short(row.intent_digest)}
         </p>
@@ -395,8 +395,8 @@ function PaymentRow({
         {row.expired && <span className="mandate-tag mandate-tag-expired">expired</span>}
       </div>
       <div className="mandate-row-body">
-        <p className="chat-did">payee {short(row.payee)}</p>
-        <p className="chat-did">issuer {short(row.issuer)}</p>
+        <p className="nth-did">payee {short(row.payee)}</p>
+        <p className="nth-did">issuer {short(row.issuer)}</p>
         <p className="mandate-meta">binds cart {short(row.cart_digest)}</p>
         <p className="mandate-meta">
           authorised {row.issued_at} - window {row.expires_at}

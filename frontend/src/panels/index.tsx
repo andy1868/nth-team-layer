@@ -1,5 +1,5 @@
-// chat-native panel shell. Drop into App.tsx as <ContactShell ... /> to get the
-// 5 sidebar tabs: Contacts / Nearby / Groups / Governance / Mandates.
+
+// 5 sidebar tabs: Contacts · Nearby · Groups · Governance · Mandates.
 
 import { useState } from "react";
 import type { UniqueGroup } from "../contacts";
@@ -8,7 +8,7 @@ import { GovernancePanel } from "./GovernancePanel";
 import { GroupsPanel } from "./GroupsPanel";
 import { MandatesPanel } from "./MandatesPanel";
 import { NearbyPanel } from "./NearbyPanel";
-import "./chat-panels.css";
+import "./panel-theme.css";
 
 type Tab = "contacts" | "nearby" | "groups" | "governance" | "mandates";
 
@@ -34,42 +34,42 @@ export function ContactShell({ actorId, actorPubkeyHex = "", sign }: Props) {
   const [selectedGroup, setSelectedGroup] = useState<UniqueGroup | null>(null);
 
   const noSignWarning = !sign && (tab === "groups" || tab === "governance") && (
-    <p className="chat-flash">
-      Signing wallet not connected. Browse-only mode - creating groups and
+    <p className="nth-flash">
+      Signing wallet not connected. Browse-only mode — creating groups and
       voting are disabled.
     </p>
   );
 
   return (
-    <div className="chat-shell">
-      <nav className="chat-tab-bar">
+    <div className="nth-shell">
+      <nav className="nth-tab-bar">
         <button
-          className={`chat-tab ${tab === "contacts" ? "active" : ""}`}
+          className={`nth-tab ${tab === "contacts" ? "active" : ""}`}
           onClick={() => setTab("contacts")}
         >
           Contacts
         </button>
         <button
-          className={`chat-tab ${tab === "nearby" ? "active" : ""}`}
+          className={`nth-tab ${tab === "nearby" ? "active" : ""}`}
           onClick={() => setTab("nearby")}
         >
           Nearby
         </button>
         <button
-          className={`chat-tab ${tab === "groups" ? "active" : ""}`}
+          className={`nth-tab ${tab === "groups" ? "active" : ""}`}
           onClick={() => setTab("groups")}
         >
           Groups
         </button>
         <button
-          className={`chat-tab ${tab === "governance" ? "active" : ""}`}
+          className={`nth-tab ${tab === "governance" ? "active" : ""}`}
           onClick={() => setTab("governance")}
           disabled={!selectedGroup}
         >
           Governance{selectedGroup ? ` (@${selectedGroup.slug})` : ""}
         </button>
         <button
-          className={`chat-tab ${tab === "mandates" ? "active" : ""}`}
+          className={`nth-tab ${tab === "mandates" ? "active" : ""}`}
           onClick={() => setTab("mandates")}
         >
           Mandates
