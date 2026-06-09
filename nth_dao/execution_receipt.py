@@ -534,8 +534,21 @@ def verify_receipt(
     # attached, walk the chain back to the issuer's root authority.
     # If verification of the chain fails, the WHOLE receipt fails —
     # an unverifiable chain is worse than no chain.
+    #
+    # E2 (audit fix 2026-06-08): the field MUST be a dict if
+    # present. A non-dict value (string / list / int / bool) is
+    # malformed envelope and verify_receipt's contract is to
+    # return False rather than raise; without this guard the
+    # downstream ``cap_token.get(...)`` calls would crash through
+    # the no-raise boundary.
     cap_tok = receipt.get("authorizing_cap_token")
     if cap_tok is not None:
+        if not isinstance(cap_tok, dict):
+            logger.debug(
+                "authorizing_cap_token must be a dict; got %s",
+                type(cap_tok).__name__,
+            )
+            return False
         if not _verify_cap_token_chain_for_receipt(
             receipt=receipt,
             cap_token=cap_tok,
@@ -635,10 +648,23 @@ def _verify_cap_token_chain_for_receipt(
     except (ValueError, TypeError) as exc:
         logger.debug("receipt issued_at unparseable: %s", exc)
         return False
+    # E3 (audit fix 2026-06-08): this is a deliberate
+    # defense-in-depth BACKSTOP that duplicates the time-bound
+    # check already enforced inside the verify_cap_token call
+    # above (with now_ms_override=receipt_ms). Per current
+    # verify_cap_token contract the inner check ALREADY rejects
+    # receipt_ms > not_after; this conditional would only fire
+    # if a future refactor of verify_cap_token silently changed
+    # its time semantics. Keeping the redundancy here makes that
+    # regression caught at the consuming side, not at the
+    # cap_token unit-test boundary.
     not_after = int(cap_token.get("not_after", 0))
     if not_after and receipt_ms > not_after:
         logger.debug(
-            "receipt signed AFTER cap_token not_after (%d > %d)",
+            "receipt signed AFTER cap_token not_after (%d > %d) "
+            "— BACKSTOP fired; verify_cap_token's inner check "
+            "should have caught this first. Investigate "
+            "verify_cap_token's contract drift.",
             receipt_ms, not_after,
         )
         return False

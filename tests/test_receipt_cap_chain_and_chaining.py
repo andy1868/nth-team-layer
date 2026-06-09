@@ -415,6 +415,89 @@ def test_store_head_is_per_signer(tmp_path, admin, helper):
     assert store.head_content_hash(helper.as_did()) == r_helper["content_hash"]
 
 
+def test_e4_cap_token_chain_plus_receipt_chain_combined(
+    tmp_path, admin, helper,
+):
+    """E4 (audit fix 2026-06-08): the C2 cap_token chain and
+    Phase B per-signer receipt chain MUST compose cleanly. An
+    ephemeral subject DID can sign a SEQUENCE of receipts where
+    every receipt:
+
+      * is authorized by the same cap_token (chain through to
+        the root user authority)
+      * links to the previous receipt in the sequence via
+        prev_content_hash (chain integrity within the ephemeral
+        subject's own history)
+
+    This is the realistic shape of an overnight autonomous-
+    agent workload: one cap_token grants a window of authority,
+    the agent emits N receipts during that window, each chained
+    to the previous.
+
+    Prior to this test, C2 and Phase B were tested independently
+    but never together — a real-world deployment is the first
+    place the composition would be exercised.
+    """
+    # Admin mints a cap_token authorizing the helper to sign
+    # receipts for the next hour
+    tok = sign_cap_token(
+        issuer=admin, subject_did=helper.as_did(),
+        capabilities=[CAP_NTH_RECEIPT_SIGN],
+        ttl_ms=3600_000,
+    )
+
+    store = ReceiptStore(tmp_path)
+    chain = []
+    prev = ""
+    for i in range(4):
+        r = sign_receipt(
+            [_entry(step=i)],
+            helper,
+            prev_content_hash=prev,
+            authorizing_cap_token=tok,
+        )
+        store.save(r)
+        chain.append(r)
+        prev = store.head_content_hash(helper.as_did())
+        time.sleep(0.005)
+
+    # Every individual receipt must verify (C2 chain through to admin)
+    for r in chain:
+        assert verify_receipt(r), (
+            f"receipt {r['receipt_id'][:8]} (step {chain.index(r)}) "
+            f"failed individual verify"
+        )
+    # Chain integrity (Phase B) must verify too
+    assert verify_receipt_chain(chain), (
+        "C2 + Phase B composition failed: 4-receipt chain signed "
+        "by an ephemeral subject under a single cap_token does "
+        "not verify as a coherent chain"
+    )
+
+
+def test_e2_non_dict_authorizing_cap_token_rejected(helper):
+    """E2 (audit fix 2026-06-08): verify_receipt's contract is to
+    return False rather than raise. If a malformed envelope has
+    ``authorizing_cap_token`` as a non-dict (string / list / int /
+    bool), the previous implementation would crash through the
+    no-raise boundary at the first ``cap_token.get(...)`` call.
+    Guard added in verify_receipt; this test pins the contract."""
+    # Build a valid receipt then attach a non-dict at the field
+    r = sign_receipt([_entry()], helper)
+    # String
+    r["authorizing_cap_token"] = "not-a-dict"
+    assert verify_receipt(r) is False
+    # List
+    r["authorizing_cap_token"] = ["not", "a", "dict"]
+    assert verify_receipt(r) is False
+    # Int
+    r["authorizing_cap_token"] = 42
+    assert verify_receipt(r) is False
+    # Bool — True is technically truthy but not a dict
+    r["authorizing_cap_token"] = True
+    assert verify_receipt(r) is False
+
+
 def test_store_head_used_to_build_real_chain_end_to_end(tmp_path, helper):
     """The intended use: sign first receipt, save, query head, use
     head as prev for next receipt, save again — produces a verified

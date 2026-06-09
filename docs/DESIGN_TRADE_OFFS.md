@@ -863,6 +863,54 @@ upgrade path.
 
 ---
 
+# Appendix D — External chain-head snapshotting (V1.x candidate)
+
+The chain integrity work shipped in V1 (`prev_content_hash`
+linking, `verify_receipt_chain` walker, `head_content_hash`
+store helper) defeats third-party tampering and silent omission
+of intermediate receipts. It does **not** defeat the signer
+rewriting their own history, because the signer controls the
+keypair.
+
+The mitigation is external snapshotting — a consumer (or a
+service NTH DAO interoperates with) records the signer's current
+chain head at a known time T. Later, if the signer publishes a
+chain that doesn't contain that head, the recorded snapshot is
+itself evidence of inconsistency.
+
+Three plausible V1.x designs, in increasing complexity:
+
+  1. **Voluntary peer mirroring** — NTH DAO nodes that learn
+     of each other via mDNS optionally exchange chain-head
+     records. Each peer records the OTHER's head with a
+     timestamp. Pure-peer model, no central party. Limit:
+     evidence quality depends on the witness's own honesty
+     and the timestamp's verifiability.
+
+  2. **Lightweight public timestamping** — emit chain-head
+     records via an external timestamping service that can
+     attest "I saw this hash at time T" (e.g. OpenTimestamps,
+     a Mastodon-style public posting). No specific service
+     mandated; the receipt envelope grows an optional
+     `chain_head_witnesses` array referring to URLs / IDs.
+
+  3. **Trusted-witness consortium / blockchain anchor** —
+     periodically commit chain heads to a more durable
+     witness layer (blockchain, transparency log). Highest
+     guarantee, highest infrastructure dependency. We list
+     this for completeness but explicitly DO NOT recommend
+     it for v1.x — it imports too much external complexity
+     for a use case (developer reputation chains) that does
+     not need block-finality-grade integrity.
+
+The v1.x track should ship (1) first as a low-cost pilot, then
+evaluate whether (2) is warranted before any consideration of
+(3). The V2 priority ordering in §0 puts this behind the §3
+TLSNotary/TEE work since chain-integrity-without-witnesses is
+still enough for most use cases NTH DAO actually serves.
+
+---
+
 # Closing — what NTH DAO is, after this document
 
 > *Not* a decentralized AI agent network.
@@ -891,7 +939,16 @@ what they should be able to trust is:
   timeline; tampering with any entry invalidates the receipt)
 - The user *said* tool T was used at time S
 - For autonomous entries, the user pre-authorized the delegated
-  signer with explicit scope and time bounds
+  signer with explicit scope and time bounds (see §2)
+- **Per-signer chain integrity** (D1 V1.x graduated in commit
+  `ee6bf60`): a third party holding a complete corpus of one
+  signer's receipts can run `verify_receipt_chain(corpus)` and
+  detect (a) a missing receipt that other receipts reference
+  via `prev_content_hash`, (b) a fork where two receipts share
+  the same prev pointer, (c) more than one genesis, or (d) any
+  individual receipt's signature being invalid. This was
+  initially listed under "NOT promised" in earlier drafts of
+  this section but shipped in V1 — the line is moved.
 
 What they should NOT believe NTH DAO ever promised:
 
@@ -901,13 +958,17 @@ What they should NOT believe NTH DAO ever promised:
   from what the model would have produced
 - That the user could not, with sufficient effort, have
   fabricated some entries
-- **That the set of receipts forms a cross-receipt hash chain
-  in V1.** Each receipt is an independently signed artifact.
-  A user can omit a receipt from their public history and a
-  consumer reading their receipt store cannot detect the gap.
-  Cross-receipt chaining (each receipt referencing the previous
-  receipt's `content_hash`) is a candidate V1.x enhancement,
-  tracked in the issue tracker; this V1 spec deliberately does
-  not promise it.
+- **That a signer cannot rewrite their own history.** Chain
+  integrity (above) defeats THIRD-PARTY tampering and silent
+  omission of intermediate receipts. It does **not** defeat
+  the signer who controls their own keypair: they can re-sign
+  the entire chain forward with different `prev_content_hash`
+  values, different `issued_at` strings, even different
+  `timeline` contents. The only check against this is
+  **external snapshotting** — a consumer who recorded the
+  signer's chain head at time T can later prove what existed
+  at T, even if the signer subsequently substitutes a
+  different chain. External snapshotting is a V1.x candidate
+  (see Appendix D, below), not part of V1.
 
 This is what honest infrastructure looks like.
