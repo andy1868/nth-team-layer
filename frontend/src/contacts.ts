@@ -1,5 +1,7 @@
+// Contact / discover / group APIs for v0.9.6 for v0.9.6.
+// Pure TS - no React imports here, so it can be unit-tested without a DOM.
 
-// Pure TS — no React imports here, so it can be unit-tested without a DOM.
+import { jsonHeaders } from "./consoleAuth";
 
 export interface AgentMatch {
   agent_id: string;
@@ -11,6 +13,17 @@ export interface AgentMatch {
   groups: string[];
   last_seen: string;
   matched: string[];
+  code?: string;
+  source?: "registry" | "home" | "group";
+  role?: string;
+  group_slug?: string;
+  pubkey_hex?: string;
+  // Week-1 Task 4 (2026-06-07): WoT endorsement signal. Optional
+  // because home/registry rows don't carry a pubkey we can index
+  // against the trust graph - only group rows reliably populate it.
+  // Front-end treats absent or 0 as "no information".
+  pubkey_prefix?: string;
+  endorsement_count?: number;
 }
 
 export interface LANPeer {
@@ -20,6 +33,13 @@ export interface LANPeer {
   groups: string[];
   ws_url: string;
   pubkey_hex: string;
+  // LAN DID publish (2026-06-07): the peer's permanent did:key,
+  // propagated via the mDNS TXT record / UDP hello message. Empty
+  // when the peer is a legacy NTH DAO build that does not publish
+  // DIDs. Surfaced by the dashboard's Nearby panel so the operator
+  // can add LAN peers by DID with one click.
+  pubkey_prefix?: string;
+  did?: string;
   source_addr: string;
   rtt_ms: number;
 }
@@ -64,10 +84,7 @@ export interface PolicyProposal {
 async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {})
-    }
+    headers: jsonHeaders(init)
   });
   if (!response.ok) {
     let detail = response.statusText;
@@ -83,37 +100,61 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-// ── search registered agents
+// ── search registered agents (search by name) ──
 
-export async function searchAgents(query: string, limit = 10): Promise<AgentMatch[]> {
+/**
+ * Search registered agents by free-text query.
+ *
+ * Architect audit C-1 (2026-06-07): ``/api/agents/search`` now requires
+ * ``actor_id`` so the request goes through the same membership gate as
+ * the rest of the console (prevents unauthenticated enumeration of the
+ * team roster + group pubkeys). Pass the caller's ``agentId``; the
+ * default fallback ``"admin"`` matches the dashboard's default agent
+ * and keeps the legacy single-arg call sites working in dev / tests.
+ */
+export async function searchAgents(
+  query: string,
+  limit = 10,
+  actorId = "admin"
+): Promise<AgentMatch[]> {
   const q = query.trim();
   if (!q) return [];
-  const params = new URLSearchParams({ q, limit: String(limit) });
+  const params = new URLSearchParams({
+    q,
+    limit: String(limit),
+    actor_id: actorId
+  });
   const data = await jsonRequest<{ results: AgentMatch[] }>(
     `/api/agents/search?${params.toString()}`
   );
   return data.results;
 }
 
-// ── LAN discovery
+// ── LAN discovery (people nearby) ──
 
+/**
+ * Architect R-5 (2026-06-07): the lan_discover endpoint now requires
+ * actor_id and ignores any client-supplied PSK (the server reads
+ * NTH_DISCOVERY_PSK directly). We keep the ``psk`` parameter in the
+ * function signature for source-compat but no longer transmit it.
+ */
 export async function discoverLanPeers(opts: {
+  actorId: string;
   timeoutSeconds?: number;
-  psk?: string;
   wantedCapabilities?: string[];
-} = {}): Promise<LANPeer[]> {
+}): Promise<LANPeer[]> {
   const data = await jsonRequest<{ peers: LANPeer[] }>("/api/agents/lan_discover", {
     method: "POST",
     body: JSON.stringify({
+      actor_id: opts.actorId,
       timeout_seconds: opts.timeoutSeconds ?? 2,
-      psk: opts.psk ?? "",
       wanted_capabilities: opts.wantedCapabilities ?? []
     })
   });
   return data.peers;
 }
 
-// ── add agent
+// ── add agent (add contact) ──
 
 export async function addAgent(input: {
   actorId: string;
@@ -132,7 +173,7 @@ export async function addAgent(input: {
   });
 }
 
-// ── groups
+// ── groups (group chats tab) ──
 
 export async function listGroups(): Promise<UniqueGroup[]> {
   const data = await jsonRequest<{ groups: UniqueGroup[] }>("/api/groups/registry");

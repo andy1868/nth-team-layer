@@ -11,6 +11,7 @@ export type TeamConfig = {
 export type Summary = {
   team: TeamConfig;
   workspace: string;
+  workspace_is_local?: boolean;
   members: number;
   channels: number;
   tasks: number;
@@ -112,7 +113,7 @@ export type DaoState = {
   active_channel_id?: string;
 };
 
-// v0.9.7 — one agent ↔ many DAOs. Each DAO is either the local "home"
+// v0.9.7 - one agent ↔ many DAOs. Each DAO is either the local "home"
 // workspace or a registered Group from the cross-workspace GroupRegistry.
 export type DaoKind = "home" | "group";
 
